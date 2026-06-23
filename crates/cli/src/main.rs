@@ -110,6 +110,11 @@ enum Command {
         /// Target revision (defaults to current HEAD).
         rev: Option<String>,
     },
+    /// Merge a revision into the current base (clean workspace only).
+    Merge {
+        /// Branch name or commit to merge.
+        rev: String,
+    },
     /// List a directory through the workspace projection.
     Ls {
         /// Directory to list (defaults to the root).
@@ -311,6 +316,7 @@ fn run(cli: &Cli, format: Format) -> Result<()> {
             hard,
             rev,
         } => cmd_reset(cli, *soft, *mixed, *hard, rev.clone(), format),
+        Command::Merge { rev } => cmd_merge(cli, rev, format),
         Command::Ls { path } => cmd_ls(cli, path.clone(), format),
         Command::Cat { path } => cmd_cat(cli, path),
         Command::Hydrate { pathspec } | Command::Prefetch { pathspec } => {
@@ -608,6 +614,48 @@ fn resolve_rev(mount: &OpenMount, rev: &str) -> Result<glm_core::ObjectId> {
             format!("cannot resolve revision '{rev}'"),
         )
     })
+}
+
+fn cmd_merge(cli: &Cli, rev: &str, format: Format) -> Result<()> {
+    let mount = open_mount(cli)?;
+    let theirs = resolve_rev(&mount, rev)?;
+    match mount.workspace.merge(theirs)? {
+        glm_workspace::MergeResult::Clean { commit, operation } => {
+            let mut env = Envelope::new(
+                "merge",
+                json!({ "status": "clean", "commit": commit.to_hex() }),
+            )
+            .workspace(mount.spec.id);
+            env.operation_id = Some(operation.to_hex());
+            if format == Format::Human {
+                println!("merged cleanly: {}", short(&commit.to_hex()));
+            } else {
+                env.print_json();
+            }
+        }
+        glm_workspace::MergeResult::Conflicts { paths, messages } => {
+            if format == Format::Human {
+                println!("merge produced conflicts in {} path(s):", paths.len());
+                for p in &paths {
+                    println!("  {}", p.escape());
+                }
+                for m in &messages {
+                    println!("  {m}");
+                }
+                println!("resolve, then `git lazy-mount add` and `commit`.");
+            } else {
+                let arr: Vec<_> = paths.iter().map(|p| p.escape()).collect();
+                Envelope::new(
+                    "merge",
+                    json!({ "status": "conflicts", "paths": arr, "messages": messages }),
+                )
+                .workspace(mount.spec.id)
+                .warn("merge conflicts; resolve and commit")
+                .print_json();
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_branch(cli: &Cli, format: Format) -> Result<()> {

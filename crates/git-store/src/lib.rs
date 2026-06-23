@@ -21,4 +21,6 @@ mod store;
 pub mod tree_parse;
 
 pub use batch::{BatchSession, ObjectInfo};
-pub use store::{CommitParams, FetchOptions, GitStore, Identity};
+pub use store::{
+    CommitParams, FetchOptions, GitStore, Identity, MergeConflict, MergeStage, MergeTreeOutput,
+};

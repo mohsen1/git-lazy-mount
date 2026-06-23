@@ -399,3 +399,107 @@ fn branch_lists_local_branches() {
     let branches = h.ws.list_branches().unwrap();
     assert!(branches.iter().any(|(name, _)| name == "refs/heads/main"));
 }
+
+/// Build a child commit of `parent` that sets root-level `files`.
+fn commit_files(h: &Harness, parent: &ObjectId, files: &[(&str, &[u8])]) -> ObjectId {
+    use glm_core::{GitMode, TreeEntry};
+    let ptree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", parent.to_hex()))
+        .unwrap()
+        .unwrap();
+    let mut entries = h.ws.provider().tree(&ptree, POLICY).unwrap().entries;
+    for (name, content) in files {
+        let oid = h.store.hash_blob_raw(content, true).unwrap();
+        entries.retain(|e| e.name != name.as_bytes());
+        entries.push(TreeEntry {
+            name: name.as_bytes().to_vec(),
+            mode: GitMode::Regular,
+            object_id: oid,
+        });
+    }
+    let tree = h.store.write_tree(entries).unwrap();
+    h.store
+        .commit_tree(&glm_git_store::CommitParams {
+            tree,
+            parents: vec![parent.clone()],
+            message: "side".into(),
+            author: Some(ident()),
+            committer: Some(ident()),
+            sign: false,
+        })
+        .unwrap()
+}
+
+#[test]
+fn merge_clean_produces_merge_commit() {
+    use glm_workspace::MergeResult;
+    let (h, base0) = harness(&[("a.txt", b"base\n")]);
+
+    // ours: commit b.txt on top of base0.
+    h.ws.write_full(&p("b.txt"), b"ours\n", false).unwrap();
+    h.ws.stage_path(&p("b.txt"), POLICY).unwrap();
+    h.ws.commit("add b", POLICY).unwrap();
+
+    // theirs: a divergent child of base0 adding c.txt.
+    let theirs = commit_files(&h, &base0, &[("c.txt", b"theirs\n")]);
+
+    match h.ws.merge(theirs).unwrap() {
+        MergeResult::Clean { commit, .. } => {
+            // The merge commit has two parents and a tree with a, b, and c.
+            assert!(h
+                .store
+                .rev_parse(&format!("{}^2", commit.to_hex()))
+                .unwrap()
+                .is_some());
+            let tree = h
+                .store
+                .rev_parse(&format!("{}^{{tree}}", commit.to_hex()))
+                .unwrap()
+                .unwrap();
+            let t = h.ws.provider().tree(&tree, POLICY).unwrap();
+            assert!(t.entry(b"a.txt").is_some());
+            assert!(t.entry(b"b.txt").is_some());
+            assert!(t.entry(b"c.txt").is_some());
+        }
+        MergeResult::Conflicts { .. } => panic!("expected a clean merge"),
+    }
+}
+
+#[test]
+fn merge_conflict_then_resolve_makes_two_parent_commit() {
+    use glm_workspace::MergeResult;
+    let (h, base0) = harness(&[("a.txt", b"v1\n")]);
+
+    // ours changes a.txt.
+    h.ws.write_full(&p("a.txt"), b"OURS\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+    let ours = h.ws.commit("ours", POLICY).unwrap().commit;
+
+    // theirs changes a.txt differently (divergent from base0).
+    let theirs = commit_files(&h, &base0, &[("a.txt", b"THEIRS\n")]);
+
+    match h.ws.merge(theirs.clone()).unwrap() {
+        MergeResult::Conflicts { paths, .. } => {
+            assert!(paths.contains(&p("a.txt")));
+            // Marker content was materialized into the working tree.
+            let body = h.ws.read_file(&p("a.txt"), POLICY).unwrap();
+            assert!(body.windows(7).any(|w| w == b"<<<<<<<"));
+            assert_eq!(h.ws.merge_head(), Some(theirs.clone()));
+        }
+        MergeResult::Clean { .. } => panic!("expected conflicts"),
+    }
+
+    // Resolve and commit -> a two-parent merge commit; merge state cleared.
+    h.ws.write_full(&p("a.txt"), b"RESOLVED\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+    let out = h.ws.commit("resolve merge", POLICY).unwrap();
+    assert_ne!(out.commit, ours);
+    assert_eq!(
+        h.store
+            .rev_parse(&format!("{}^2", out.commit.to_hex()))
+            .unwrap(),
+        Some(theirs)
+    );
+    assert!(h.ws.merge_head().is_none());
+}

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use glm_core::{Error, ErrorCode, ObjectFormat, ObjectId, Result, TreeObject};
+use glm_core::{Error, ErrorCode, GitMode, ObjectFormat, ObjectId, Result, TreeObject};
 
 use crate::batch::BatchSession;
 use crate::proc::{run, run_checked};
@@ -440,6 +440,129 @@ impl GitStore {
     pub fn batch_session(&self) -> Result<BatchSession> {
         BatchSession::spawn(&self.git_dir, self.format.clone())
     }
+
+    /// The merge base of two commits, if any.
+    pub fn merge_base(&self, a: &ObjectId, b: &ObjectId) -> Result<Option<ObjectId>> {
+        let mut cmd = self.git(true);
+        cmd.args(["merge-base", &a.to_hex(), &b.to_hex()]);
+        let r = run(cmd, None)?;
+        if !r.status_ok {
+            return Ok(None);
+        }
+        let hexs = String::from_utf8_lossy(&r.stdout);
+        match hexs.trim() {
+            "" => Ok(None),
+            h => Ok(Some(ObjectId::parse_hex(self.format.clone(), h).map_err(
+                |e| Error::new(ErrorCode::Internal, format!("bad merge-base oid: {e}")),
+            )?)),
+        }
+    }
+
+    /// Perform a real three-way merge of two commits with `git merge-tree
+    /// --write-tree`, returning the merged tree and any conflicts. This does NOT
+    /// touch refs or the working tree — it is a pure object-level merge.
+    pub fn merge_tree(&self, ours: &ObjectId, theirs: &ObjectId) -> Result<MergeTreeOutput> {
+        // A merge is an explicit user operation: it may need the conflicting
+        // files' blobs to compute a 3-way content merge, so lazy fetch is
+        // allowed (unlike passive read paths).
+        let mut cmd = self.git(false);
+        // Disable path quoting so we get raw bytes back for non-ASCII names.
+        cmd.args([
+            "-c",
+            "core.quotePath=false",
+            "merge-tree",
+            "--write-tree",
+            &ours.to_hex(),
+            &theirs.to_hex(),
+        ]);
+        let r = run(cmd, None)?;
+        match r.code {
+            Some(0) | Some(1) => {}
+            _ => return Err(crate::proc::classify(&r.stderr, "merge-tree")),
+        }
+        let text = String::from_utf8_lossy(&r.stdout);
+        let mut lines = text.lines();
+        let tree_hex = lines
+            .next()
+            .ok_or_else(|| Error::new(ErrorCode::Internal, "merge-tree produced no tree"))?;
+        let tree = ObjectId::parse_hex(self.format.clone(), tree_hex.trim())
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("bad merge-tree oid: {e}")))?;
+
+        // Conflicted-file-info lines (`<mode> <oid> <stage>\t<path>`) until blank.
+        let mut conflicts: std::collections::BTreeMap<Vec<u8>, MergeConflict> = Default::default();
+        let mut messages = Vec::new();
+        let mut in_messages = r.code == Some(0);
+        for line in lines {
+            if line.is_empty() {
+                in_messages = true;
+                continue;
+            }
+            if in_messages {
+                messages.push(line.to_string());
+                continue;
+            }
+            if let Some(stage) = parse_conflict_line(line, &self.format) {
+                conflicts
+                    .entry(stage.0.clone())
+                    .or_insert_with(|| MergeConflict {
+                        path: stage.0.clone(),
+                        stages: Vec::new(),
+                    })
+                    .stages
+                    .push(stage.1);
+            }
+        }
+
+        Ok(MergeTreeOutput {
+            tree,
+            clean: r.code == Some(0),
+            conflicts: conflicts.into_values().collect(),
+            messages,
+        })
+    }
+}
+
+/// One stage of a conflicted path in a merge (1 = base, 2 = ours, 3 = theirs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeStage {
+    /// Stage number (1/2/3).
+    pub stage: u8,
+    /// The entry mode.
+    pub mode: GitMode,
+    /// The object at this stage.
+    pub oid: ObjectId,
+}
+
+/// A conflicted path and its stage entries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeConflict {
+    /// Path bytes (raw; `core.quotePath=false`).
+    pub path: Vec<u8>,
+    /// Stage entries present for this path.
+    pub stages: Vec<MergeStage>,
+}
+
+/// The result of [`GitStore::merge_tree`].
+#[derive(Clone, Debug)]
+pub struct MergeTreeOutput {
+    /// The merged tree (contains conflict-marker blobs for conflicted text).
+    pub tree: ObjectId,
+    /// Whether the merge was clean.
+    pub clean: bool,
+    /// Conflicted paths, if any.
+    pub conflicts: Vec<MergeConflict>,
+    /// Informational messages from Git (e.g. "CONFLICT (content): …").
+    pub messages: Vec<String>,
+}
+
+/// Parse a `<mode> <oid> <stage>\t<path>` conflicted-file-info line.
+fn parse_conflict_line(line: &str, format: &ObjectFormat) -> Option<(Vec<u8>, MergeStage)> {
+    let (meta, path) = line.split_once('\t')?;
+    let mut parts = meta.split(' ');
+    let mode = GitMode::parse_octal(parts.next()?)?;
+    let oid = ObjectId::parse_hex(format.clone(), parts.next()?).ok()?;
+    let stage: u8 = parts.next()?.parse().ok()?;
+    Some((path.as_bytes().to_vec(), MergeStage { stage, mode, oid }))
 }
 
 fn detect_format(git_dir: &Path) -> Result<ObjectFormat> {
