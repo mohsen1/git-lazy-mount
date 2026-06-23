@@ -74,7 +74,7 @@ mod tests {
 
     use glm_core::{FetchPolicy, RepoPath};
     use glm_fs_common::ROOT_INO;
-    use glm_git_store::{FetchOptions, GitStore};
+    use glm_git_store::{FetchOptions, GitStore, Identity};
     use glm_object_provider::{GitObjectProvider, ObjectProvider};
     use glm_workspace::WorkspaceConfig;
 
@@ -145,7 +145,13 @@ mod tests {
             workspace_head_ref: "refs/lazy-mount/workspaces/t/head".into(),
             attached_branch: None,
             remote: Some("origin".into()),
-            identity: None,
+            // Explicit identity so `commit()` does not depend on ambient git
+            // config (CI runners have none, unlike a dev host).
+            identity: Some(Identity {
+                name: "Test".into(),
+                email: "test@example.com".into(),
+                date: Some("@1700000000 +0000".into()),
+            }),
         };
         Workspace::open_or_create(store, provider, ws_dir, cfg, base).unwrap()
     }
