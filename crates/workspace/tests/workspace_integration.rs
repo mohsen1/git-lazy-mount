@@ -13,6 +13,14 @@ fn p(s: &str) -> RepoPath {
     RepoPath::from_bytes(s.as_bytes().to_vec()).unwrap()
 }
 
+fn ident() -> Identity {
+    Identity {
+        name: "Test".into(),
+        email: "test@example.com".into(),
+        date: Some("@1700000000 +0000".into()),
+    }
+}
+
 struct Harness {
     _tmp: tempfile::TempDir,
     // Keep the remote alive so lazy fetches during the test succeed.
@@ -206,8 +214,10 @@ fn commit_detects_concurrent_branch_movement() {
             tree: base_tree,
             parents: vec![base.clone()],
             message: "concurrent".into(),
-            author: None,
-            committer: None,
+            // Supply identity explicitly: CI runners have no global git user
+            // (relying on ambient config fails with "Author identity unknown").
+            author: Some(ident()),
+            committer: Some(ident()),
             sign: false,
         })
         .unwrap();
