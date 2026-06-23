@@ -99,25 +99,25 @@ impl ErrorCode {
         // Values are the standard Linux errno numbers; the FS layer is free to
         // remap per-platform, but these are the defaults.
         match self {
-            ErrorCode::Authentication => 13,                 // EACCES
-            ErrorCode::OfflineMissingObject => 5,            // EIO
-            ErrorCode::RemoteMissingObject => 2,             // ENOENT
-            ErrorCode::LocalObjectCorruption => 5,           // EIO
-            ErrorCode::OverlayCorruption => 5,               // EIO
-            ErrorCode::FilterFailure => 5,                   // EIO
-            ErrorCode::LfsFailure => 5,                      // EIO
-            ErrorCode::InvalidRepositoryPath => 22,          // EINVAL
-            ErrorCode::PlatformPathCollision => 22,          // EINVAL
-            ErrorCode::FilesystemBackendUnavailable => 19,   // ENODEV
-            ErrorCode::UnsupportedOperation => 95,           // EOPNOTSUPP
-            ErrorCode::ResourceLimit => 28,                  // ENOSPC
-            ErrorCode::StaleWorkspace => 116,                // ESTALE
-            ErrorCode::DirtyWorkspaceConflict => 39,         // ENOTEMPTY (closest)
-            ErrorCode::ConcurrentBranchMovement => 11,       // EAGAIN
-            ErrorCode::Configuration => 22,                  // EINVAL
-            ErrorCode::UnsupportedRemoteCapability => 95,    // EOPNOTSUPP
-            ErrorCode::MountLifecycle => 16,                 // EBUSY
-            ErrorCode::Internal => 5,                        // EIO
+            ErrorCode::Authentication => 13,               // EACCES
+            ErrorCode::OfflineMissingObject => 5,          // EIO
+            ErrorCode::RemoteMissingObject => 2,           // ENOENT
+            ErrorCode::LocalObjectCorruption => 5,         // EIO
+            ErrorCode::OverlayCorruption => 5,             // EIO
+            ErrorCode::FilterFailure => 5,                 // EIO
+            ErrorCode::LfsFailure => 5,                    // EIO
+            ErrorCode::InvalidRepositoryPath => 22,        // EINVAL
+            ErrorCode::PlatformPathCollision => 22,        // EINVAL
+            ErrorCode::FilesystemBackendUnavailable => 19, // ENODEV
+            ErrorCode::UnsupportedOperation => 95,         // EOPNOTSUPP
+            ErrorCode::ResourceLimit => 28,                // ENOSPC
+            ErrorCode::StaleWorkspace => 116,              // ESTALE
+            ErrorCode::DirtyWorkspaceConflict => 39,       // ENOTEMPTY (closest)
+            ErrorCode::ConcurrentBranchMovement => 11,     // EAGAIN
+            ErrorCode::Configuration => 22,                // EINVAL
+            ErrorCode::UnsupportedRemoteCapability => 95,  // EOPNOTSUPP
+            ErrorCode::MountLifecycle => 16,               // EBUSY
+            ErrorCode::Internal => 5,                      // EIO
         }
     }
 }
@@ -203,10 +203,7 @@ impl Error {
     }
 
     /// Attach an underlying cause.
-    pub fn with_source(
-        mut self,
-        source: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
         self
     }
@@ -267,8 +264,7 @@ impl Error {
     /// Render to the JSON projection.
     pub fn to_json(&self) -> ErrorJson {
         let mut causes = Vec::new();
-        let mut cur: Option<&(dyn std::error::Error + 'static)> =
-            std::error::Error::source(self);
+        let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(self);
         while let Some(c) = cur {
             causes.push(c.to_string());
             cur = c.source();
@@ -292,7 +288,10 @@ mod tests {
 
     #[test]
     fn codes_are_stable_strings() {
-        assert_eq!(ErrorCode::OfflineMissingObject.as_str(), "offline_missing_object");
+        assert_eq!(
+            ErrorCode::OfflineMissingObject.as_str(),
+            "offline_missing_object"
+        );
         assert_eq!(ErrorCode::StaleWorkspace.as_str(), "stale_workspace");
     }
 
@@ -302,7 +301,10 @@ mod tests {
             .with_action("run: git lazy-mount doctor")
             .context("during fetch of refs/heads/main");
         assert!(e.retryable); // auth is retryable by default
-        assert_eq!(e.recommended_action.as_deref(), Some("run: git lazy-mount doctor"));
+        assert_eq!(
+            e.recommended_action.as_deref(),
+            Some("run: git lazy-mount doctor")
+        );
         assert_eq!(e.errno(), 13); // EACCES
         assert_eq!(e.context.len(), 1);
     }

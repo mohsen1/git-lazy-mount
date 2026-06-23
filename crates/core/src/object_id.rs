@@ -191,8 +191,7 @@ mod tests {
 
     #[test]
     fn unknown_format_skips_length_check() {
-        let oid =
-            ObjectId::parse_hex(ObjectFormat::Other("blake3".into()), "00112233").unwrap();
+        let oid = ObjectId::parse_hex(ObjectFormat::Other("blake3".into()), "00112233").unwrap();
         assert_eq!(oid.bytes.len(), 4);
     }
 }
