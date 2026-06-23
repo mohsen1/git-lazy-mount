@@ -412,16 +412,29 @@ impl Filesystem for Adapter {
     }
 }
 
+/// Whether `user_allow_other` is enabled in `/etc/fuse.conf`. `AutoUnmount`
+/// requires `AllowOther`, which `fusermount3` only permits for root or when this
+/// is set. Requesting it unconditionally fails the mount on locked-down hosts
+/// (e.g. unprivileged CI runners), so we gate on it.
+fn user_allow_other_permitted() -> bool {
+    std::fs::read_to_string("/etc/fuse.conf")
+        .map(|s| s.lines().any(|l| l.trim() == "user_allow_other"))
+        .unwrap_or(false)
+}
+
 fn mount_options() -> Vec<MountOption> {
-    vec![
+    let mut opts = vec![
         MountOption::FSName("git-lazy-mount".into()),
         MountOption::Subtype("glm".into()),
-        // Auto-unmount when the serving process exits so a crash, panic, or kill
-        // can never leave a wedged kernel mount. `AutoUnmount` requires
-        // `AllowOther` (or `user_allow_other` in /etc/fuse.conf).
-        MountOption::AllowOther,
-        MountOption::AutoUnmount,
-    ]
+    ];
+    // Auto-unmount when the serving process exits so a crash/kill never leaves a
+    // wedged kernel mount — but only when permitted (see above). Where it isn't,
+    // the mount still succeeds and `BackgroundMount`'s drop performs the unmount.
+    if user_allow_other_permitted() {
+        opts.push(MountOption::AllowOther);
+        opts.push(MountOption::AutoUnmount);
+    }
+    opts
 }
 
 /// Mount `ops` at `mountpoint` and serve until unmounted (blocking).
