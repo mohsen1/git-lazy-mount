@@ -1,0 +1,11 @@
+[package]
+name = "glm-metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tree metadata cache and exact/manifest-assisted stat policy."
+
+[lints]
+workspace = true

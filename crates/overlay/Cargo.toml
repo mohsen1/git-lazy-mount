@@ -1,0 +1,11 @@
+[package]
+name = "glm-overlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Copy-on-write writable overlay with tombstones and atomic publication."
+
+[lints]
+workspace = true

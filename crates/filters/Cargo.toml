@@ -1,0 +1,11 @@
+[package]
+name = "glm-filters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Working-tree filter context, trust model, and Git filter plumbing."
+
+[lints]
+workspace = true

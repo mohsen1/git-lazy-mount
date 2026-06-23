@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/platform",
+    "crates/git-store",
+    "crates/object-provider",
+    "crates/metadata",
+    "crates/overlay",
+    "crates/stage",
+    "crates/oplog",
+    "crates/filters",
+    "crates/workspace",
+    "crates/fsmonitor",
+    "crates/ipc",
+    "crates/projection",
+    "crates/fs-common",
+    "crates/fs-fuse",
+    "crates/fs-fskit",
+    "crates/fs-projfs",
+    "crates/daemon",
+    "crates/testkit",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mohsen1/git-lazy-mount"
+authors = ["git-lazy-mount contributors"]
+
+[workspace.dependencies]
+# Internal crates
+glm-core = { path = "crates/core" }
+glm-platform = { path = "crates/platform" }
+glm-git-store = { path = "crates/git-store" }
+glm-object-provider = { path = "crates/object-provider" }
+glm-metadata = { path = "crates/metadata" }
+glm-overlay = { path = "crates/overlay" }
+glm-stage = { path = "crates/stage" }
+glm-oplog = { path = "crates/oplog" }
+glm-filters = { path = "crates/filters" }
+glm-workspace = { path = "crates/workspace" }
+glm-fsmonitor = { path = "crates/fsmonitor" }
+glm-ipc = { path = "crates/ipc" }
+glm-projection = { path = "crates/projection" }
+glm-fs-common = { path = "crates/fs-common" }
+glm-fs-fuse = { path = "crates/fs-fuse" }
+glm-daemon = { path = "crates/daemon" }
+glm-testkit = { path = "crates/testkit" }
+
+# Third-party
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+hex = "0.4"
+sha2 = "0.10"
+tempfile = "3"
+libc = "0.2"
+fuser = "0.14"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "allow"
+
+[workspace.lints.clippy]
+# Deny on CI via `-D warnings`; keep the set pragmatic and correctness-focused.
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"

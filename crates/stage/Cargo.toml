@@ -1,0 +1,11 @@
+[package]
+name = "glm-stage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Persistent staged delta, separate from HEAD and the overlay."
+
+[lints]
+workspace = true

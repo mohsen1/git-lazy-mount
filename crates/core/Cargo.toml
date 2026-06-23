@@ -1,0 +1,19 @@
+[package]
+name = "glm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core data types for git-lazy-mount: object ids, repo paths, modes, state model, and the typed error model."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

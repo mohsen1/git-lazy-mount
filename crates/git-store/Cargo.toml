@@ -1,0 +1,11 @@
+[package]
+name = "glm-git-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authoritative Git CLI adapter: bare store, fetch, cat-file batch, ref CAS."
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "glm-oplog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Append-only operation log, transactions, and crash recovery."
+
+[lints]
+workspace = true
