@@ -145,3 +145,94 @@ fn clone_read_edit_commit_push_end_to_end() {
     assert!(ok);
     assert!(status.contains("clean"), "status: {status}");
 }
+
+#[test]
+fn git_interop_bridge_status_and_native_commit() {
+    let remote = glm_testkit::seed_remote(&[
+        ("README.md", b"hello world\n"),
+        ("src/main.rs", b"fn main() {}\n"),
+    ]);
+    let data = tempfile::tempdir().unwrap();
+    let mnt = tempfile::tempdir().unwrap();
+    let m = mnt.path().to_str().unwrap().to_string();
+
+    let (_o, e, ok) = run(data.path(), &["clone", &remote.url, &m, "--branch", "main"]);
+    assert!(ok, "clone failed: {e}");
+
+    // `git status` runs stock git against the lazy store and reads natively.
+    let (out, e, ok) = run(data.path(), &["--mount", &m, "git", "status"]);
+    assert!(ok, "git status failed: {e}");
+    assert!(out.contains("On branch main"), "status: {out}");
+    assert!(out.contains("nothing to commit"), "status: {out}");
+
+    // `git -- log` shows history through the bridge.
+    let (out, _e, ok) = run(
+        data.path(),
+        &["--mount", &m, "git", "--", "log", "--oneline"],
+    );
+    assert!(ok);
+    assert!(!out.trim().is_empty(), "log empty: {out}");
+
+    // Stage a new file natively, then stock `git status` shows it staged.
+    assert!(run_stdin(
+        data.path(),
+        &["--mount", &m, "debug", "write", "notes.txt"],
+        b"a note\n",
+    ));
+    let (_o, _e, ok) = run(data.path(), &["--mount", &m, "add", "notes.txt"]);
+    assert!(ok);
+    let (out, _e, ok) = run(data.path(), &["--mount", &m, "git", "status", "--short"]);
+    assert!(ok);
+    assert!(out.contains("A  notes.txt"), "short status: {out}");
+
+    // `git diff --cached` reflects the staged delta.
+    let (out, _e, ok) = run(
+        data.path(),
+        &[
+            "--mount",
+            &m,
+            "git",
+            "--",
+            "diff",
+            "--cached",
+            "--name-only",
+        ],
+    );
+    assert!(ok);
+    assert!(out.contains("notes.txt"), "cached diff: {out}");
+
+    // Native `git commit` through the bridge; the new commit is adopted as base.
+    let (_o, e, ok) = run(
+        data.path(),
+        &[
+            "--mount",
+            &m,
+            "git",
+            "--",
+            "commit",
+            "-m",
+            "add notes natively",
+        ],
+    );
+    assert!(ok, "bridge commit failed: {e}");
+
+    // The workspace base advanced: native status is clean and the commit shows.
+    let (status, _e, ok) = run(data.path(), &["--mount", &m, "status"]);
+    assert!(ok);
+    assert!(status.contains("clean"), "native status: {status}");
+    let (out, _e, ok) = run(
+        data.path(),
+        &["--mount", &m, "git", "--", "log", "-1", "--format=%s"],
+    );
+    assert!(ok);
+    assert!(out.contains("add notes natively"), "log subject: {out}");
+
+    // Guardrails: object maintenance and `commit -a` are refused (default-deny).
+    let (_o, _e, ok) = run(data.path(), &["--mount", &m, "git", "gc"]);
+    assert!(!ok, "git gc must be rejected through the bridge");
+    let (_o, _e, ok) = run(
+        data.path(),
+        &["--mount", &m, "git", "--", "commit", "-a", "-m", "x"],
+    );
+    assert!(!ok, "git commit -a must be rejected through the bridge");
+}

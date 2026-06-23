@@ -171,6 +171,130 @@ fn cas_detects_concurrent_branch_movement() {
         .unwrap();
 }
 
+/// Convert string args to the `OsString` slice `interop_run` expects.
+fn osargs(args: &[&str]) -> Vec<std::ffi::OsString> {
+    args.iter().map(std::ffi::OsString::from).collect()
+}
+
+#[test]
+fn interop_bridge_status_commit_and_lazy_fetch() {
+    let remote = glm_testkit::seed_remote(&[
+        ("README.md", b"hello world\n"),
+        ("src/lib.rs", b"fn main() {}\n"),
+    ]);
+    let (tmp, store) = lazy_store(&remote);
+    let base = store
+        .resolve_ref("refs/remotes/origin/main")
+        .unwrap()
+        .unwrap();
+    let base_tree = store
+        .rev_parse(&format!("{}^{{tree}}", base.to_hex()))
+        .unwrap()
+        .unwrap();
+    let scratch = tmp.path().join("interop");
+
+    // A "staged" tree = the base tree with a new top-level file added.
+    let note = store.hash_blob_raw(b"a note\n", true).unwrap();
+    let mut entries = store.read_tree(&base_tree, false).unwrap().entries;
+    entries.push(TreeEntry {
+        name: b"notes.txt".to_vec(),
+        mode: GitMode::Regular,
+        object_id: note,
+    });
+    let staged_tree = store.write_tree(entries).unwrap();
+
+    // `git diff --cached --quiet` exits 1 when the synthesized index differs
+    // from HEAD (staged change present), and 0 when it matches the base.
+    let dirty = store
+        .interop_run(
+            &scratch,
+            &base,
+            Some("main"),
+            Some(&staged_tree),
+            &osargs(&["diff", "--cached", "--quiet"]),
+        )
+        .unwrap();
+    assert_eq!(dirty.status.code(), Some(1), "staged delta should be seen");
+    assert_eq!(dirty.head.as_ref(), Some(&base), "read-only leaves HEAD");
+
+    let clean = store
+        .interop_run(
+            &scratch,
+            &base,
+            Some("main"),
+            Some(&base_tree),
+            &osargs(&["diff", "--cached", "--quiet"]),
+        )
+        .unwrap();
+    assert_eq!(clean.status.code(), Some(0), "index==HEAD is clean");
+
+    // Lazy fetch THROUGH the bridge: a blob absent from the store is faulted in
+    // by stock `git cat-file`, landing in the shared store.
+    let readme = store
+        .read_tree(&base_tree, false)
+        .unwrap()
+        .entry(b"README.md")
+        .unwrap()
+        .object_id
+        .clone();
+    assert!(
+        !store.object_exists(&readme, false).unwrap(),
+        "blob absent before bridge access"
+    );
+    let shown = store
+        .interop_run(
+            &scratch,
+            &base,
+            Some("main"),
+            Some(&staged_tree),
+            &osargs(&["cat-file", "blob", &readme.to_hex()]),
+        )
+        .unwrap();
+    assert!(shown.status.success());
+    assert!(
+        store.object_exists(&readme, false).unwrap(),
+        "bridge faulted the blob into the shared store"
+    );
+
+    // Native `git commit` of the synthesized index lands in the shared store as
+    // an ordinary commit whose parent is the base and whose tree is the staged
+    // tree. Identity is supplied via `-c` so no ambient Git identity is needed.
+    let committed = store
+        .interop_run(
+            &scratch,
+            &base,
+            Some("main"),
+            Some(&staged_tree),
+            &osargs(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "via interop bridge",
+            ]),
+        )
+        .unwrap();
+    assert!(committed.status.success(), "commit should succeed");
+    let new = committed.head.expect("HEAD advanced to the new commit");
+    assert_ne!(new, base, "commit produced a new commit");
+    assert!(
+        store.object_exists(&new, false).unwrap(),
+        "commit object is in the shared store"
+    );
+    let parent = store
+        .rev_parse(&format!("{}^1", new.to_hex()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(parent, base, "commit's parent is the workspace base");
+    let new_tree = store
+        .rev_parse(&format!("{}^{{tree}}", new.to_hex()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_tree, staged_tree, "commit's tree is the staged tree");
+}
+
 #[test]
 fn batch_session_serves_local_and_reports_missing() {
     let remote = glm_testkit::seed_remote(&[("a.txt", b"content\n")]);
