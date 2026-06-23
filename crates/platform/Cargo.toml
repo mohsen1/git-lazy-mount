@@ -9,3 +9,11 @@ description = "Platform data roots and canonical repository identity for git-laz
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
