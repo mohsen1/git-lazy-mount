@@ -5,6 +5,67 @@ use std::process::{Command, Output, Stdio};
 
 use glm_core::{Error, ErrorCode, Result};
 
+/// Mark inherited descriptors ≥ 3 close-on-exec so the spawned git never retains
+/// them past `exec`.
+///
+/// This is essential when this process serves a FUSE/FSKit mount: a git
+/// subprocess that inherited an **open file on that mount** would, on exit, have
+/// the kernel close the descriptor — issuing a `FLUSH` that blocks on the single
+/// FS-serving thread, which is itself blocked waiting for that very git to exit.
+/// The result is a hard deadlock (observed kernel stack:
+/// `fuse_flush` → `__fuse_simple_request`). Marking the descriptors close-on-exec
+/// (rather than closing them outright) leaves std's own internal machinery — its
+/// cloexec exec-error pipe — intact. It also avoids leaking unrelated descriptors
+/// into git generally.
+pub(crate) fn harden_fds(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the closure runs in the forked child before `exec` and calls
+        // only async-signal-safe libc functions; it touches no Rust state.
+        #[allow(unsafe_code)]
+        unsafe {
+            cmd.pre_exec(|| {
+                set_cloexec_from_3();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+#[allow(unsafe_code)]
+fn set_cloexec_from_3() {
+    // CLOSE_RANGE_CLOEXEC marks every descriptor in the range close-on-exec in one
+    // syscall (Linux 5.11+). Best-effort: ignore the result.
+    unsafe {
+        libc::close_range(
+            3,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC as libc::c_int,
+        );
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+#[allow(unsafe_code)]
+fn set_cloexec_from_3() {
+    // Portable fallback: set FD_CLOEXEC over a bounded descriptor range (reading
+    // the real limit isn't async-signal-safe, so cap conservatively).
+    let mut fd: libc::c_int = 3;
+    while fd < 4096 {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+        fd += 1;
+    }
+}
+
 /// Outcome of a finished Git subprocess.
 pub(crate) struct Run {
     pub stdout: Vec<u8>,
@@ -25,6 +86,7 @@ pub(crate) fn run(mut cmd: Command, stdin: Option<&[u8]>) -> Result<Run> {
     });
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    harden_fds(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         Error::new(ErrorCode::Internal, format!("failed to spawn git: {e}")).with_source(e)
