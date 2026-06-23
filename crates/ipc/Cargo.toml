@@ -9,3 +9,8 @@ description = "Versioned daemon control protocol message types."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

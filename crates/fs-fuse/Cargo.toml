@@ -5,7 +5,25 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Linux FUSE3 backend (feature-gated)."
+description = "Linux FUSE backend: callback logic mapped to the workspace engine."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-workspace.workspace = true
+glm-fs-common.workspace = true
+
+[dev-dependencies]
+glm-git-store.workspace = true
+glm-object-provider.workspace = true
+glm-testkit.workspace = true
+tempfile.workspace = true
+
+# NOTE on the kernel adapter: the low-level FUSE3 FFI glue (a `fuser::Filesystem`
+# impl wrapping `FuseOps`) requires libfuse3 at build/link time and a privileged
+# or loopback-capable runner to mount. To keep `--all-features` green on hosts
+# without libfuse (including this CI), the `fuser` dependency is intentionally
+# NOT wired in yet; `FuseOps` below is the backend's tested logic, and a thin
+# adapter is the remaining step (see docs/platform-linux.md).

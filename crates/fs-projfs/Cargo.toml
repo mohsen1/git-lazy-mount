@@ -9,3 +9,8 @@ description = "Windows ProjFS backend scaffold."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-workspace.workspace = true
+glm-fs-common.workspace = true
