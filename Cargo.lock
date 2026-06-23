@@ -220,6 +220,18 @@ dependencies = [
 [[package]]
 name = "glm-workspace"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-git-store",
+ "glm-object-provider",
+ "glm-oplog",
+ "glm-overlay",
+ "glm-stage",
+ "glm-testkit",
+ "serde",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "hex"

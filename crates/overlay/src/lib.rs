@@ -19,20 +19,31 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use glm_core::{Error, ErrorCode, RepoPath, Result};
+use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// What an overlay entry represents.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverlayKind {
-    /// A regular file; `executable` tracks the Git executable bit.
+    /// A regular file; `executable` tracks the Git executable bit. Content is
+    /// stored in the overlay.
     File {
         /// Whether the Git executable bit is set.
         executable: bool,
     },
-    /// A symbolic link; content bytes are the link target.
+    /// A symbolic link; content bytes (the link target) are stored in the
+    /// overlay.
     Symlink,
+    /// A reference to an existing Git blob (no bytes stored). Used so a
+    /// clean-file rename can place content at a new path *without fetching the
+    /// blob* (spec §22, §53.10). Reads resolve through the object provider.
+    BaseRef {
+        /// The referenced blob.
+        oid: ObjectId,
+        /// The Git mode the referenced content has at this path.
+        mode: GitMode,
+    },
     /// A deletion tombstone (the path is removed in the working tree).
     Tombstone,
 }
@@ -100,6 +111,37 @@ impl Overlay {
     /// Write a symlink's target bytes into the overlay (atomic).
     pub fn put_symlink(&self, path: &RepoPath, target: &[u8]) -> Result<()> {
         self.put(path, target, OverlayKind::Symlink)
+    }
+
+    /// Place a reference to an existing Git blob at `path` (no content stored,
+    /// no fetch). Used for clean-file/clean-subtree renames (spec §22).
+    pub fn put_base_ref(&self, path: &RepoPath, oid: ObjectId, mode: GitMode) -> Result<()> {
+        let id = Self::id_for(path);
+        let meta = EntryMeta {
+            path: path.clone(),
+            kind: OverlayKind::BaseRef {
+                oid: oid.clone(),
+                mode,
+            },
+        };
+        let json = serde_json::to_vec(&meta)
+            .map_err(|e| Error::new(ErrorCode::OverlayCorruption, format!("encode meta: {e}")))?;
+        atomic_write(&self.meta_path(&id), &json)?;
+        // A base-ref has no overlay content file.
+        let _ = std::fs::remove_file(self.content_path(&id));
+        self.index
+            .lock()
+            .unwrap()
+            .insert(path.clone(), OverlayKind::BaseRef { oid, mode });
+        Ok(())
+    }
+
+    /// The base-ref `(oid, mode)` at `path`, if the entry is a [`OverlayKind::BaseRef`].
+    pub fn base_ref(&self, path: &RepoPath) -> Option<(ObjectId, GitMode)> {
+        match self.entry(path) {
+            Some(OverlayKind::BaseRef { oid, mode }) => Some((oid, mode)),
+            _ => None,
+        }
     }
 
     fn put(&self, path: &RepoPath, bytes: &[u8], kind: OverlayKind) -> Result<()> {
@@ -285,6 +327,28 @@ mod tests {
         ov.put_file(&path, b"bytes", false).unwrap();
         let ov2 = Overlay::open(dir.path()).unwrap();
         assert_eq!(ov2.read_content(&path).unwrap().unwrap(), b"bytes");
+    }
+
+    #[test]
+    fn base_ref_stores_no_content() {
+        use glm_core::{GitMode, ObjectFormat, ObjectId};
+        let dir = tempfile::tempdir().unwrap();
+        let ov = Overlay::open(dir.path()).unwrap();
+        let oid = ObjectId {
+            format: ObjectFormat::Sha1,
+            bytes: vec![3; 20],
+        };
+        ov.put_base_ref(&p("renamed.txt"), oid.clone(), GitMode::Regular)
+            .unwrap();
+        // No bytes are stored; content/len come from Git via the provider.
+        assert!(ov.read_content(&p("renamed.txt")).unwrap().is_none());
+        assert_eq!(
+            ov.base_ref(&p("renamed.txt")),
+            Some((oid, GitMode::Regular))
+        );
+        // Survives reopen.
+        let ov2 = Overlay::open(dir.path()).unwrap();
+        assert!(ov2.base_ref(&p("renamed.txt")).is_some());
     }
 
     #[test]
