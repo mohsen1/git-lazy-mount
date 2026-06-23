@@ -63,6 +63,7 @@ sha2 = "0.10"
 tempfile = "3"
 libc = "0.2"
 fuser = "0.14"
+unicode-normalization = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
