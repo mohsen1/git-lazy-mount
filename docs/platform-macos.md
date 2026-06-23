@@ -83,7 +83,15 @@ concerns below.
 
 Cooperate with NSFileCoordination so coordinated readers/writers (Finder,
 document-based apps) see consistent state and the backend honors coordination
-intents. (Software model + on-device validation: see issue #9.)
+intents.
+
+* **Built:** `crates/fs-fskit/src/coordination.rs` — a per-path reader/writer
+  `Coordinator` modeling the `NSFileCoordinator` intents the adapter receives:
+  coordinated writes to a path are mutually exclusive and no coordinated read
+  overlaps an in-flight write (concurrency tests assert both). The on-device
+  adapter wraps each `FskitOps` callback in `coordinate(path, intent, …)`.
+* **On-device (issue #12):** wiring to the real `NSFileCoordinator` and
+  validation with Finder + a document-based app.
 
 ### Case-only rename — issue #7
 
@@ -94,18 +102,35 @@ intents. (Software model + on-device validation: see issue #9.)
   identity + content preservation.
 * **On-device (issue #12):** validation through a real FSKit mount.
 
-### System-extension lifecycle + signing/entitlements
+### System-extension lifecycle + signing/entitlements — issue #10
 
-* System-extension activation/deactivation, including user approval flows.
-* Code signing and the entitlements an FSKit extension requires.
-* Behavior across macOS updates and extension reloads.
+* **Built:** `crates/fs-fskit/extension/` carries the packaging — `Info.plist`
+  (FSKit `FSModuleType` declaration), `git-lazy-mount.entitlements` (notably
+  `com.apple.developer.fskit.fsmodule`), and `README.md` (the reproducible
+  signed-build steps + the activation/deactivation/approval lifecycle, incl.
+  behavior across OS updates).
+* **Built:** `crates/fs-fskit/src/lifecycle.rs` derives an `ExtensionState`
+  (`unsupported` / `not_installed` / `awaiting_approval` / `activated`) from the
+  capability probe and the concrete next step; `git lazy-mount doctor` surfaces
+  it (`fskit_extension_state`, `fskit_next_step`).
+* **On-device (issue #12):** a reproducible signed build and the live
+  activation/approval flow on Apple hardware with a Developer identity.
 
-### Recovery after extension or daemon restart
+### Recovery after extension or daemon restart — issue #11
 
 If the FSKit extension (or the controlling daemon) restarts, mounts must recover
 to a consistent state. This rides on the engine's crash-safe operation log and
-the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`, spec §39), but the
-macOS-specific re-attach path is unbuilt and must be validated.
+the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`, spec §39).
+
+* **Built:** `crates/fs-fskit/src/recovery.rs` — `reattach(ws, volume)` replays
+  the operation log and drives the FSKit re-attach through `Recovering → Mounted`
+  (or `Failed`), returning a fresh `FskitOps` (the kernel re-issues `lookup`, so
+  inode identity is rebuilt on demand; numbers are never reused). Tests simulate
+  an extension/daemon restart by re-opening from the same on-disk state and
+  assert **no data loss**: an uncommitted overlay edit survives, and a committed
+  base is preserved.
+* **On-device (issue #12):** induced extension/daemon restarts against a live
+  FSKit mount.
 
 ## Data root
 
