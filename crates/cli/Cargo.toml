@@ -21,6 +21,7 @@ glm-git-store.workspace = true
 glm-object-provider.workspace = true
 glm-workspace.workspace = true
 glm-filters.workspace = true
+glm-fs-fskit.workspace = true
 glm-daemon.workspace = true
 clap.workspace = true
 serde.workspace = true
