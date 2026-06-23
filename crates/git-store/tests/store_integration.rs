@@ -89,7 +89,7 @@ fn write_tree_commit_and_cas_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();
     let store = GitStore::init_bare(tmp.path().join("git"), None).unwrap();
 
-    let blob = store.hash_blob_raw(b"hello\n").unwrap();
+    let blob = store.hash_blob_raw(b"hello\n", true).unwrap();
     let tree = store
         .write_tree(vec![TreeEntry {
             name: b"f.txt".to_vec(),
@@ -127,7 +127,7 @@ fn write_tree_commit_and_cas_roundtrip() {
 fn cas_detects_concurrent_branch_movement() {
     let tmp = tempfile::tempdir().unwrap();
     let store = GitStore::init_bare(tmp.path().join("git"), None).unwrap();
-    let blob = store.hash_blob_raw(b"x").unwrap();
+    let blob = store.hash_blob_raw(b"x", true).unwrap();
     let tree = store
         .write_tree(vec![TreeEntry {
             name: b"x".to_vec(),

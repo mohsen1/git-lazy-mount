@@ -287,9 +287,11 @@ impl GitStore {
         Ok(r.stdout)
     }
 
-    /// Hash bytes as a blob *with* clean filters for `path`, writing the object
-    /// (spec §23: `git hash-object -w --path=<path> --stdin`).
-    pub fn hash_blob_clean(&self, path: &[u8], bytes: &[u8]) -> Result<ObjectId> {
+    /// Hash bytes as a blob *with* clean filters for `path` (spec §23:
+    /// `git hash-object --path=<path> --stdin`). Pass `write = false` to compute
+    /// the oid without writing the object — used by `status`, which must not
+    /// persist dirty blobs (spec §2.7).
+    pub fn hash_blob_clean(&self, path: &[u8], bytes: &[u8], write: bool) -> Result<ObjectId> {
         let path_str = std::str::from_utf8(path).map_err(|_| {
             Error::new(
                 ErrorCode::InvalidRepositoryPath,
@@ -297,20 +299,24 @@ impl GitStore {
             )
         })?;
         let mut cmd = self.git(true);
-        cmd.args([
-            "hash-object",
-            "-w",
-            &format!("--path={path_str}"),
-            "--stdin",
-        ]);
+        cmd.arg("hash-object");
+        if write {
+            cmd.arg("-w");
+        }
+        cmd.args([&format!("--path={path_str}"), "--stdin"]);
         let out = run_checked(cmd, Some(bytes), "hash-object")?;
         self.parse_oid_line(&out)
     }
 
-    /// Hash bytes as a blob with **no** filters (raw), writing the object.
-    pub fn hash_blob_raw(&self, bytes: &[u8]) -> Result<ObjectId> {
+    /// Hash bytes as a blob with **no** filters (raw). Pass `write = false` to
+    /// compute the oid without writing the object.
+    pub fn hash_blob_raw(&self, bytes: &[u8], write: bool) -> Result<ObjectId> {
         let mut cmd = self.git(true);
-        cmd.args(["hash-object", "-w", "-t", "blob", "--no-filters", "--stdin"]);
+        cmd.arg("hash-object");
+        if write {
+            cmd.arg("-w");
+        }
+        cmd.args(["-t", "blob", "--no-filters", "--stdin"]);
         let out = run_checked(cmd, Some(bytes), "hash-object")?;
         self.parse_oid_line(&out)
     }

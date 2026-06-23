@@ -1,0 +1,264 @@
+//! Workspace integration tests (spec §53 criteria 6–10, 13–18).
+
+use std::sync::Arc;
+
+use glm_core::{FetchPolicy, ObjectId, RepoPath};
+use glm_git_store::{FetchOptions, GitStore, Identity};
+use glm_object_provider::{GitObjectProvider, ObjectProvider};
+use glm_workspace::{StatusCode, Workspace, WorkspaceConfig};
+
+const POLICY: FetchPolicy = FetchPolicy::AllowNetwork;
+
+fn p(s: &str) -> RepoPath {
+    RepoPath::from_bytes(s.as_bytes().to_vec()).unwrap()
+}
+
+struct Harness {
+    _tmp: tempfile::TempDir,
+    // Keep the remote alive so lazy fetches during the test succeed.
+    _remote: glm_testkit::SeededRemote,
+    store: GitStore,
+    ws: Workspace,
+}
+
+fn harness(files: &[(&str, &[u8])]) -> (Harness, ObjectId) {
+    let remote = glm_testkit::seed_remote(files);
+    harness_from(remote)
+}
+
+fn harness_from(remote: glm_testkit::SeededRemote) -> (Harness, ObjectId) {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = GitStore::init_bare(tmp.path().join("git"), None).unwrap();
+    store.set_config("protocol.file.allow", "always").unwrap();
+    store.add_remote("origin", &remote.url).unwrap();
+    store
+        .fetch(
+            "origin",
+            &[],
+            &FetchOptions {
+                filter: Some("blob:none".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let base = store
+        .resolve_ref("refs/remotes/origin/main")
+        .unwrap()
+        .unwrap();
+    // Create the attached local branch at base.
+    store
+        .update_ref_cas("refs/heads/main", &base, None)
+        .unwrap();
+
+    let provider: Arc<dyn ObjectProvider> =
+        Arc::new(GitObjectProvider::with_git_fetcher(store.clone()));
+    let cfg = WorkspaceConfig {
+        workspace_head_ref: "refs/lazy-mount/workspaces/test/head".into(),
+        attached_branch: Some("refs/heads/main".into()),
+        remote: Some("origin".into()),
+        identity: Some(Identity {
+            name: "Test".into(),
+            email: "test@example.com".into(),
+            date: Some("@1700000000 +0000".into()),
+        }),
+    };
+    let ws =
+        Workspace::open_or_create(store.clone(), provider, tmp.path(), cfg, Some(base.clone()))
+            .unwrap();
+    (
+        Harness {
+            _tmp: tmp,
+            _remote: remote,
+            store,
+            ws,
+        },
+        base,
+    )
+}
+
+#[test]
+fn status_reports_overlay_changes_without_fetching_blobs() {
+    let (h, _base) = harness(&[("a.txt", b"alpha\n"), ("src/lib.rs", b"x\n")]);
+    let before = h.ws.provider().metrics();
+
+    // Write a new file and modify an existing one.
+    h.ws.write_full(&p("new.txt"), b"hello", false).unwrap();
+
+    let status = h.ws.status(POLICY).unwrap();
+    let after = h.ws.provider().metrics();
+
+    let new = status.iter().find(|e| e.path == p("new.txt")).unwrap();
+    assert_eq!(new.worktree, StatusCode::Added);
+    assert_eq!(new.index, StatusCode::Unmodified);
+
+    // status must not fetch blobs and must not write objects.
+    assert_eq!(after.objects_fetched, before.objects_fetched);
+    assert_eq!(after.blob_reads, before.blob_reads);
+}
+
+#[test]
+fn stage_commit_preserves_unstaged_changes() {
+    let (h, base) = harness(&[("a.txt", b"original\n")]);
+
+    // Stage a change to a.txt.
+    h.ws.write_full(&p("a.txt"), b"modified\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+
+    // Make a further unstaged change to a different file.
+    h.ws.write_full(&p("b.txt"), b"unstaged\n", false).unwrap();
+
+    let out = h.ws.commit("change a", POLICY).unwrap();
+    assert_ne!(out.commit, base);
+    assert!(out.branch_advanced);
+
+    // The commit tree contains the modified a.txt.
+    let tree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", out.commit.to_hex()))
+        .unwrap()
+        .unwrap();
+    let t = h.ws.provider().tree(&tree, POLICY).unwrap();
+    let a = t.entry(b"a.txt").unwrap();
+    assert_eq!(
+        h.store.read_blob_raw(&a.object_id, true).unwrap(),
+        b"modified\n"
+    );
+
+    // The unstaged b.txt change is preserved in the working tree (criterion 16).
+    let status = h.ws.status(POLICY).unwrap();
+    let b = status.iter().find(|e| e.path == p("b.txt")).unwrap();
+    assert_eq!(b.worktree, StatusCode::Added);
+    // a.txt is now clean (committed and dematerialized).
+    assert!(status.iter().all(|e| e.path != p("a.txt")));
+}
+
+#[test]
+fn rename_clean_file_does_not_fetch_blob() {
+    let (h, _base) = harness(&[("keep.txt", b"unchanged content\n")]);
+    let before = h.ws.provider().metrics();
+
+    h.ws.rename(&p("keep.txt"), &p("moved.txt"), POLICY)
+        .unwrap();
+
+    let after = h.ws.provider().metrics();
+    // The blob was never fetched or read (criterion 10, spec §53.10).
+    assert_eq!(after.objects_fetched, before.objects_fetched);
+    assert_eq!(after.blob_reads, before.blob_reads);
+
+    let status = h.ws.status(POLICY).unwrap();
+    assert_eq!(
+        status
+            .iter()
+            .find(|e| e.path == p("keep.txt"))
+            .unwrap()
+            .worktree,
+        StatusCode::Deleted
+    );
+    assert_eq!(
+        status
+            .iter()
+            .find(|e| e.path == p("moved.txt"))
+            .unwrap()
+            .worktree,
+        StatusCode::Added
+    );
+}
+
+#[test]
+fn truncate_to_zero_does_not_fetch_old_content() {
+    let (h, _base) = harness(&[("big.txt", b"lots of bytes here\n")]);
+    let before = h.ws.provider().metrics();
+
+    h.ws.truncate(&p("big.txt"), 0, POLICY).unwrap();
+
+    let after = h.ws.provider().metrics();
+    assert_eq!(
+        after.objects_fetched, before.objects_fetched,
+        "must not fetch old content"
+    );
+    assert_eq!(h.ws.read_file(&p("big.txt"), POLICY).unwrap(), b"");
+}
+
+#[test]
+fn partial_overwrite_preserves_untouched_bytes() {
+    let (h, _base) = harness(&[("data.txt", b"AAAAAAAAAA")]); // 10 bytes
+                                                              // Overwrite 3 bytes at offset 2.
+    h.ws.write_at(&p("data.txt"), 2, b"BBB", POLICY).unwrap();
+    assert_eq!(
+        h.ws.read_file(&p("data.txt"), POLICY).unwrap(),
+        b"AABBBAAAAA"
+    );
+}
+
+#[test]
+fn commit_detects_concurrent_branch_movement() {
+    let (h, base) = harness(&[("a.txt", b"v1\n")]);
+
+    // Someone else advances refs/heads/main behind our back.
+    let base_tree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", base.to_hex()))
+        .unwrap()
+        .unwrap();
+    let side = h
+        .store
+        .commit_tree(&glm_git_store::CommitParams {
+            tree: base_tree,
+            parents: vec![base.clone()],
+            message: "concurrent".into(),
+            author: None,
+            committer: None,
+            sign: false,
+        })
+        .unwrap();
+    h.store
+        .update_ref_cas("refs/heads/main", &side, Some(&base))
+        .unwrap();
+
+    // Our commit: the private head advances, but the attached branch CAS fails.
+    h.ws.write_full(&p("a.txt"), b"v2\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+    let out = h.ws.commit("our change", POLICY).unwrap();
+
+    assert!(!out.branch_advanced);
+    assert!(out.divergence.is_some());
+    assert_eq!(
+        out.divergence.as_ref().unwrap().code,
+        glm_core::ErrorCode::ConcurrentBranchMovement
+    );
+    // The workspace commit is still reachable via the private head ref.
+    assert_eq!(
+        h.store
+            .resolve_ref("refs/lazy-mount/workspaces/test/head")
+            .unwrap()
+            .unwrap(),
+        out.commit
+    );
+    // The public branch was NOT silently overwritten (spec §14).
+    assert_eq!(
+        h.store.resolve_ref("refs/heads/main").unwrap().unwrap(),
+        side
+    );
+}
+
+#[test]
+fn executable_bit_change_without_fetch() {
+    let (h, _base) = harness(&[("run.sh", b"#!/bin/sh\necho hi\n")]);
+    let before = h.ws.provider().metrics();
+    h.ws.set_executable(&p("run.sh"), true, POLICY).unwrap();
+    let after = h.ws.provider().metrics();
+    assert_eq!(after.objects_fetched, before.objects_fetched);
+
+    h.ws.stage_path(&p("run.sh"), POLICY).unwrap();
+    let out = h.ws.commit("make executable", POLICY).unwrap();
+    let tree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", out.commit.to_hex()))
+        .unwrap()
+        .unwrap();
+    let t = h.ws.provider().tree(&tree, POLICY).unwrap();
+    assert_eq!(
+        t.entry(b"run.sh").unwrap().mode,
+        glm_core::GitMode::Executable
+    );
+}
