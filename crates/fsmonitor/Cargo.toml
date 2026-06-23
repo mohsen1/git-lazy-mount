@@ -9,3 +9,6 @@ description = "Incremental changed-path journal and synchronization barrier."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true

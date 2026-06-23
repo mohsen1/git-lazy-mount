@@ -9,3 +9,6 @@ description = "Filesystem projection trait plus in-memory and on-disk test backe
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true

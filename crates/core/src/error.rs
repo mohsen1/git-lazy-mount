@@ -253,7 +253,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// JSON-serializable projection of an [`Error`] for `--json` output (spec §6).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorJson {
     /// Stable code.
     pub code: String,

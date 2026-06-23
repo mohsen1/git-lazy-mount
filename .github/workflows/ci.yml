@@ -44,9 +44,11 @@ jobs:
 
   # Real FUSE mounting requires libfuse3 and a privileged/loopback-capable
   # runner. It is intentionally a separate, manually-triggered job: a green
-  # `check` matrix does NOT imply the kernel backend was exercised.
+  # `check` matrix does NOT imply the kernel backend was exercised. Today this
+  # runs the backend-logic tests (FuseOps); when the libfuse `fuser` adapter
+  # lands it will additionally perform a real loopback mount here.
   linux-mount:
-    name: linux real-mount (manual)
+    name: linux fuse backend (manual)
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
@@ -54,5 +56,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: install libfuse3
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
-      - name: test (fuse feature)
-        run: cargo test -p glm-fs-fuse --features fuse -- --include-ignored
+      - name: test fuse backend logic
+        run: cargo test -p glm-fs-fuse -- --include-ignored

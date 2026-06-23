@@ -257,22 +257,48 @@ dependencies = [
 [[package]]
 name = "glm-fs-common"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-workspace",
+]
 
 [[package]]
 name = "glm-fs-fskit"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-fs-common",
+ "glm-workspace",
+]
 
 [[package]]
 name = "glm-fs-fuse"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-fs-common",
+ "glm-git-store",
+ "glm-object-provider",
+ "glm-testkit",
+ "glm-workspace",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-fs-projfs"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-fs-common",
+ "glm-workspace",
+]
 
 [[package]]
 name = "glm-fsmonitor"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+]
 
 [[package]]
 name = "glm-git-store"
@@ -287,6 +313,11 @@ dependencies = [
 [[package]]
 name = "glm-ipc"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "glm-metadata"
@@ -340,6 +371,9 @@ dependencies = [
 [[package]]
 name = "glm-projection"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+]
 
 [[package]]
 name = "glm-stage"
