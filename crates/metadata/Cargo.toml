@@ -9,3 +9,12 @@ description = "Tree metadata cache and exact/manifest-assisted stat policy."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

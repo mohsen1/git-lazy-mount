@@ -322,6 +322,12 @@ dependencies = [
 [[package]]
 name = "glm-metadata"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-object-provider"
