@@ -152,14 +152,37 @@ version = "0.1.0"
 [[package]]
 name = "glm-object-provider"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-git-store",
+ "glm-testkit",
+ "tempfile",
+ "tracing",
+]
 
 [[package]]
 name = "glm-oplog"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-overlay"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-platform"
@@ -178,6 +201,12 @@ version = "0.1.0"
 [[package]]
 name = "glm-stage"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-testkit"
