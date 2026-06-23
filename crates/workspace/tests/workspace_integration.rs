@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use glm_core::{FetchPolicy, ObjectId, RepoPath};
+use glm_core::{FetchPolicy, GitMode, ObjectId, RepoPath};
 use glm_git_store::{FetchOptions, GitStore, Identity};
 use glm_object_provider::{GitObjectProvider, ObjectProvider};
-use glm_workspace::{StatusCode, Workspace, WorkspaceConfig};
+use glm_workspace::{EntryKind, StatusCode, Workspace, WorkspaceConfig};
 
 const POLICY: FetchPolicy = FetchPolicy::AllowNetwork;
 
@@ -249,6 +249,53 @@ fn commit_detects_concurrent_branch_movement() {
         h.store.resolve_ref("refs/heads/main").unwrap().unwrap(),
         side
     );
+}
+
+#[test]
+fn crlf_filter_applied_faithfully() {
+    // .gitattributes forces eol=crlf for *.txt; the repo stores LF.
+    let (h, _base) = harness(&[
+        (".gitattributes", b"*.txt text eol=crlf\n"),
+        ("doc.txt", b"line1\nline2\n"),
+    ]);
+    // The faithful working-tree read yields CRLF (matches a real checkout),
+    // resolved via --attr-source from the workspace base (criterion 20, §25).
+    let content = h.ws.read_file(&p("doc.txt"), POLICY).unwrap();
+    assert_eq!(content, b"line1\r\nline2\r\n");
+
+    // The raw blob is still LF — filtering is not baked into the object.
+    let entry =
+        h.ws.resolve_base_entry(&p("doc.txt"), POLICY)
+            .unwrap()
+            .unwrap();
+    let raw = h.ws.provider().raw_blob(&entry.object_id, POLICY).unwrap();
+    assert_eq!(raw, b"line1\nline2\n");
+}
+
+#[test]
+fn symlink_write_commit_and_read() {
+    let (h, _base) = harness(&[("target.txt", b"data\n")]);
+
+    h.ws.write_symlink(&p("link"), b"target.txt").unwrap();
+    assert_eq!(
+        h.ws.lookup(&p("link"), POLICY).unwrap(),
+        Some(EntryKind::Symlink)
+    );
+
+    h.ws.stage_path(&p("link"), POLICY).unwrap();
+    let out = h.ws.commit("add symlink", POLICY).unwrap();
+
+    // The commit records a symlink (mode 120000).
+    let tree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", out.commit.to_hex()))
+        .unwrap()
+        .unwrap();
+    let t = h.ws.provider().tree(&tree, POLICY).unwrap();
+    assert_eq!(t.entry(b"link").unwrap().mode, GitMode::Symlink);
+
+    // Reading the committed symlink yields the raw target bytes (no filtering).
+    assert_eq!(h.ws.read_file(&p("link"), POLICY).unwrap(), b"target.txt");
 }
 
 #[test]

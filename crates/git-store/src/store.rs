@@ -266,7 +266,18 @@ impl GitStore {
     /// Apply the configured working-tree (smudge) filters for `path` to a blob,
     /// returning the bytes a normal checkout would write (spec §25). Uses Git's
     /// own filter plumbing.
-    pub fn smudge_blob(&self, oid: &ObjectId, path: &[u8], allow_fetch: bool) -> Result<Vec<u8>> {
+    ///
+    /// `attr_source` is a tree-ish (e.g. the workspace base commit) from which
+    /// `.gitattributes` are resolved. This is essential in a *bare* shared store
+    /// whose `HEAD` need not match the workspace's base commit (verified
+    /// behavior — see docs/feasibility/git-object-fetching.md).
+    pub fn smudge_blob(
+        &self,
+        oid: &ObjectId,
+        path: &[u8],
+        attr_source: Option<&str>,
+        allow_fetch: bool,
+    ) -> Result<Vec<u8>> {
         let path_str = std::str::from_utf8(path).map_err(|_| {
             Error::new(
                 ErrorCode::InvalidRepositoryPath,
@@ -274,6 +285,9 @@ impl GitStore {
             )
         })?;
         let mut cmd = self.git(!allow_fetch);
+        if let Some(src) = attr_source {
+            cmd.arg(format!("--attr-source={src}"));
+        }
         cmd.args([
             "cat-file",
             "--filters",
@@ -290,8 +304,15 @@ impl GitStore {
     /// Hash bytes as a blob *with* clean filters for `path` (spec §23:
     /// `git hash-object --path=<path> --stdin`). Pass `write = false` to compute
     /// the oid without writing the object — used by `status`, which must not
-    /// persist dirty blobs (spec §2.7).
-    pub fn hash_blob_clean(&self, path: &[u8], bytes: &[u8], write: bool) -> Result<ObjectId> {
+    /// persist dirty blobs (spec §2.7). `attr_source` resolves `.gitattributes`
+    /// as in [`GitStore::smudge_blob`].
+    pub fn hash_blob_clean(
+        &self,
+        path: &[u8],
+        bytes: &[u8],
+        attr_source: Option<&str>,
+        write: bool,
+    ) -> Result<ObjectId> {
         let path_str = std::str::from_utf8(path).map_err(|_| {
             Error::new(
                 ErrorCode::InvalidRepositoryPath,
@@ -299,6 +320,9 @@ impl GitStore {
             )
         })?;
         let mut cmd = self.git(true);
+        if let Some(src) = attr_source {
+            cmd.arg(format!("--attr-source={src}"));
+        }
         cmd.arg("hash-object");
         if write {
             cmd.arg("-w");
