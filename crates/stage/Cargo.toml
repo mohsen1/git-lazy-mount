@@ -9,3 +9,12 @@ description = "Persistent staged delta, separate from HEAD and the overlay."
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
