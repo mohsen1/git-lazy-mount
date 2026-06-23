@@ -4,6 +4,9 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Enables the manually-triggered backend-mount jobs below (`linux-mount`,
+  # `macos-mount`), which are gated on `github.event_name == 'workflow_dispatch'`.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
