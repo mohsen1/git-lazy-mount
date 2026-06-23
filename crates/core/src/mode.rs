@@ -33,13 +33,17 @@ impl GitMode {
         }
     }
 
-    /// The canonical octal string Git writes for this mode.
+    /// The canonical octal string Git writes for this mode in a **tree object**.
+    ///
+    /// Note: trees are serialized as `40000` (no leading zero). Emitting
+    /// `040000` produces a "zero-padded file mode" that `git fsck` rejects, so
+    /// this exact form is required when hashing tree objects.
     pub fn as_octal(&self) -> &'static str {
         match self {
             GitMode::Regular => "100644",
             GitMode::Executable => "100755",
             GitMode::Symlink => "120000",
-            GitMode::Tree => "040000",
+            GitMode::Tree => "40000",
             GitMode::Gitlink => "160000",
         }
     }

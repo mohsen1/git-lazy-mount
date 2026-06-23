@@ -252,6 +252,35 @@ fn commit_detects_concurrent_branch_movement() {
 }
 
 #[test]
+fn commit_reuses_subtrees_and_passes_fsck() {
+    // The base tree contains a subdirectory; committing a root-level change must
+    // reuse the subtree entry and emit a valid tree (mode 40000, not 040000).
+    let (h, _base) = harness(&[("README.md", b"v1\n"), ("src/lib.rs", b"fn main() {}\n")]);
+    h.ws.write_full(&p("README.md"), b"v2\n", false).unwrap();
+    h.ws.stage_path(&p("README.md"), POLICY).unwrap();
+    let out = h.ws.commit("touch readme", POLICY).unwrap();
+
+    let tree = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", out.commit.to_hex()))
+        .unwrap()
+        .unwrap();
+    let t = h.ws.provider().tree(&tree, POLICY).unwrap();
+    assert_eq!(t.entry(b"src").unwrap().mode, GitMode::Tree);
+
+    // `git fsck` must accept the new commit and its tree.
+    let fsck_ok = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(h.store.git_dir())
+        .args(["fsck", "--connectivity-only", &out.commit.to_hex()])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(fsck_ok);
+}
+
+#[test]
 fn crlf_filter_applied_faithfully() {
     // .gitattributes forces eol=crlf for *.txt; the repo stores LF.
     let (h, _base) = harness(&[
