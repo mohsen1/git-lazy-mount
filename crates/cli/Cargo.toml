@@ -13,3 +13,21 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-platform.workspace = true
+glm-git-store.workspace = true
+glm-object-provider.workspace = true
+glm-workspace.workspace = true
+glm-filters.workspace = true
+glm-daemon.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+glm-testkit.workspace = true
+tempfile.workspace = true

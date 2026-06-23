@@ -782,8 +782,23 @@ impl Workspace {
         let commit = self
             .base_commit()
             .ok_or_else(|| Error::new(ErrorCode::Configuration, "nothing to push"))?;
-        let refspec = format!("{}:{}", commit.to_hex(), branch);
-        self.store.push(remote, &refspec, Some((branch, None)))
+        let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+        // The lease expects the last-known remote value (the remote-tracking
+        // ref), so a concurrent remote update is detected rather than clobbered.
+        let tracking = format!("refs/remotes/{remote}/{short}");
+        let expected = self.store.resolve_ref(&tracking)?;
+        let refspec = format!("{}:refs/heads/{short}", commit.to_hex());
+        self.store.push(
+            remote,
+            &refspec,
+            Some((&format!("refs/heads/{short}"), expected.as_ref())),
+        )?;
+        // Advance our remote-tracking ref to reflect the successful push so the
+        // next push's lease is correct (best effort).
+        let _ = self
+            .store
+            .update_ref_cas(&tracking, &commit, expected.as_ref());
+        Ok(())
     }
 }
 
