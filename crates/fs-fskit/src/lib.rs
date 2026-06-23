@@ -17,11 +17,14 @@
 //!   (the seam the CLI uses to fall back to headless mode).
 //! * [`MacBackend`] — the explicit FSKit-vs-macFUSE backend selection; the two
 //!   are distinct boundaries that never silently change semantics.
+//! * [`collision`] — APFS case-/normalization-collision detection over the
+//!   directory the bridge enumerates (issue #7), reusing the platform folding.
 
 #![forbid(unsafe_code)]
 
 mod bridge;
 mod capability;
+pub mod collision;
 
 use std::path::Path;
 
@@ -29,6 +32,7 @@ use glm_core::{Error, ErrorCode, Result};
 
 pub use bridge::{EnumerateEntry, FskitOps};
 pub use capability::{Capability, MacBackend, FSKIT_MODULE_BUNDLE_ID};
+pub use collision::{AppleVolume, Collision};
 
 /// Whether a usable FSKit (or macFUSE) backend is available at runtime.
 ///
