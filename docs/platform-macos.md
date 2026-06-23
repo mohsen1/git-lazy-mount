@@ -1,12 +1,15 @@
 # Platform: macOS (FSKit) — spec §41
 
-> **Status — SCAFFOLD ONLY. Not implemented, not production-ready (spec §54).**
-> macOS support is **not** claimed to work. `glm-fs-fskit::backend_available()`
-> returns `false` and `mount()` returns
-> `ErrorCode::FilesystemBackendUnavailable`. The backend logic shared with other
-> platforms exists (`glm-fs-common`, `glm-workspace`); none of the macOS-specific
-> integration below is built. This document tracks what would be required and is
-> the place to record progress. Nothing here should be read as a feature claim.
+> **Status — BACKEND LOGIC BUILT; ON-DEVICE MOUNT NOT YET VALIDATED (spec §54).**
+> The backend-independent macOS logic is implemented and unit-tested on every
+> platform: the FSKit `FSVolume` callback bridge (`FskitOps`), runtime capability
+> detection + diagnostics, APFS collision handling, the macOS metadata commit
+> policy, the coordination/recovery models, and the on-device validation harness.
+> `glm-fs-fskit::backend_available()` now *probes* the host instead of returning a
+> hardcoded `false`. **What remains is on-device:** the signed FSKit system
+> extension + the Swift `FSVolume` adapter, validated on real Apple hardware via
+> the manual CI job (issue #12). Until that lands and is run, macOS is **not**
+> labeled supported — a green default CI never implies a working macOS mount.
 
 The intended backend is an **FSKit** file-system extension. On macOS versions
 without usable FSKit, an **isolated macFUSE** backend may be offered instead —
@@ -19,19 +22,30 @@ concerns below.
 
 ## What is required before macOS can be labeled supported
 
-### FSKit extension (or isolated macFUSE)
+### FSKit extension (or isolated macFUSE) — issue #5
 
-* An `FSUnaryFileSystem`/`FSVolume` FSKit extension bridging the same callbacks
-  `FuseOps` implements (`lookup`, `getattr`, enumerate, `read`, `readlink`,
-  `forget`, and the write callbacks).
-* For older systems lacking FSKit: an isolated macFUSE backend, kept behind a
-  distinct backend boundary.
+* **Built:** `FskitOps` (`crates/fs-fskit/src/bridge.rs`) is the FSKit `FSVolume`
+  callback logic — the macOS analog of `FuseOps` — over the same `Workspace` and
+  `InodeTable`: `lookup`, `getattr`, `enumerate`, `read`, `readlink`, `forget`,
+  and the write callbacks (`create`, `write`, `truncate`, `set_executable`,
+  `remove`, `rename`, `symlink`). Every write routes through the shared overlay →
+  stage → operation-log path; there are **no macOS-only write semantics**.
+* **Built:** `MacBackend` is the explicit FSKit-vs-macFUSE selection. The two are
+  distinct backend boundaries; macFUSE is only ever chosen explicitly, never by
+  silently changing semantics.
+* **On-device (issue #12):** the Swift `FSUnaryFileSystem`/`FSVolume` adapter that
+  calls into `FskitOps`, plus its signed system extension.
 
-### Runtime capability detection + diagnostics
+### Runtime capability detection + diagnostics — issue #6
 
-Detect at runtime whether a usable FSKit (or macFUSE) backend is present and emit
-clear installation diagnostics. `backend_available()` is the seam for this; it
-returns `false` today.
+* **Built:** `Capability::detect` (`crates/fs-fskit/src/capability.rs`) probes the
+  host — macOS version (third-party FSKit needs ≥ 15.4), whether our system
+  extension is installed and *approved*, and whether macFUSE is present — and
+  selects a backend (or none). `backend_available()` is now this probe, not a
+  hardcoded `false`.
+* **Built:** when no backend is available, `mount()` and `git lazy-mount doctor`
+  emit concrete, ordered install/approval steps (and point at the headless
+  fallback) instead of "not implemented yet".
 
 ### APFS case-sensitivity and Unicode normalization
 
