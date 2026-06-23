@@ -1073,6 +1073,28 @@ fn cmd_doctor(cli: &Cli, format: Format) -> Result<()> {
         .map(|o| o.status.success())
         .unwrap_or(false);
     let mut checks = vec![json!({ "check": "git_available", "ok": git_ok })];
+
+    // Filesystem-backend capability (macOS/FSKit): probe whether a kernel mount
+    // is possible on this host, and otherwise surface the actionable install /
+    // approval steps so the user understands the headless fallback (issue #6).
+    #[cfg(target_os = "macos")]
+    {
+        let cap = glm_fs_fskit::capability();
+        checks.push(json!({
+            "check": "filesystem_backend",
+            "platform": "macos",
+            "ok": cap.is_usable(),
+            "backend": cap.selected_backend().map(|b| b.label()),
+            "os_version": cap.os_version,
+            "fskit_os_supported": cap.fskit_os_supported,
+            "fskit_module_installed": cap.fskit_module_installed,
+            "fskit_module_approved": cap.fskit_module_approved,
+            "macfuse_installed": cap.macfuse_installed,
+            "diagnostics": cap.diagnostics(),
+            "mode": if cap.is_usable() { "mount" } else { "headless" },
+        }));
+    }
+
     if let Ok(mount) = open_mount(cli) {
         let report = mount.workspace.oplog().recover()?;
         checks

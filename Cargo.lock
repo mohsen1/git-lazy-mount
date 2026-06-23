@@ -202,6 +202,7 @@ dependencies = [
  "glm-core",
  "glm-daemon",
  "glm-filters",
+ "glm-fs-fskit",
  "glm-git-store",
  "glm-object-provider",
  "glm-platform",
@@ -268,7 +269,12 @@ version = "0.1.0"
 dependencies = [
  "glm-core",
  "glm-fs-common",
+ "glm-git-store",
+ "glm-object-provider",
+ "glm-testkit",
  "glm-workspace",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
