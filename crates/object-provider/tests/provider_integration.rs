@@ -29,6 +29,7 @@ fn lazy_store(remote: &glm_testkit::SeededRemote) -> (tempfile::TempDir, GitStor
     let tmp = tempfile::tempdir().unwrap();
     let store = GitStore::init_bare(tmp.path().join("git"), None).unwrap();
     store.set_config("protocol.file.allow", "always").unwrap();
+    store.set_config("core.autocrlf", "false").unwrap();
     store.add_remote("origin", &remote.url).unwrap();
     store
         .fetch(
