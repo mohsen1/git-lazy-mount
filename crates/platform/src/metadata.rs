@@ -134,11 +134,15 @@ pub fn file_flags_disposition() -> (MacMetadataKind, Disposition) {
 
 /// Whether a path is macOS-injected metadata that must never reach a commit.
 /// This is the predicate the staging path uses to screen `.DS_Store` / `._*`.
+///
+/// Only path-based metadata is classified here, and it is always [`Ignored`].
+/// `OverlayOnly` categories (xattrs, resource forks, file flags) are not paths
+/// and are prevented from being committed structurally — Git has no tree channel
+/// for them — not by this screen.
+///
+/// [`Ignored`]: Disposition::Ignored
 pub fn is_never_committed_path(path: &RepoPath) -> bool {
-    matches!(
-        classify_path(path),
-        Some((_, Disposition::Ignored)) | Some((_, Disposition::OverlayOnly))
-    )
+    matches!(classify_path(path), Some((_, Disposition::Ignored)))
 }
 
 #[cfg(test)]
