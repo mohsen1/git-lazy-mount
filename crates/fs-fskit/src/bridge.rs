@@ -484,12 +484,8 @@ mod tests {
             .unwrap();
 
         // enumerate returns BOTH, with exact bytes — nothing is silently dropped.
-        let names: Vec<_> = ops
-            .enumerate(ROOT_INO)
-            .unwrap()
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let entries = ops.enumerate(ROOT_INO).unwrap();
+        let names: Vec<_> = entries.iter().map(|e| e.name.clone()).collect();
         assert!(names.contains(&b"README".to_vec()) && names.contains(&b"readme".to_vec()));
 
         // The collision is surfaced explicitly.
@@ -504,6 +500,15 @@ mod tests {
         assert_eq!(err.code, ErrorCode::PlatformPathCollision);
         let err = ops.lookup(ROOT_INO, b"readme").unwrap_err();
         assert_eq!(err.code, ErrorCode::PlatformPathCollision);
+
+        // Inode-based I/O (e.g. an already-open handle obtained from enumerate)
+        // still resolves to the correct per-entry content: name resolution is
+        // ambiguous, but each enumerated inode maps to its own recorded path.
+        let ino_upper = entries.iter().find(|e| e.name == b"README").unwrap().ino;
+        let ino_lower = entries.iter().find(|e| e.name == b"readme").unwrap().ino;
+        assert_ne!(ino_upper, ino_lower, "distinct entries get distinct inodes");
+        assert_eq!(ops.read(ino_upper, 0, 1024).unwrap(), b"upper\n");
+        assert_eq!(ops.read(ino_lower, 0, 1024).unwrap(), b"lower\n");
     }
 
     #[test]
