@@ -829,6 +829,137 @@ impl Workspace {
         Ok(())
     }
 
+    /// The tree the current stage would commit: the base committed tree with
+    /// the staged delta folded in (unchanged subtrees reused), equal to the base
+    /// tree when nothing is staged. This is the tree the git-interop bridge
+    /// synthesizes its index from so stock `git status`/`commit` see exactly the
+    /// staged state (spec §38).
+    pub fn staged_tree(&self, policy: FetchPolicy) -> Result<ObjectId> {
+        let staged = self.stage.entries();
+        let base_tree = self.base_tree(policy)?;
+        let changes: Vec<(RepoPath, TreeChange)> = staged
+            .iter()
+            .filter_map(|(p, c)| match c {
+                StagedChange::Set { oid, mode } => Some((
+                    p.clone(),
+                    TreeChange::Set {
+                        oid: oid.clone(),
+                        mode: *mode,
+                    },
+                )),
+                StagedChange::Remove => Some((p.clone(), TreeChange::Remove)),
+                StagedChange::IntentToAdd => None,
+            })
+            .collect();
+        if changes.is_empty() {
+            return match base_tree {
+                Some(t) => Ok(t),
+                None => self.store.write_tree(vec![]),
+            };
+        }
+        build_tree(
+            &self.store,
+            self.provider.as_ref(),
+            base_tree,
+            changes,
+            policy,
+        )
+    }
+
+    /// Adopt an externally-created commit (e.g. produced by the git-interop
+    /// bridge's stock `git commit`) as the new base: advance the private head
+    /// ref and the attached branch with compare-and-swap, reset the stage,
+    /// dematerialize now-clean overlay entries, and seal the operation. The
+    /// commit's first parent MUST be the current base — the bridge fast-forwards
+    /// the workspace, it does not rewrite history (amend/rebase are rejected).
+    pub fn adopt_commit(&self, commit: ObjectId, _policy: FetchPolicy) -> Result<CommitOutcome> {
+        if self.merge_head().is_some() {
+            return Err(Error::new(
+                ErrorCode::DirtyWorkspaceConflict,
+                "a merge is in progress; resolve it via the native workflow first",
+            )
+            .with_action("`git lazy-mount add` the resolved files, then `git lazy-mount commit`"));
+        }
+        let base_commit = self.base_commit();
+        // The adopted commit must be a child of the current base.
+        let first_parent = self.store.rev_parse(&format!("{}^1", commit.to_hex()))?;
+        if first_parent != base_commit {
+            return Err(Error::new(
+                ErrorCode::UnsupportedOperation,
+                "the git-interop commit is not a child of the workspace base \
+                 (history rewrites such as --amend are not supported through the bridge)",
+            )
+            .with_action("use `git lazy-mount reset`/`commit` to rewrite history"));
+        }
+        let staged = self.stage.entries();
+
+        // Advance the private workspace head with CAS (must always succeed).
+        self.store
+            .update_ref_cas(&self.cfg.workspace_head_ref, &commit, base_commit.as_ref())?;
+
+        // Best-effort advance the attached public branch with CAS (spec §14).
+        let mut branch_advanced = false;
+        let mut divergence = None;
+        if let Some(branch) = &self.cfg.attached_branch {
+            let expected = self.attached_expected.lock().unwrap().clone();
+            match self
+                .store
+                .update_ref_cas(branch, &commit, expected.as_ref())
+            {
+                Ok(()) => {
+                    branch_advanced = true;
+                    *self.attached_expected.lock().unwrap() = Some(commit.clone());
+                }
+                Err(e) if e.code == ErrorCode::ConcurrentBranchMovement => {
+                    divergence = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Reset stage; dematerialize entries that are now clean (base unchanged
+        // here, so attribute resolution matches `commit`).
+        self.stage.clear()?;
+        self.dematerialize_committed(&staged)?;
+
+        *self.base.lock().unwrap() = Some(commit.clone());
+        let new_gen = {
+            let mut g = self.generation.lock().unwrap();
+            *g += 1;
+            *g
+        };
+
+        let mut view = WorkspaceView::root(glm_core::WorkspaceViewId(vec![]), Some(commit.clone()));
+        view.attached_branch = self.cfg.attached_branch.clone();
+        view.attached_branch_expected = self.attached_expected.lock().unwrap().clone();
+        view.mount_generation = new_gen;
+        let mut effects = vec![];
+        if branch_advanced {
+            effects.push(ExternalSideEffect {
+                kind: "branch-advance".into(),
+                target: self.cfg.attached_branch.clone().unwrap_or_default(),
+                state: "acknowledged".into(),
+            });
+        }
+        let op = self.oplog.commit(
+            view,
+            NewOperation {
+                cause: Cause::Command("git-interop commit".into()),
+                description: format!("commit (git-interop): {}", short_hex(&commit)),
+                durability: glm_core::Durability::OperationSealed,
+                external_effects: effects,
+            },
+        )?;
+        self.oplog.mark_applied(new_gen)?;
+
+        Ok(CommitOutcome {
+            commit,
+            operation: op,
+            branch_advanced,
+            divergence,
+        })
+    }
+
     /// Whether the workspace has no staged or working-tree changes.
     pub fn is_clean(&self) -> bool {
         self.stage.is_empty() && self.overlay.is_empty()

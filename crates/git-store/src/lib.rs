@@ -16,11 +16,13 @@
 #![forbid(unsafe_code)]
 
 mod batch;
+mod interop;
 mod proc;
 mod store;
 pub mod tree_parse;
 
 pub use batch::{BatchSession, ObjectInfo};
+pub use interop::InteropOutcome;
 pub use store::{
     CommitParams, FetchOptions, GitStore, Identity, MergeConflict, MergeStage, MergeTreeOutput,
 };
