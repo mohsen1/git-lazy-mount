@@ -1,0 +1,11 @@
+[package]
+name = "glm-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transactional workspace views, three-tree status, commits, and leases."
+
+[lints]
+workspace = true

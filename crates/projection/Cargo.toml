@@ -1,0 +1,11 @@
+[package]
+name = "glm-projection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Filesystem projection trait plus in-memory and on-disk test backends."
+
+[lints]
+workspace = true

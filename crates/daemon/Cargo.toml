@@ -1,0 +1,11 @@
+[package]
+name = "glm-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Per-user daemon: mount registry, lifecycle, and control API."
+
+[lints]
+workspace = true

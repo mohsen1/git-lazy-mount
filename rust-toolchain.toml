@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned toolchain. MSRV is declared as 1.85 in the workspace manifest; CI
+# additionally verifies the build against the MSRV. Day-to-day development
+# uses the current stable channel.
+channel = "stable"
+components = ["rustfmt", "clippy"]

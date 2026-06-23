@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Backend-independent core: builds and runs the full state model, transaction,
+  # and recovery test suite on every platform. Real kernel mounting is NOT
+  # exercised here (see the `linux-mount` manual job).
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  msrv:
+    name: msrv build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+
+  # Real FUSE mounting requires libfuse3 and a privileged/loopback-capable
+  # runner. It is intentionally a separate, manually-triggered job: a green
+  # `check` matrix does NOT imply the kernel backend was exercised.
+  linux-mount:
+    name: linux real-mount (manual)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install libfuse3
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: test (fuse feature)
+        run: cargo test -p glm-fs-fuse --features fuse -- --include-ignored

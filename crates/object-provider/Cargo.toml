@@ -1,0 +1,11 @@
+[package]
+name = "glm-object-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Missing-object provider with request coalescing, batching, and caches."
+
+[lints]
+workspace = true
