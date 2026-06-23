@@ -65,6 +65,8 @@ jobs:
           components: clippy
       - name: install libfuse3
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: enable user_allow_other
+        run: echo user_allow_other | sudo tee -a /etc/fuse.conf
       - name: clippy (fuse adapter)
         run: cargo clippy -p glm-fs-fuse --all-targets --features fuse -- -D warnings
       - name: real loopback mount + backend logic
