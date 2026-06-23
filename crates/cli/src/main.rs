@@ -13,6 +13,7 @@
 
 mod output;
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -114,6 +115,19 @@ enum Command {
     Merge {
         /// Branch name or commit to merge.
         rev: String,
+    },
+    /// Run stock `git` against the lazy store: read-only inspection (status,
+    /// log, show, diff, …) and native `git commit`. Staging is done with
+    /// `git lazy-mount add`. Use `--` to separate git arguments from
+    /// lazy-mount flags, e.g. `git lazy-mount git -- log --oneline`.
+    Git {
+        /// Arguments passed to git (the subcommand and its options).
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
+        args: Vec<OsString>,
     },
     /// List a directory through the workspace projection.
     Ls {
@@ -317,6 +331,7 @@ fn run(cli: &Cli, format: Format) -> Result<()> {
             rev,
         } => cmd_reset(cli, *soft, *mixed, *hard, rev.clone(), format),
         Command::Merge { rev } => cmd_merge(cli, rev, format),
+        Command::Git { args } => cmd_git(cli, args, format),
         Command::Ls { path } => cmd_ls(cli, path.clone(), format),
         Command::Cat { path } => cmd_cat(cli, path),
         Command::Hydrate { pathspec } | Command::Prefetch { pathspec } => {
@@ -654,6 +669,218 @@ fn cmd_merge(cli: &Cli, rev: &str, format: Format) -> Result<()> {
                 .print_json();
             }
         }
+    }
+    Ok(())
+}
+
+/// Git subcommands that only read repository state and are safe to run through
+/// the interop bridge (default-deny: everything else is rejected so that, e.g.,
+/// `git gc`/`git prune` can never reach the shared object store).
+const BRIDGE_READ_ONLY: &[&str] = &[
+    "status",
+    "log",
+    "show",
+    "diff",
+    "diff-tree",
+    "diff-index",
+    "diff-files",
+    "ls-files",
+    "ls-tree",
+    "cat-file",
+    "rev-parse",
+    "rev-list",
+    "blame",
+    "annotate",
+    "shortlog",
+    "describe",
+    "for-each-ref",
+    "whatchanged",
+    "grep",
+    "name-rev",
+    "merge-base",
+    "symbolic-ref",
+    "show-ref",
+    "show-branch",
+    "count-objects",
+    "verify-commit",
+    "verify-tag",
+    "cherry",
+    "range-diff",
+    "var",
+    "check-ignore",
+    "check-attr",
+];
+
+/// Determine the git subcommand (the verb) from the bridge args, skipping git's
+/// global options and the values of those that take one.
+fn bridge_verb(args: &[OsString]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].to_string_lossy();
+        if let Some(long) = a.strip_prefix("--") {
+            // `--opt=value` is self-contained; a few long options take a
+            // separate value, the rest are flags.
+            if long.contains('=') {
+                i += 1;
+            } else if matches!(long, "git-dir" | "work-tree" | "namespace" | "super-prefix") {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if a.starts_with('-') {
+            // `-C <path>` and `-c <name=value>` take a value.
+            if a == "-C" || a == "-c" {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else {
+            return Some(a.into_owned());
+        }
+    }
+    None
+}
+
+/// Reject `git commit` flags the bridge cannot honor because the working tree
+/// is virtual (`-a`/`--all`, `--patch`, `--interactive`, `--amend`, …).
+fn reject_unsupported_commit_flags(args: &[OsString]) -> Result<()> {
+    for a in args {
+        let s = a.to_string_lossy();
+        let explicit = matches!(
+            s.as_ref(),
+            "-a" | "--all"
+                | "-p"
+                | "--patch"
+                | "--interactive"
+                | "--amend"
+                | "-i"
+                | "--include"
+                | "-o"
+                | "--only"
+        );
+        // Combined short flags such as `-am` that contain `a`.
+        let short_with_a = s.starts_with('-') && !s.starts_with("--") && s.contains('a');
+        if explicit || short_with_a {
+            return Err(Error::new(
+                ErrorCode::UnsupportedOperation,
+                format!(
+                    "`git commit {s}` is not supported through the bridge (the working tree is virtual)"
+                ),
+            )
+            .with_action("stage with `git lazy-mount add`, then `git lazy-mount git commit -m ...`"));
+        }
+    }
+    Ok(())
+}
+
+/// Classify the verb: `Ok(())` for the read-only allowlist and `commit`;
+/// otherwise a helpful error pointing at the native `git lazy-mount` command.
+fn classify_bridge_verb(verb: &str) -> Result<()> {
+    if verb == "commit" || BRIDGE_READ_ONLY.contains(&verb) {
+        return Ok(());
+    }
+    let hint: Option<&str> = match verb {
+        "add" => Some("stage with `git lazy-mount add`"),
+        "rm" => Some("delete through the mount, then `git lazy-mount add`"),
+        "mv" => Some("rename through the mount, then `git lazy-mount add`"),
+        "reset" => Some("use `git lazy-mount reset`"),
+        "restore" | "checkout" => Some("use `git lazy-mount restore` / `git lazy-mount switch`"),
+        "switch" => Some("use `git lazy-mount switch`"),
+        "merge" => Some("use `git lazy-mount merge`"),
+        "push" => Some("use `git lazy-mount push`"),
+        "branch" | "tag" => Some(
+            "refs created in the bridge do not affect the workspace; use `git lazy-mount branch`",
+        ),
+        "gc" | "prune" | "repack" | "pack-objects" | "pack-refs" | "filter-branch" => {
+            Some("object maintenance on the shared store is not allowed through the bridge")
+        }
+        _ => None,
+    };
+    let mut e = Error::new(
+        ErrorCode::UnsupportedOperation,
+        format!(
+            "`git {verb}` is not supported through the interop bridge \
+             (read-only commands and `commit` are)"
+        ),
+    );
+    if let Some(h) = hint {
+        e = e.with_action(h);
+    }
+    Err(e)
+}
+
+fn cmd_git(cli: &Cli, args: &[OsString], format: Format) -> Result<()> {
+    if args.is_empty() {
+        return Err(
+            Error::new(ErrorCode::Configuration, "no git command given").with_action(
+                "e.g. `git lazy-mount git status` or `git lazy-mount git -- log --oneline`",
+            ),
+        );
+    }
+    let verb = bridge_verb(args).ok_or_else(|| {
+        Error::new(
+            ErrorCode::Configuration,
+            "could not determine the git subcommand",
+        )
+        .with_action("put the subcommand first, e.g. `git lazy-mount git status`")
+    })?;
+    classify_bridge_verb(&verb)?;
+
+    let is_commit = verb == "commit";
+    if is_commit {
+        reject_unsupported_commit_flags(args)?;
+    }
+
+    let mount = open_mount(cli)?;
+    let base = mount
+        .workspace
+        .base_commit()
+        .ok_or_else(|| Error::new(ErrorCode::Configuration, "workspace has no base commit yet"))?;
+    let index_tree = mount.workspace.staged_tree(POLICY)?;
+    let scratch = mount.spec.ws_dir.join("interop");
+
+    let outcome = mount.store.interop_run(
+        &scratch,
+        &base,
+        mount.spec.attached_branch.as_deref(),
+        Some(&index_tree),
+        args,
+    )?;
+
+    // Adopt a commit produced through the bridge into the workspace.
+    if is_commit && outcome.status.success() {
+        if let Some(new_head) = &outcome.head {
+            if *new_head != base {
+                let res = mount.workspace.adopt_commit(new_head.clone(), POLICY)?;
+                if format == Format::Human {
+                    eprintln!(
+                        "git-lazy-mount: adopted {} as the new workspace base{}",
+                        short(&res.commit.to_hex()),
+                        if res.branch_advanced {
+                            ""
+                        } else {
+                            " (attached branch diverged; kept on the workspace ref)"
+                        }
+                    );
+                } else {
+                    let mut env = Envelope::new(
+                        "git-commit",
+                        json!({
+                            "commit": res.commit.to_hex(),
+                            "branch_advanced": res.branch_advanced,
+                        }),
+                    )
+                    .workspace(mount.spec.id.clone());
+                    env.operation_id = Some(res.operation.to_hex());
+                    env.print_json();
+                }
+            }
+        }
+    }
+
+    // Propagate git's own exit code so scripts see the real result.
+    if !outcome.status.success() {
+        std::process::exit(outcome.status.code().unwrap_or(1));
     }
     Ok(())
 }
