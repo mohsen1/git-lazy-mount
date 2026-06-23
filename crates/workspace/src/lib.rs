@@ -546,7 +546,15 @@ impl Workspace {
     /// Stage the working content at `path` (`git lazy-mount add`). Applies clean
     /// filters via Git plumbing and writes the blob, leaving the overlay
     /// untouched (spec §23).
+    ///
+    /// macOS-injected metadata (`.DS_Store`, `._*` AppleDouble sidecars) is
+    /// screened out here so it can never reach a staged tree or commit, on any
+    /// commit channel (spec §41, issue #8). This is a no-op rather than an error
+    /// so bulk staging stays ergonomic.
     pub fn stage_path(&self, path: &RepoPath, policy: FetchPolicy) -> Result<()> {
+        if glm_platform::metadata::is_never_committed_path(path) {
+            return Ok(());
+        }
         match self.overlay.entry(path) {
             Some(OverlayKind::Tombstone) => self.stage.remove(path.clone()),
             Some(OverlayKind::File { executable }) => {
@@ -576,12 +584,18 @@ impl Workspace {
     }
 
     /// Stage every working-tree change (`add -A`): all overlay entries and
-    /// tombstones. `O(overlay)`.
+    /// tombstones. `O(overlay)`. Returns the number of paths actually staged;
+    /// macOS-injected metadata (spec §41, issue #8) is screened out and not
+    /// counted.
     pub fn stage_all(&self, policy: FetchPolicy) -> Result<usize> {
         let entries = self.overlay.entries();
-        let n = entries.len();
+        let mut n = 0;
         for (p, _k) in entries {
+            if glm_platform::metadata::is_never_committed_path(&p) {
+                continue;
+            }
             self.stage_path(&p, policy)?;
+            n += 1;
         }
         Ok(n)
     }

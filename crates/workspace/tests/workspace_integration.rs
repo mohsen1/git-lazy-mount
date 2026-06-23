@@ -142,6 +142,62 @@ fn stage_commit_preserves_unstaged_changes() {
 }
 
 #[test]
+fn macos_injected_metadata_never_reaches_a_commit() {
+    // A repo with a real source file; the user then has Finder/macOS scatter
+    // metadata around the working tree (issue #8, spec §41).
+    let (h, _base) = harness(&[("src/lib.rs", b"fn main() {}\n")]);
+
+    // A legitimate edit plus macOS-injected metadata at the root and nested.
+    h.ws.write_full(&p("notes.txt"), b"real content\n", false)
+        .unwrap();
+    h.ws.write_full(&p(".DS_Store"), b"\0\0Bud1 finder junk", false)
+        .unwrap();
+    h.ws.write_full(&p("src/.DS_Store"), b"\0\0Bud1 more junk", false)
+        .unwrap();
+    h.ws.write_full(&p("._notes.txt"), b"AppleDouble resource fork", false)
+        .unwrap();
+
+    // `add -A` stages only the real change; the metadata is screened out.
+    let staged = h.ws.stage_all(POLICY).unwrap();
+    assert_eq!(
+        staged, 1,
+        "only notes.txt should stage; macOS metadata is screened"
+    );
+
+    // Even an *explicit* add of a metadata path is a no-op (never committed).
+    h.ws.stage_path(&p(".DS_Store"), POLICY).unwrap();
+    h.ws.stage_path(&p("src/.DS_Store"), POLICY).unwrap();
+    h.ws.stage_path(&p("._notes.txt"), POLICY).unwrap();
+
+    let out = h.ws.commit("add notes", POLICY).unwrap();
+
+    // Verify directly against the committed tree: the real file is present, none
+    // of the macOS metadata is — at the root or nested under src/.
+    let root = h
+        .store
+        .rev_parse(&format!("{}^{{tree}}", out.commit.to_hex()))
+        .unwrap()
+        .unwrap();
+    let root_tree = h.ws.provider().tree(&root, POLICY).unwrap();
+    assert!(root_tree.entry(b"notes.txt").is_some());
+    assert!(root_tree.entry(b".DS_Store").is_none());
+    assert!(root_tree.entry(b"._notes.txt").is_none());
+
+    let src = root_tree.entry(b"src").unwrap();
+    let src_tree = h.ws.provider().tree(&src.object_id, POLICY).unwrap();
+    assert!(src_tree.entry(b"lib.rs").is_some());
+    assert!(
+        src_tree.entry(b".DS_Store").is_none(),
+        "nested .DS_Store must not be committed"
+    );
+
+    // The git-interop bridge synthesizes its index from `staged_tree`; it must
+    // see the same screened state, so no commit channel can leak the metadata.
+    let staged_tree = h.ws.staged_tree(POLICY).unwrap();
+    assert_eq!(staged_tree, root, "staged_tree matches the committed tree");
+}
+
+#[test]
 fn rename_clean_file_does_not_fetch_blob() {
     let (h, _base) = harness(&[("keep.txt", b"unchanged content\n")]);
     let before = h.ws.provider().metrics();
