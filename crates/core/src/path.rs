@@ -283,7 +283,10 @@ mod tests {
     fn components_and_parent() {
         let p = RepoPath::from_bytes(b"src/compiler/checker.rs".to_vec()).unwrap();
         let comps: Vec<&[u8]> = p.components().collect();
-        assert_eq!(comps, vec![&b"src"[..], &b"compiler"[..], &b"checker.rs"[..]]);
+        assert_eq!(
+            comps,
+            vec![&b"src"[..], &b"compiler"[..], &b"checker.rs"[..]]
+        );
         assert_eq!(p.file_name().unwrap(), b"checker.rs");
         assert_eq!(p.parent().unwrap().as_bytes(), b"src/compiler");
     }
