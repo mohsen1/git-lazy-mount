@@ -91,7 +91,9 @@ crates/
   workspace/       transactional engine: status, commit, leases, switch
   fs-common/       stable inode map + neutral attributes
   fs-fuse/         Linux FUSE backend logic (FuseOps)
-  fs-fskit/        macOS FSKit backend scaffold
+  fs-fskit/        macOS FSKit backend: bridge, capability detection, APFS
+                   collisions, metadata policy, coordination, recovery (FSVolume
+                   adapter is on-device, see docs/platform-macos.md)
   fs-projfs/       Windows ProjFS backend scaffold
   fsmonitor/       changed-path journal + sync barrier
   ipc/             versioned daemon control protocol

@@ -132,13 +132,53 @@ the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`, spec §39).
 * **On-device (issue #12):** induced extension/daemon restarts against a live
   FSKit mount.
 
+### On-device validation harness + manual CI job — issue #12
+
+* **Built:** `crates/fs-fskit/tests/on_device.rs` — `#[ignore]` tests that are the
+  on-device gate. They **self-skip** the real-mount assertions when no
+  signed+approved FSKit backend is present (printing a clear `SKIP` + the
+  diagnostics), so a green run never produces a false "supported" signal; they
+  assert real behavior only on a provisioned Apple host.
+* **Built:** a manual `macos fskit backend (manual)` job
+  (`.github/workflows/ci.yml`, `workflow_dispatch`) mirroring the existing
+  `linux fuse backend (manual)` job: it runs the backend-logic tests + the
+  harness (`--include-ignored`) and the capability probe. A GitHub-hosted runner
+  cannot load a system extension, so a real mount needs a **self-hosted** Apple
+  host (`runs-on: [self-hosted, macOS]`). The **default PR CI is unchanged** and
+  independent of macOS mount support.
+* **On-device (the gate):** run this job on Apple hardware with the signed
+  extension installed + approved, and record the findings below. This is what
+  earns the macOS support claim (#4), per spec §54.
+
+## Status (issue #4 rollup)
+
+The backend-independent macOS implementation is **landed and tested on every
+platform**; what remains is the on-device run of the harness above. macOS is
+**not** labeled supported until then (spec §54).
+
+| Sub-issue | Software landed | On-device gate (issue #12) |
+|-----------|-----------------|----------------------------|
+| #5 FSVolume bridge + macFUSE boundary | ✅ `FskitOps`, `MacBackend` | Swift `FSVolume` adapter + real mount |
+| #6 capability detection + diagnostics | ✅ `Capability::detect`, `doctor` | n/a (runs on host) |
+| #7 APFS collisions + case-only rename  | ✅ `collision`, volume-aware folding | real APFS, both volume kinds |
+| #8 metadata commit policy              | ✅ `glm_platform::metadata` + staging screen | n/a (verified vs staged tree) |
+| #9 NSFileCoordination                  | ✅ `coordination::Coordinator` | Finder + document-app |
+| #10 sysext lifecycle + signing         | ✅ `lifecycle`, `extension/` plists+docs | signed build + approval flow |
+| #11 recovery after restart             | ✅ `recovery::reattach` | induced live-mount restarts |
+| #12 on-device harness + manual CI      | ✅ `tests/on_device.rs`, manual job | run on a self-hosted Apple host |
+
 ## Data root
 
 `glm-platform` ([roots.rs](../crates/platform/src/roots.rs)) places macOS state
 under `~/Library/Application Support/git-lazy-mount` and caches under
 `~/Library/Caches/git-lazy-mount`.
 
-## Tracking
+## Tracking — on-device findings
 
 Real FSKit behavior must be validated **on-device** before macOS is labeled
-supported (spec §54). Record findings and progress in this file.
+supported (spec §54). Record each run of the manual `macos fskit backend
+(manual)` job here.
+
+| Date | Host (OS / volume) | Extension state | Result | Notes |
+|------|--------------------|-----------------|--------|-------|
+| _(pending)_ | — | — | — | No on-device run yet; harness self-skips real-mount assertions until a signed+approved extension is present. |
