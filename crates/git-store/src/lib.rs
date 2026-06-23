@@ -13,7 +13,9 @@
 //! Every subprocess runs non-interactively (`GIT_TERMINAL_PROMPT=0`) and uses
 //! NUL/unambiguous delimiters where paths are involved (spec §3.18).
 
-#![forbid(unsafe_code)]
+// `deny` (not `forbid`) so the single audited `pre_exec` fd-hardening in
+// `proc.rs` can opt in via `#[allow(unsafe_code)]`; everything else stays safe.
+#![deny(unsafe_code)]
 
 mod batch;
 mod interop;

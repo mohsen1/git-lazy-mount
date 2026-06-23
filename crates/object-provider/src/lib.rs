@@ -176,6 +176,49 @@ impl GitObjectProvider {
             }
         }
     }
+
+    /// Ensure the `.gitattributes` blobs that govern `path` (resolved from the
+    /// `attr_source` commit) are present locally, fetching them via the explicit
+    /// fetcher. This lets [`filtered_blob`](GitObjectProvider::filtered_blob)
+    /// smudge with `GIT_NO_LAZY_FETCH` instead of letting `git` spawn its own
+    /// lazy-fetch subprocess tree (which deadlocks inside FS callbacks; spec §16).
+    ///
+    /// Tree lookups (`<commit>:<dir>/.gitattributes`) read only trees, which are
+    /// present under a blob:none clone, so the common no-attributes case fetches
+    /// nothing.
+    fn ensure_attributes_present(
+        &self,
+        path: &RepoPath,
+        attr_source: Option<&ObjectId>,
+        policy: FetchPolicy,
+    ) -> Result<()> {
+        let commit = match attr_source {
+            Some(c) if policy.may_fetch() => c,
+            _ => return Ok(()),
+        };
+        let commit_hex = commit.to_hex();
+        // The `.gitattributes` that apply: the repo root, then each ancestor
+        // directory of the file (deepest wins, but presence is all we need here).
+        let comps: Vec<&[u8]> = path.components().collect();
+        let mut specs: Vec<String> = vec![format!("{commit_hex}:.gitattributes")];
+        let mut dir = String::new();
+        for c in comps.iter().take(comps.len().saturating_sub(1)) {
+            let Ok(s) = std::str::from_utf8(c) else { break };
+            if !dir.is_empty() {
+                dir.push('/');
+            }
+            dir.push_str(s);
+            specs.push(format!("{commit_hex}:{dir}/.gitattributes"));
+        }
+        for spec in specs {
+            if let Ok(Some(oid)) = self.store.rev_parse(&spec) {
+                // Best-effort: a present `.gitattributes` lets the smudge resolve
+                // attributes locally without a lazy fetch.
+                let _ = self.ensure_present_locally(&oid, policy);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ObjectProvider for GitObjectProvider {
@@ -217,14 +260,20 @@ impl ObjectProvider for GitObjectProvider {
         policy: FetchPolicy,
     ) -> Result<Vec<u8>> {
         self.ensure_present_locally(id, policy)?;
+        // Faithful filtering may need the `.gitattributes` blobs along the path,
+        // which can be absent under a blob:none clone. Fault them in via the
+        // explicit, coalescing fetcher BEFORE smudging.
+        self.ensure_attributes_present(path, attr_source, policy)?;
         let attr_hex = attr_source.map(|o| o.to_hex());
-        // Faithful filtering may need attribute blobs (`.gitattributes`) along
-        // the path, which can be absent under a blob:none clone. When the policy
-        // permits network, let Git fault them in; under cache-only the smudge
-        // fails with an offline error (the caller must prefetch attributes).
-        let bytes =
-            self.store
-                .smudge_blob(id, path.as_bytes(), attr_hex.as_deref(), policy.may_fetch())?;
+        // Smudge with **no git lazy-fetch** (`GIT_NO_LAZY_FETCH`): every object it
+        // needs (the blob + the `.gitattributes` above) is already present. This
+        // is essential inside a filesystem callback (spec §16 / §3.13): a
+        // `git cat-file --filters` that lazy-fetches spawns a `git fetch`
+        // subprocess tree, and under a real FUSE/FSKit mount that helper inherits
+        // the mount fd and the cat-file pipe and deadlocks the callback.
+        let bytes = self
+            .store
+            .smudge_blob(id, path.as_bytes(), attr_hex.as_deref(), false)?;
         self.metrics.inc_filtered(bytes.len() as u64);
         Ok(bytes)
     }

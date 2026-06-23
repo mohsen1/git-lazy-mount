@@ -5,15 +5,24 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Linux FUSE backend: callback logic mapped to the workspace engine."
+description = "Linux FUSE backend: callback logic mapped to the workspace engine, with an optional libfuse adapter."
 
 [lints]
 workspace = true
+
+[features]
+# The real libfuse-backed kernel mount. Opt-in (NOT a default feature, and
+# deliberately excluded from the default cross-platform `check` job) because
+# `fuser` links libfuse3 at build time, which only exists on Linux hosts that
+# installed it. Exercised by the manual `linux-mount` CI job and in Docker.
+fuse = ["dep:fuser", "dep:libc"]
 
 [dependencies]
 glm-core.workspace = true
 glm-workspace.workspace = true
 glm-fs-common.workspace = true
+fuser = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 glm-git-store.workspace = true
@@ -21,9 +30,7 @@ glm-object-provider.workspace = true
 glm-testkit.workspace = true
 tempfile.workspace = true
 
-# NOTE on the kernel adapter: the low-level FUSE3 FFI glue (a `fuser::Filesystem`
-# impl wrapping `FuseOps`) requires libfuse3 at build/link time and a privileged
-# or loopback-capable runner to mount. To keep `--all-features` green on hosts
-# without libfuse (including this CI), the `fuser` dependency is intentionally
-# NOT wired in yet; `FuseOps` below is the backend's tested logic, and a thin
-# adapter is the remaining step (see docs/platform-linux.md).
+# The `fuser::Filesystem` adapter wrapping `FuseOps` lives in `src/adapter.rs`
+# behind the `fuse` feature. `FuseOps` is the cross-platform, always-tested
+# backend logic; the adapter is the real kernel mount and requires libfuse3
+# (`cargo test -p glm-fs-fuse --features fuse`; see docs/platform-linux.md).
