@@ -39,8 +39,8 @@ pub struct BatchSession {
 impl BatchSession {
     /// Spawn a session against the given bare git dir. Always `GIT_NO_LAZY_FETCH`.
     pub fn spawn(git_dir: &Path, format: ObjectFormat) -> Result<BatchSession> {
-        let mut child = Command::new("git")
-            .arg("--git-dir")
+        let mut cmd = Command::new("git");
+        cmd.arg("--git-dir")
             .arg(git_dir)
             .args(["cat-file", "--batch-command", "--buffer"])
             .env("GIT_NO_LAZY_FETCH", "1")
@@ -48,11 +48,13 @@ impl BatchSession {
             .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                Error::new(ErrorCode::Internal, format!("spawn cat-file: {e}")).with_source(e)
-            })?;
+            .stderr(Stdio::null());
+        // Never let the long-lived cat-file session inherit a FUSE/FSKit mount
+        // descriptor (see proc::harden_fds).
+        crate::proc::harden_fds(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| {
+            Error::new(ErrorCode::Internal, format!("spawn cat-file: {e}")).with_source(e)
+        })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
         Ok(BatchSession {

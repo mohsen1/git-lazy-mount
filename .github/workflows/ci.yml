@@ -28,8 +28,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
+      # NOT `--all-features`: the only feature is `glm-fs-fuse/fuse`, which links
+      # libfuse3 and so can't build on macOS/Windows (or a libfuse-less Linux).
+      # It is covered by the manual `linux-mount` job instead.
       - name: clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
 
@@ -42,11 +45,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace
 
-  # Real FUSE mounting requires libfuse3 and a privileged/loopback-capable
-  # runner. It is intentionally a separate, manually-triggered job: a green
-  # `check` matrix does NOT imply the kernel backend was exercised. Today this
-  # runs the backend-logic tests (FuseOps); when the libfuse `fuser` adapter
-  # lands it will additionally perform a real loopback mount here.
+  # Real FUSE mounting requires libfuse3 and a loopback-capable runner. It is a
+  # separate, manually-triggered job: a green `check` matrix does NOT imply the
+  # kernel backend was exercised. This builds the `fuse` feature (the libfuse
+  # `fuser` adapter) and runs the real loopback-mount test (`--include-ignored`),
+  # which mounts the engine and drives it with plain `std::fs` calls. The same
+  # flow is reproducible locally in Docker (see docs/platform-linux.md).
   linux-mount:
     name: linux fuse backend (manual)
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -54,10 +58,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: install libfuse3
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
-      - name: test fuse backend logic
-        run: cargo test -p glm-fs-fuse -- --include-ignored
+      - name: clippy (fuse adapter)
+        run: cargo clippy -p glm-fs-fuse --all-targets --features fuse -- -D warnings
+      - name: real loopback mount + backend logic
+        run: cargo test -p glm-fs-fuse --features fuse -- --include-ignored
 
   # Real FSKit mounting requires a SIGNED, user-APPROVED system extension, which
   # a GitHub-hosted `macos-latest` runner cannot load. So this is a separate,

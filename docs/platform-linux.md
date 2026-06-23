@@ -8,17 +8,20 @@ deliberately splits into two parts:
    engine (`glm-workspace`) and the stable inode table (`glm-fs-common`). This
    contains no libfuse FFI, builds on every platform, and is **unit-tested
    without libfuse**.
-2. **The kernel adapter** — a thin `fuser::Filesystem` implementation (gated
-   behind a `fuse` feature, requiring libfuse3 and a privileged/loopback-capable
-   runner) whose methods call straight into `FuseOps`.
+2. **The kernel adapter** (`src/adapter.rs`) — a thin `fuser::Filesystem`
+   implementation, gated behind the `fuse` feature (which links libfuse3), whose
+   methods call straight into `FuseOps`. This is the **real kernel mount**.
 
-> **Status — real kernel mounting is NOT enabled in the default build or CI.**
-> The callback logic is implemented and tested; the libfuse-backed adapter that
-> performs an actual kernel mount is **not compiled in this environment** (no
-> libfuse). `glm_fs_fuse::mount()` returns a structured
-> `ErrorCode::FilesystemBackendUnavailable` rather than pretending to mount, so
-> callers degrade to the headless CLI. Do not read this document as a claim of
-> transparent FUSE support.
+> **Status — the real libfuse adapter is BUILT (behind the `fuse` feature) and
+> validated by a real loopback mount; the DEFAULT build still degrades.**
+> The `fuser` adapter mounts the engine through the kernel and is exercised by an
+> `#[ignore]` integration test that drives the mountpoint with plain `std::fs`
+> calls (`cargo test -p glm-fs-fuse --features fuse -- --include-ignored`),
+> reproducible locally in **Docker** and run in the manual `linux-mount` CI job.
+> Because `fuser` links libfuse3, the feature is **off by default** and excluded
+> from the default cross-platform `check`; without it `glm_fs_fuse::mount()`
+> still returns a structured `ErrorCode::FilesystemBackendUnavailable` so callers
+> degrade to the headless CLI rather than pretending to mount.
 
 ## Why the split
 
@@ -32,10 +35,37 @@ adapter is small and is the only code that needs a real kernel and libfuse.
 Platform FFI and `unsafe` are isolated to the per-backend crate; `glm-fs-fuse`
 itself is `#![forbid(unsafe_code)]`.
 
+## Concurrency and subprocess safety (the adapter)
+
+The engine shells out to `git` (lazy hydration, smudge filters). Two hazards,
+found and fixed while validating the real loopback mount, are worth recording —
+both also apply to any backend that serves a kernel mount while running `git`:
+
+1. **Serial dispatch vs. subprocess `exec` → deadlock.** `fuser`'s read-dispatch
+   loop is serial. If a callback blocks on `git`, a subprocess forked during it
+   inherits a file the kernel has open on this mount; the inherited descriptor's
+   close (at the child's `exec`) issues a `FLUSH` that only the (blocked) loop can
+   answer (kernel stack `fuse_flush` → `__fuse_simple_request`). The adapter
+   therefore **dispatches every blocking callback onto a worker thread** and
+   replies from there, keeping the loop free (`fuser`'s `Reply*` handles are
+   `Send`; `FuseOps` is internally `Mutex`-guarded). *(The worker is a thread per
+   request today; a bounded pool is a natural follow-up.)*
+2. **`git` lazy-fetch inside a callback.** A filesystem read must not let `git`
+   spawn its own `git fetch` subtree (spec §16/§3.13). `glm-object-provider`
+   prefetches the path's `.gitattributes` via the explicit, coalescing fetcher and
+   then smudges with `GIT_NO_LAZY_FETCH`. `glm-git-store` also marks spawned-git
+   descriptors close-on-exec (`proc::harden_fds`) as defense-in-depth.
+
 ## Implemented callback behaviors (`FuseOps`)
 
-`FuseOps` today exposes `lookup`, `getattr`, `readdir`, `read`, `readlink`, and
-`forget`. The properties below are enforced and tested.
+`FuseOps` exposes the read callbacks `lookup`, `getattr`, `readdir`, `read`,
+`readlink`, `forget`, and the write callbacks `create`, `write`, `truncate`,
+`set_executable`, `symlink`, `remove`, and `rename` — all routed through the same
+`Workspace` overlay / staging path the headless CLI commits from. The
+`fuser` adapter (`src/adapter.rs`, `fuse` feature) maps the kernel's callbacks
+onto these and translates the neutral `FileAttr` into `fuser::FileAttr`. The
+properties below are enforced and tested (logic on every platform; the real
+mount via the loopback-mount test).
 
 ### Stable inode identity and generations
 

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 glm-core.workspace = true
 tracing.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -146,13 +146,81 @@ impl FuseOps {
     pub fn workspace(&self) -> &Workspace {
         &self.ws
     }
+
+    fn child_of(&self, parent_ino: u64, name: &[u8]) -> Result<RepoPath> {
+        let parent = self.path_for(parent_ino)?;
+        parent
+            .join(name)
+            .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))
+    }
+
+    // ---- write-side callbacks: all route through `Workspace` (spec §21) ----
+
+    /// FUSE `create` (regular file): create/replace an empty file, return attrs.
+    pub fn create(&self, parent_ino: u64, name: &[u8], executable: bool) -> Result<FileAttr> {
+        let child = self.child_of(parent_ino, name)?;
+        self.ws.write_full(&child, &[], executable)?;
+        let (ino, generation) = self.inodes.lookup(&child);
+        self.attr_for(ino, generation, &child, EntryKind::File { executable })
+    }
+
+    /// FUSE `symlink`: create/replace a symlink.
+    pub fn symlink(&self, parent_ino: u64, name: &[u8], target: &[u8]) -> Result<FileAttr> {
+        let child = self.child_of(parent_ino, name)?;
+        self.ws.write_symlink(&child, target)?;
+        let (ino, generation) = self.inodes.lookup(&child);
+        self.attr_for(ino, generation, &child, EntryKind::Symlink)
+    }
+
+    /// FUSE `write`: overwrite `data` at `offset`, preserving untouched bytes.
+    pub fn write(&self, ino: u64, offset: u64, data: &[u8]) -> Result<u32> {
+        let path = self.path_for(ino)?;
+        self.ws.write_at(&path, offset, data, self.policy)?;
+        Ok(data.len() as u32)
+    }
+
+    /// FUSE `setattr` (size): truncate or extend `ino` to `len`.
+    pub fn truncate(&self, ino: u64, len: u64) -> Result<()> {
+        let path = self.path_for(ino)?;
+        self.ws.truncate(&path, len, self.policy)
+    }
+
+    /// FUSE `setattr` (mode): set/clear the executable bit.
+    pub fn set_executable(&self, ino: u64, executable: bool) -> Result<()> {
+        let path = self.path_for(ino)?;
+        self.ws.set_executable(&path, executable, self.policy)
+    }
+
+    /// FUSE `unlink`: tombstone `name`; the inode survives open handles (§19).
+    pub fn remove(&self, parent_ino: u64, name: &[u8]) -> Result<()> {
+        let child = self.child_of(parent_ino, name)?;
+        self.ws.delete(&child, self.policy)?;
+        self.inodes.unlink(&child);
+        Ok(())
+    }
+
+    /// FUSE `rename`: rename, preserving inode identity (spec §19, §22).
+    pub fn rename(
+        &self,
+        parent_ino: u64,
+        name: &[u8],
+        new_parent_ino: u64,
+        new_name: &[u8],
+    ) -> Result<()> {
+        let from = self.child_of(parent_ino, name)?;
+        let to = self.child_of(new_parent_ino, new_name)?;
+        self.ws.rename(&from, &to, self.policy)?;
+        self.inodes.rename(&from, &to);
+        Ok(())
+    }
 }
 
 /// Mount a workspace at `mountpoint` via FUSE.
 ///
-/// The libfuse-backed adapter is not compiled in this build (see the crate
-/// docs); this returns a clear, structured error so callers degrade gracefully
-/// rather than appearing to mount.
+/// Without the `fuse` feature, the libfuse-backed adapter is not compiled in;
+/// this returns a clear, structured error so callers degrade gracefully rather
+/// than appearing to mount.
+#[cfg(not(feature = "fuse"))]
 pub fn mount(_ops: FuseOps, mountpoint: &std::path::Path) -> Result<()> {
     Err(Error::new(
         ErrorCode::FilesystemBackendUnavailable,
@@ -161,8 +229,16 @@ pub fn mount(_ops: FuseOps, mountpoint: &std::path::Path) -> Result<()> {
             mountpoint.display()
         ),
     )
-    .with_action("use the headless CLI (ls/cat/status/...) or build with the fuse adapter on Linux with libfuse3"))
+    .with_action("use the headless CLI (ls/cat/status/...) or build with `--features fuse` on Linux with libfuse3"))
 }
+
+/// The libfuse `fuser::Filesystem` adapter (the real kernel mount), compiled only
+/// with the `fuse` feature on a host that has libfuse3 (Linux). See
+/// `docs/platform-linux.md` and the manual `linux-mount` CI job.
+#[cfg(feature = "fuse")]
+mod adapter;
+#[cfg(feature = "fuse")]
+pub use adapter::{mount, spawn_mount, BackgroundMount};
 
 #[cfg(test)]
 mod tests {
@@ -233,6 +309,7 @@ mod tests {
         assert_eq!(ops.read(attr.ino, 2, 2).unwrap(), b"ll");
     }
 
+    #[cfg(not(feature = "fuse"))]
     #[test]
     fn mount_is_unavailable_without_adapter() {
         let (_tmp, _remote, ops) = ops_with(&[("a", b"b")]);
