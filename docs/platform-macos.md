@@ -47,34 +47,52 @@ concerns below.
   emit concrete, ordered install/approval steps (and point at the headless
   fallback) instead of "not implemented yet".
 
-### APFS case-sensitivity and Unicode normalization
+### APFS case-sensitivity and Unicode normalization — issue #7
 
-APFS volumes are normally **case-insensitive** and perform **Unicode
-normalization**. Two repo paths that Git treats as distinct byte strings can
-**collide** on disk (case-only differences, or NFC/NFD-equivalent names). The
-backend must detect and surface such collisions rather than silently merging
-entries, and must preserve the exact bytes Git recorded. Repo paths are arbitrary
-byte strings (`RepoPath`), which APFS path APIs cannot always represent verbatim.
+* **Built:** `glm_platform::validate::macos_collision_key` folds names per a
+  concrete volume (`AppleVolume::CaseInsensitive` / `CaseSensitive`); both APFS
+  variants are normalization-insensitive, so NFC/NFD-equivalent names fold
+  together on either.
+* **Built:** `crates/fs-fskit/src/collision.rs` + the bridge use it:
+  * `enumerate` returns every entry's **exact recorded bytes**;
+    `directory_collisions` reports the sets that fold together, so a directory is
+    never silently merged;
+  * `lookup` fuzzy-resolves to the single matching entry's exact bytes (NFC↔NFD,
+    case-insensitive), and surfaces `PlatformPathCollision` when **two distinct**
+    Git entries fold together rather than picking one;
+  * `create` / `symlink` reject a new name that would collide with a sibling.
+* **Built:** real-FS tests on the macOS host assert the resolver agrees with the
+  volume's actual case/normalization behavior (in addition to the existing
+  `validate.rs` NFC/NFD real-FS test).
+* **On-device (issue #12):** end-to-end validation through a real FSKit mount on
+  both case-insensitive and case-sensitive APFS volumes.
 
-### Resource forks, Finder metadata, xattrs, file flags
+### Resource forks, Finder metadata, xattrs, file flags — issue #8
 
-macOS attaches resource forks, Finder metadata (`.DS_Store`, `com.apple.*`
-xattrs), and BSD file flags. Policy: these are **never silently committed** as
-Git content (spec §41). The backend must decide, explicitly, what to expose,
-what to ignore, and what to persist locally without it leaking into commits.
+* **Built:** `glm_platform::metadata` is the single, documented **policy table**
+  (`.DS_Store` / `._*` → `Ignored`; xattrs incl. resource forks / Finder info /
+  quarantine → `OverlayOnly`; BSD file flags → `OverlayOnly`).
+* **Enforced:** the workspace staging path screens `Ignored` paths
+  (`is_never_committed_path`), so `.DS_Store` / `._*` can never reach a staged
+  tree or commit — on `add`, `add -A`, **or** the git-interop bridge. xattrs /
+  resource forks / file flags have no Git commit channel at all, so they are
+  structurally never committed. A workspace integration test verifies this
+  directly against the committed tree (root and nested).
 
-### File coordination
+### File coordination — issue #9
 
 Cooperate with NSFileCoordination so coordinated readers/writers (Finder,
 document-based apps) see consistent state and the backend honors coordination
-intents.
+intents. (Software model + on-device validation: see issue #9.)
 
-### Case-only rename
+### Case-only rename — issue #7
 
-`a.txt` → `A.txt` on a case-insensitive volume is a rename to a path that
-"already exists" by the volume's comparison rules. This must be handled
-correctly (identity preserved, as the inode table guarantees) and tested
-on-device.
+* **Built:** `a.txt` → `A.txt` on a case-insensitive volume targets a name that
+  "already exists" by the volume's comparison, but the bridge recognizes the
+  folding-only rename (`collision::is_case_only_rename`) and performs it,
+  preserving identity via the inode table (spec §19). A bridge test covers
+  identity + content preservation.
+* **On-device (issue #12):** validation through a real FSKit mount.
 
 ### System-extension lifecycle + signing/entitlements
 

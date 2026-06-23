@@ -193,6 +193,31 @@ pub fn collision_key(name: &[u8], target: TargetPlatform) -> Vec<u8> {
     }
 }
 
+/// The case behavior of a concrete macOS (APFS/HFS+) volume. The default APFS
+/// volume is case-**insensitive**; an APFSX volume is case-**sensitive**. Both
+/// are Unicode-normalization-insensitive, which is why even a case-sensitive
+/// volume folds NFC/NFD-equivalent names together (issue #7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppleVolume {
+    /// Default APFS / HFS+: case-insensitive and normalization-insensitive.
+    CaseInsensitive,
+    /// Case-sensitive APFS (APFSX): case-sensitive but still
+    /// normalization-insensitive.
+    CaseSensitive,
+}
+
+/// The folding key under which two sibling names collide on a concrete macOS
+/// `volume`. On a case-insensitive volume this matches
+/// `collision_key(name, Macos)`; on a case-sensitive volume only normalization
+/// is folded, so `README` and `readme` are distinct but NFC/NFD-equivalent names
+/// still collide.
+pub fn macos_collision_key(name: &[u8], volume: AppleVolume) -> Vec<u8> {
+    match volume {
+        AppleVolume::CaseInsensitive => fold_case(&nfc(name)),
+        AppleVolume::CaseSensitive => nfc(name),
+    }
+}
+
 /// Group sibling names that collide on `target`. Returns the index groups with
 /// more than one member.
 pub fn detect_collisions(names: &[Vec<u8>], target: TargetPlatform) -> Vec<Vec<usize>> {
@@ -318,6 +343,30 @@ mod tests {
         assert_ne!(
             collision_key(nfc_e, TargetPlatform::Linux),
             collision_key(nfd_e, TargetPlatform::Linux)
+        );
+    }
+
+    #[test]
+    fn macos_volume_folding() {
+        let nfc_e = "é".as_bytes();
+        let nfd_e = "e\u{301}".as_bytes();
+        // Both volume kinds fold NFC/NFD together (normalization-insensitive).
+        for v in [AppleVolume::CaseInsensitive, AppleVolume::CaseSensitive] {
+            assert_eq!(macos_collision_key(nfc_e, v), macos_collision_key(nfd_e, v));
+        }
+        // Case-insensitive folds case; case-sensitive does not.
+        assert_eq!(
+            macos_collision_key(b"README", AppleVolume::CaseInsensitive),
+            macos_collision_key(b"readme", AppleVolume::CaseInsensitive)
+        );
+        assert_ne!(
+            macos_collision_key(b"README", AppleVolume::CaseSensitive),
+            macos_collision_key(b"readme", AppleVolume::CaseSensitive)
+        );
+        // The case-insensitive volume agrees with the platform-default macOS key.
+        assert_eq!(
+            macos_collision_key(b"ReadMe", AppleVolume::CaseInsensitive),
+            collision_key(b"ReadMe", TargetPlatform::Macos)
         );
     }
 
