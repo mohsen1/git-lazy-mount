@@ -324,6 +324,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "glm-fskit-ffi"
+version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-daemon",
+ "glm-fs-common",
+ "glm-fs-fskit",
+ "glm-git-store",
+ "glm-object-provider",
+ "glm-platform",
+ "glm-testkit",
+ "glm-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "glm-fsmonitor"
 version = "0.1.0"
 dependencies = [

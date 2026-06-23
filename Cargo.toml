@@ -17,6 +17,7 @@ members = [
     "crates/fs-common",
     "crates/fs-fuse",
     "crates/fs-fskit",
+    "crates/fskit-ffi",
     "crates/fs-projfs",
     "crates/daemon",
     "crates/testkit",
