@@ -1080,6 +1080,7 @@ fn cmd_doctor(cli: &Cli, format: Format) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let cap = glm_fs_fskit::capability();
+        let ext_state = glm_fs_fskit::extension_state(&cap);
         checks.push(json!({
             "check": "filesystem_backend",
             "platform": "macos",
@@ -1089,6 +1090,8 @@ fn cmd_doctor(cli: &Cli, format: Format) -> Result<()> {
             "fskit_os_supported": cap.fskit_os_supported,
             "fskit_module_installed": cap.fskit_module_installed,
             "fskit_module_approved": cap.fskit_module_approved,
+            "fskit_extension_state": ext_state.label(),
+            "fskit_next_step": ext_state.next_step(),
             "macfuse_installed": cap.macfuse_installed,
             "diagnostics": cap.diagnostics(),
             "mode": if cap.is_usable() { "mount" } else { "headless" },

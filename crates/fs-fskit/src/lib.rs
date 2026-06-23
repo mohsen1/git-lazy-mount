@@ -19,12 +19,21 @@
 //!   are distinct boundaries that never silently change semantics.
 //! * [`collision`] — APFS case-/normalization-collision detection over the
 //!   directory the bridge enumerates (issue #7), reusing the platform folding.
+//! * [`coordination`] — the NSFileCoordination cooperation model (issue #9): no
+//!   coordinated read overlaps an in-flight write.
+//! * [`lifecycle`] — the FSKit system-extension install/approval lifecycle
+//!   (issue #10), derived from a capability probe.
+//! * [`recovery`] — re-attach after a daemon/extension restart (issue #11),
+//!   driving `Recovering → Mounted` over the crash-safe operation log.
 
 #![forbid(unsafe_code)]
 
 mod bridge;
 mod capability;
 pub mod collision;
+pub mod coordination;
+pub mod lifecycle;
+pub mod recovery;
 
 use std::path::Path;
 
@@ -33,6 +42,9 @@ use glm_core::{Error, ErrorCode, Result};
 pub use bridge::{EnumerateEntry, FskitOps};
 pub use capability::{Capability, MacBackend, FSKIT_MODULE_BUNDLE_ID};
 pub use collision::{AppleVolume, Collision};
+pub use coordination::{Coordinator, Intent};
+pub use lifecycle::{extension_state, ExtensionState};
+pub use recovery::{reattach, ReattachReport, RecoveryPhase};
 
 /// Whether a usable FSKit (or macFUSE) backend is available at runtime.
 ///
