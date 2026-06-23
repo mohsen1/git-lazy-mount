@@ -14,5 +14,6 @@ overview.
 | [0005](0005-overlay-base-ref-for-renames.md) | Overlay base-refs make clean renames fetch-free | Accepted |
 | [0006](0006-provider-is-residency-authority.md) | The provider is the object-residency authority | Accepted |
 | [0007](0007-attr-source-for-bare-store-filtering.md) | Faithful filtering passes `--attr-source` | Accepted |
+| [0008](0008-fskit-extension-delegates-to-daemon-over-ipc.md) | The FSKit extension delegates filesystem callbacks to the daemon over IPC | Proposed |
 
 Where an ADR deviates from the spec, it says so explicitly (see 0002).
