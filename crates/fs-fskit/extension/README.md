@@ -1,78 +1,90 @@
-# FSKit system extension — signing, entitlements, and lifecycle (issue #10)
+# git-lazy-mount FSKit module (macOS) — issues #5/#10
 
-> **On-device.** Everything in this directory describes the *signed, on-device*
-> packaging of the FSKit module. None of it is compiled by the cross-platform
-> Rust build, and producing/validating a signed build requires an Apple Developer
-> identity on real Apple hardware (gated by the on-device validation harness,
-> issue #12). A green default CI never implies any of this was exercised
-> (spec §54).
+The on-device macOS backend: a Swift FSKit **app extension** whose `FSVolume`
+operations are served by the shared git-lazy-mount engine through the
+[`glm-fskit-ffi`](../../fskit-ffi) C ABI. This is the macOS counterpart to the
+Linux FUSE adapter (`glm-fs-fuse`) — the same tested engine, a platform shell.
 
-The FSKit module is the macOS-specific bridge from FSKit `FSUnaryFileSystem` /
-`FSVolume` callbacks into the shared, tested Rust logic
-([`FskitOps`](../src/bridge.rs)). The Rust side is platform-independent and
-unit-tested; this directory is the Swift/codesign packaging around it.
+> **On-device.** None of this is compiled by the cross-platform Rust build, and a
+> signed build requires an Apple developer identity on real Apple hardware. A
+> green default CI never implies any of this was exercised (spec §54).
 
-## Files
+```
+GitLazyMount/            SwiftUI host app (exists so the system can discover +
+                         enable the embedded extension)
+GitLazyMountFS/          the FSKit module (app extension)
+  GitLazyMountFSExtension.swift   @main UnaryFileSystemExtension
+  GlmFileSystem.swift             FSUnaryFileSystem: loadResource → open workspace
+  GlmVolume.swift                 FSVolume.Operations/ReadWrite/OpenClose → FFI
+  GlmItem.swift                   FSItem addressed by engine inode
+  GlmSupport.swift                errno/attr/byte-name bridging
+  glm_fskit.h                     C ABI (matches crates/fskit-ffi)
+  *-Bridging-Header.h             exposes the C ABI to Swift
+  Info.plist                      EXAppExtensionAttributes (FSShortName=gitlazymount)
+  GitLazyMountFS.entitlements     app-sandbox + com.apple.developer.fskit.fsmodule
+project.yml              xcodegen spec (host app + appex, links the Rust .a)
+build.sh                 build the Rust staticlib + generate + build/sign the app
+```
 
-| File | Purpose |
-|------|---------|
-| `Info.plist` | Declares the system extension as an FSKit module (`FSModuleType = FSUnaryFileSystem`) under the app-extension point `com.apple.fskit.fsmodule`. |
-| `git-lazy-mount.entitlements` | The entitlements the module is signed with — notably `com.apple.developer.fskit.fsmodule`. |
+## Build · install · enable · mount
 
-## Required entitlements
+```sh
+./build.sh                          # Rust staticlib → xcodegen → xcodebuild (signed)
+cp -R DerivedData/Build/Products/Release/GitLazyMount.app /Applications/
+open /Applications/GitLazyMount.app                               # registers the module
+pluginkit -mAv -p com.apple.fskit.fsmodule | grep gitlazymount   # verify "+" registration
+# System Settings → General → Login Items & Extensions → File System Extensions → enable
+mount -t gitlazymount <registered-mountpoint> <dir>
+```
 
-* `com.apple.developer.fskit.fsmodule` — **required**; an App ID / provisioning
-  profile must carry it, and codesign must apply it.
-* `com.apple.security.app-sandbox` — the extension runs sandboxed.
-* `com.apple.security.network.client` — lazy object hydration may fetch from the
-  remote (still **non-interactive**: a filesystem callback never prompts for
-  credentials, spec §3.13).
-* `com.apple.security.files.user-selected.read-write` — for the user-chosen
-  mountpoint.
+`build.sh` needs Rust (+ the `aarch64-apple-darwin` target), `xcodegen`, Xcode,
+and a paid Apple team signed into Xcode (`DEVELOPMENT_TEAM`, default
+`HESNS6JK33`).
 
-## Reproducible signed build (outline)
+## Signing facts (validated on macOS 26.4.1)
 
-1. Build the Rust logic as a static library (`cargo build -p glm-fs-fskit
-   --release`) and link it into the Swift `FSUnaryFileSystem` extension target.
-2. Embed the extension in the host app bundle (`Contents/Library/SystemExtensions`).
-3. Sign **inside-out** with a hardened runtime and the entitlements above:
-   ```sh
-   codesign --force --options runtime --timestamp \
-     --entitlements git-lazy-mount.entitlements \
-     --sign "Developer ID Application: <TEAM>" \
-     "<App>.app/Contents/Library/SystemExtensions/com.git-lazy-mount.fskit.fsmodule.appex"
-   codesign --force --options runtime --timestamp \
-     --sign "Developer ID Application: <TEAM>" "<App>.app"
-   ```
-4. Notarize the app (`notarytool submit … --wait`) and staple.
-5. Verify: `codesign --verify --deep --strict --verbose=2 "<App>.app"` and
-   `spctl -a -vv "<App>.app"`.
+No SIP changes, **no notarization, no Developer ID, no `OSSystemExtension`** — it
+is a plain app extension that Xcode automatic-signing provisions:
 
-Pin tool versions (Xcode, the macOS SDK) so the build is reproducible.
+* Entitlement **`com.apple.developer.fskit.fsmodule`** self-serves under any paid
+  team via automatic signing once the **Program License Agreement** is accepted.
+* `DEVELOPMENT_TEAM` is the team ID = the signing cert's **`OU`** (not the
+  parenthetical in the cert's common name — that bit us repeatedly).
+* The host app and the embedded appex must sign with the **same** identity (one
+  "Apple Development" cert; a duplicate causes "embedded binary is not signed
+  with the same certificate as the parent app").
+* Build **Release** (the Debug "debug dylib" indirection is a poor fit for an
+  extension the system must validate).
 
-## Activation / approval lifecycle
+Full runbook + the current blocker:
+[`docs/platform-macos-fskit-ondevice.md`](../../../docs/platform-macos-fskit-ondevice.md).
 
-The lifecycle states are modeled in [`lifecycle.rs`](../src/lifecycle.rs) and
-surfaced by `git lazy-mount doctor` (`fskit_extension_state` + `fskit_next_step`):
+**Open blocker (issue #19):** on macOS 26.4.1 the System Settings *enablement*
+toggle for File System Extensions is inert for **every** third-party FSKit module
+(Apple's own `Passthrough` sample included), so the final `mount` can't proceed.
+The module builds, signs, links the engine, and **registers** — verified — but
+cannot be enabled on this OS build.
+
+## doctor / activation lifecycle
+
+Surfaced by `git lazy-mount doctor` (`fskit_extension_state` + `fskit_next_step`),
+modeled in [`lifecycle.rs`](../src/lifecycle.rs):
 
 | State | Meaning | Next step |
 |-------|---------|-----------|
 | `unsupported` | not macOS, or macOS < 15.4 | upgrade macOS, or use macFUSE |
-| `not_installed` | OS supports FSKit; our extension isn't registered | install the app bundle |
-| `awaiting_approval` | registered, not yet approved | approve in System Settings → General → Login Items & Extensions → File System Extensions |
-| `activated` | approved & active | ready to mount |
+| `not_installed` | FSKit present; our module not registered | install + launch the app |
+| `awaiting_approval` | registered, not yet enabled | enable in System Settings → File System Extensions |
+| `activated` | enabled & active | ready to mount |
 
-* **Activation:** the host app calls `OSSystemExtensionRequest.activationRequest`;
-  the user approves it once in System Settings.
-* **Deactivation:** `OSSystemExtensionRequest.deactivationRequest`.
-* **Across OS updates / reloads:** a major macOS update can require re-approval;
-  the probe (`Capability::detect`) re-reads the live state each run, so `doctor`
-  always reflects reality rather than a cached assumption.
+A major macOS update can require re-enabling; `Capability::detect` re-reads the
+live state each run so `doctor` reflects reality, not a cached assumption.
 
-## On-device acceptance (issue #10)
+## Known gaps (this validation build)
 
-- [ ] A reproducible **signed** build with the entitlements above.
-- [ ] Activation / deactivation + the user-approval flow, surfaced via
-      `doctor` diagnostics (the lifecycle state ties into capability detection,
-      issue #6).
-- [ ] Verified behavior across an OS update / extension reload.
+* **Sandbox vs. `git`.** FSKit extensions are sandboxed; the FFI currently opens
+  the workspace and shells out to `git` in-process, which the sandbox restricts.
+  Production should proxy FS callbacks to `glm-daemon` over XPC/IPC (the daemon
+  runs `git` outside the sandbox). The FFI is the validation shim.
+* **`mkdir`** returns `ENOTSUP` (Git has no empty trees; directories materialize
+  on first child write).

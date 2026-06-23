@@ -1,0 +1,46 @@
+name: GitLazyMount
+options:
+  bundleIdPrefix: com.thirdface
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: HESNS6JK33
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  GitLazyMount:
+    type: application
+    platform: macOS
+    sources:
+      - GitLazyMount
+    settings:
+      base:
+        PRODUCT_NAME: GitLazyMount
+        PRODUCT_BUNDLE_IDENTIFIER: com.thirdface.gitlazymount
+        CODE_SIGN_ENTITLEMENTS: GitLazyMount/GitLazyMount.entitlements
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_LSUIElement: "NO"
+    dependencies:
+      - target: GitLazyMountFS
+  GitLazyMountFS:
+    type: app-extension
+    platform: macOS
+    sources:
+      - GitLazyMountFS
+    settings:
+      base:
+        PRODUCT_NAME: GitLazyMountFS
+        PRODUCT_BUNDLE_IDENTIFIER: com.thirdface.gitlazymount.GitLazyMountFS
+        CODE_SIGN_ENTITLEMENTS: GitLazyMountFS/GitLazyMountFS.entitlements
+        INFOPLIST_FILE: GitLazyMountFS/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: GitLazyMountFS/GitLazyMountFS-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/GitLazyMountFS
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/../../../target/aarch64-apple-darwin/release
+        OTHER_LDFLAGS: -lglm_fskit_ffi
+    dependencies:
+      - sdk: FSKit.framework
