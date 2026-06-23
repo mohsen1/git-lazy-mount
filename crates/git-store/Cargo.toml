@@ -9,3 +9,11 @@ description = "Authoritative Git CLI adapter: bare store, fetch, cat-file batch,
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+glm-testkit.workspace = true

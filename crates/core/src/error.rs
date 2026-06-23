@@ -127,7 +127,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// A structured error (spec §47).
 #[derive(Debug)]
-pub struct Error {
+pub struct Error(Box<ErrorRepr>);
+
+/// The boxed representation behind [`Error`]. Boxing keeps `Result<T, Error>`
+/// pointer-sized, so the common `Ok` path is cheap and `clippy::result_large_err`
+/// stays satisfied. Field access on [`Error`] works transparently via `Deref`.
+#[derive(Debug)]
+pub struct ErrorRepr {
     /// Stable category code.
     pub code: ErrorCode,
     /// One-line human summary (must not contain secrets).
@@ -146,11 +152,18 @@ pub struct Error {
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
+impl std::ops::Deref for Error {
+    type Target = ErrorRepr;
+    fn deref(&self) -> &ErrorRepr {
+        &self.0
+    }
+}
+
 impl Error {
     /// Construct a new error from a code and summary, using the code's default
     /// retryability.
     pub fn new(code: ErrorCode, summary: impl Into<String>) -> Self {
-        Error {
+        Error(Box::new(ErrorRepr {
             code,
             summary: summary.into(),
             retryable: code.default_retryable(),
@@ -159,7 +172,7 @@ impl Error {
             operation_id: None,
             context: Vec::new(),
             source: None,
-        }
+        }))
     }
 
     /// Convenience constructor for [`ErrorCode::Internal`].
@@ -174,37 +187,37 @@ impl Error {
 
     /// Override retryability.
     pub fn retryable(mut self, retryable: bool) -> Self {
-        self.retryable = retryable;
+        self.0.retryable = retryable;
         self
     }
 
     /// Attach a recommended action.
     pub fn with_action(mut self, action: impl Into<String>) -> Self {
-        self.recommended_action = Some(action.into());
+        self.0.recommended_action = Some(action.into());
         self
     }
 
     /// Attach the owning workspace id.
     pub fn with_workspace(mut self, id: WorkspaceId) -> Self {
-        self.workspace_id = Some(id);
+        self.0.workspace_id = Some(id);
         self
     }
 
     /// Attach the owning operation id.
     pub fn with_operation(mut self, id: OperationId) -> Self {
-        self.operation_id = Some(id);
+        self.0.operation_id = Some(id);
         self
     }
 
     /// Push a diagnostic breadcrumb (caller must ensure it is redacted).
     pub fn context(mut self, ctx: impl Into<String>) -> Self {
-        self.context.push(ctx.into());
+        self.0.context.push(ctx.into());
         self
     }
 
     /// Attach an underlying cause.
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        self.source = Some(Box::new(source));
+        self.0.source = Some(Box::new(source));
         self
     }
 

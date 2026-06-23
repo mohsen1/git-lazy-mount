@@ -9,3 +9,8 @@ description = "Test harness: ephemeral Git repos/remotes, fault injection, count
 
 [lints]
 workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-git-store.workspace = true
+tempfile.workspace = true
