@@ -104,11 +104,13 @@ intents.
 
 ### System-extension lifecycle + signing/entitlements — issue #10
 
-* **Built:** `crates/fs-fskit/extension/` carries the packaging — `Info.plist`
-  (FSKit `FSModuleType` declaration), `git-lazy-mount.entitlements` (notably
-  `com.apple.developer.fskit.fsmodule`), and `README.md` (the reproducible
-  signed-build steps + the activation/deactivation/approval lifecycle, incl.
-  behavior across OS updates).
+* **Built:** `crates/fs-fskit/extension/` carries the full Swift FSKit module —
+  the `@main` `UnaryFileSystemExtension`, the `FSUnaryFileSystem`/`FSVolume`
+  implementation driving the engine through the `glm-fskit-ffi` C ABI, a SwiftUI
+  host app, entitlements (`com.apple.developer.fskit.fsmodule`), an xcodegen
+  project, and `build.sh`. It **builds, signs, links the engine, and registers**
+  with FSKit on macOS 26.4.1 (verified); the on-device runbook + the current
+  enablement blocker are in `docs/platform-macos-fskit-ondevice.md` (issue #19).
 * **Built:** `crates/fs-fskit/src/lifecycle.rs` derives an `ExtensionState`
   (`unsupported` / `not_installed` / `awaiting_approval` / `activated`) from the
   capability probe and the concrete next step; `git lazy-mount doctor` surfaces

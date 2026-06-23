@@ -1,0 +1,32 @@
+[package]
+name = "glm-fskit-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C ABI over the FSKit FSVolume bridge (FskitOps), for the on-device Swift extension to link."
+
+[lib]
+# `staticlib` for the Swift extension to link; `rlib` so it builds as a normal
+# workspace member (and is lint-checked) in CI.
+crate-type = ["staticlib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-platform.workspace = true
+glm-workspace.workspace = true
+glm-fs-common.workspace = true
+glm-fs-fskit.workspace = true
+glm-daemon.workspace = true
+glm-git-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+glm-object-provider.workspace = true
+glm-testkit.workspace = true
+tempfile.workspace = true

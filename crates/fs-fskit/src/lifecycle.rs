@@ -6,11 +6,12 @@
 //! [`Capability`] probe into an explicit [`ExtensionState`] and the concrete next
 //! step, so the lifecycle is surfaced through diagnostics rather than guessed at.
 //!
-//! The signing requirements, the entitlements the extension needs, and the
-//! reproducible signed-build steps live alongside this crate under
-//! `extension/` (`Info.plist`, `git-lazy-mount.entitlements`, `README.md`).
-//! Actually producing a signed build and exercising the activation/approval flow
-//! requires an Apple Developer identity on real hardware (tracked by issue #12).
+//! The signed Swift FSKit extension (host app + appex), its entitlements, the
+//! xcodegen project, and the build script live alongside this crate under
+//! `extension/` (see its `README.md`). Producing a signed build and exercising
+//! the activation/approval flow requires an Apple Developer identity on real
+//! hardware; the on-device runbook + findings are in
+//! `docs/platform-macos-fskit-ondevice.md` (issue #19).
 
 use crate::capability::Capability;
 
