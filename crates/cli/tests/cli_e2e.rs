@@ -11,18 +11,27 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_git-lazy-mount")
 }
 
-fn run(data_root: &Path, args: &[&str]) -> (String, String, bool) {
-    let out = Command::new(bin())
-        .args(args)
-        .env("GLM_DATA_ROOT", data_root)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+/// Apply a deterministic, host-independent Git environment to a command:
+/// identity (CI runners have none) and `core.autocrlf=false` injected via
+/// `GIT_CONFIG_*` env so faithful filtering doesn't introduce platform CRLF
+/// (Git for Windows ships `core.autocrlf=true` in system config).
+fn det_env(cmd: &mut Command, data_root: &Path) {
+    cmd.env("GLM_DATA_ROOT", data_root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.autocrlf")
+        .env("GIT_CONFIG_VALUE_0", "false")
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.com")
-        .output()
-        .expect("spawn git-lazy-mount");
+        .env("GIT_COMMITTER_EMAIL", "test@example.com");
+}
+
+fn run(data_root: &Path, args: &[&str]) -> (String, String, bool) {
+    let mut cmd = Command::new(bin());
+    cmd.args(args);
+    det_env(&mut cmd, data_root);
+    let out = cmd.output().expect("spawn git-lazy-mount");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -32,9 +41,10 @@ fn run(data_root: &Path, args: &[&str]) -> (String, String, bool) {
 
 fn run_stdin(data_root: &Path, args: &[&str], stdin: &[u8]) -> bool {
     use std::io::Write;
-    let mut child = Command::new(bin())
-        .args(args)
-        .env("GLM_DATA_ROOT", data_root)
+    let mut cmd = Command::new(bin());
+    cmd.args(args);
+    det_env(&mut cmd, data_root);
+    let mut child = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()

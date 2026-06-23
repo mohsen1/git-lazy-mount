@@ -180,6 +180,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = GitStore::init_bare(tmp.path().join("git"), None).unwrap();
         store.set_config("protocol.file.allow", "always").unwrap();
+        // Deterministic line endings regardless of the host's Git config
+        // (Git for Windows ships core.autocrlf=true in system config).
+        store.set_config("core.autocrlf", "false").unwrap();
         store.add_remote("origin", &remote.url).unwrap();
         store
             .fetch(
