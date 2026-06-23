@@ -10,6 +10,9 @@ pub(crate) struct Run {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub status_ok: bool,
+    /// The process exit code, if it exited normally (used to distinguish
+    /// meaningful non-zero codes like `merge-tree`'s exit 1 for conflicts).
+    pub code: Option<i32>,
 }
 
 /// Run a command to completion, optionally feeding `stdin`, capturing both
@@ -50,6 +53,7 @@ pub(crate) fn run(mut cmd: Command, stdin: Option<&[u8]>) -> Result<Run> {
         stdout,
         stderr,
         status_ok: status.success(),
+        code: status.code(),
     })
 }
 

@@ -113,9 +113,33 @@ pub struct Workspace {
     stage: Stage,
     oplog: OpLog,
     cfg: WorkspaceConfig,
+    ws_dir: std::path::PathBuf,
     base: Mutex<Option<ObjectId>>,
     attached_expected: Mutex<Option<ObjectId>>,
     generation: Mutex<u64>,
+    /// Pending merge head (the "theirs" commit) while a conflicted merge is
+    /// unresolved; a subsequent commit folds it in as a second parent.
+    merge_head: Mutex<Option<ObjectId>>,
+}
+
+/// The outcome of a [`Workspace::merge`].
+#[derive(Debug)]
+pub enum MergeResult {
+    /// A clean merge that produced a two-parent merge commit.
+    Clean {
+        /// The merge commit.
+        commit: ObjectId,
+        /// The sealed operation.
+        operation: OperationId,
+    },
+    /// A conflicted merge: marker content was materialized into the overlay and
+    /// the merge is pending until the conflicts are resolved and committed.
+    Conflicts {
+        /// Conflicted paths (marker content written to the working tree).
+        paths: Vec<RepoPath>,
+        /// Informational messages from Git.
+        messages: Vec<String>,
+    },
 }
 
 type EntryRef = (ObjectId, GitMode);
@@ -170,6 +194,9 @@ impl Workspace {
             }
         };
 
+        let ws_dir = ws_dir.to_path_buf();
+        let merge_head = read_merge_head(&ws_dir);
+
         Ok(Workspace {
             store,
             provider,
@@ -177,9 +204,11 @@ impl Workspace {
             stage,
             oplog,
             cfg,
+            ws_dir,
             base: Mutex::new(base),
             attached_expected: Mutex::new(attached_expected),
             generation: Mutex::new(generation),
+            merge_head: Mutex::new(merge_head),
         })
     }
 
@@ -672,7 +701,13 @@ impl Workspace {
             policy,
         )?;
 
-        let parents: Vec<ObjectId> = base_commit.iter().cloned().collect();
+        // Parents: base, plus a pending merge head if resolving a conflicted
+        // merge (so the result is a proper two-parent merge commit).
+        let mut parents: Vec<ObjectId> = base_commit.iter().cloned().collect();
+        let pending_merge = self.merge_head();
+        if let Some(mh) = &pending_merge {
+            parents.push(mh.clone());
+        }
         let commit = self.store.commit_tree(&CommitParams {
             tree: new_tree,
             parents,
@@ -710,6 +745,10 @@ impl Workspace {
         // Reset stage; dematerialize entries that are now clean (spec §24 §10/§12).
         self.stage.clear()?;
         self.dematerialize_committed(&staged)?;
+        // A merge in progress is now resolved by this commit.
+        if pending_merge.is_some() {
+            self.set_merge_head(None)?;
+        }
 
         *self.base.lock().unwrap() = Some(commit.clone());
         let new_gen = {
@@ -860,6 +899,116 @@ impl Workspace {
         self.advance_base(target, &format!("reset --{}", mode.as_str()))
     }
 
+    /// Merge `theirs` into the current base (spec §34, §37). Clean-workspace
+    /// only. A clean merge produces a two-parent merge commit. A conflicted
+    /// merge materializes Git's conflict-marker content into the overlay and
+    /// records a pending merge head; resolving (edit + add) and committing then
+    /// produces the merge commit.
+    pub fn merge(&self, theirs: ObjectId) -> Result<MergeResult> {
+        if !self.is_clean() {
+            return Err(Error::new(
+                ErrorCode::DirtyWorkspaceConflict,
+                "cannot merge with a dirty workspace",
+            )
+            .with_action("commit, restore, or stash changes first"));
+        }
+        let ours = self
+            .base_commit()
+            .ok_or_else(|| Error::new(ErrorCode::Configuration, "no base commit to merge into"))?;
+        let out = self.store.merge_tree(&ours, &theirs)?;
+
+        if out.clean {
+            let commit = self.store.commit_tree(&CommitParams {
+                tree: out.tree,
+                parents: vec![ours.clone(), theirs.clone()],
+                message: format!("Merge {}", short_hex(&theirs)),
+                author: self.cfg.identity.clone(),
+                committer: self.cfg.identity.clone(),
+                sign: false,
+            })?;
+            self.store
+                .update_ref_cas(&self.cfg.workspace_head_ref, &commit, Some(&ours))?;
+            if let Some(branch) = &self.cfg.attached_branch {
+                let expected = self.attached_expected.lock().unwrap().clone();
+                if self
+                    .store
+                    .update_ref_cas(branch, &commit, expected.as_ref())
+                    .is_ok()
+                {
+                    *self.attached_expected.lock().unwrap() = Some(commit.clone());
+                }
+            }
+            *self.base.lock().unwrap() = Some(commit.clone());
+            let op = self.seal_view("merge", &commit)?;
+            return Ok(MergeResult::Clean {
+                commit,
+                operation: op,
+            });
+        }
+
+        // Conflicted: materialize Git's marker content for each conflicted path
+        // into the overlay so editors see markers, and record a pending merge.
+        let mut paths = Vec::new();
+        for c in &out.conflicts {
+            let path = RepoPath::from_bytes(c.path.clone())
+                .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))?;
+            if let Ok(Some(blob)) =
+                self.store
+                    .rev_parse(&format!("{}:{}", out.tree.to_hex(), path.display()))
+            {
+                if let Ok(bytes) = self.store.read_blob_raw(&blob, true) {
+                    self.overlay.put_file(&path, &bytes, false)?;
+                }
+            }
+            paths.push(path);
+        }
+        self.set_merge_head(Some(theirs))?;
+        Ok(MergeResult::Conflicts {
+            paths,
+            messages: out.messages,
+        })
+    }
+
+    fn set_merge_head(&self, head: Option<ObjectId>) -> Result<()> {
+        *self.merge_head.lock().unwrap() = head.clone();
+        let path = self.ws_dir.join("MERGE_HEAD");
+        match head {
+            Some(oid) => std::fs::write(&path, oid.to_hex())?,
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        Ok(())
+    }
+
+    /// The pending merge head, if a conflicted merge is unresolved.
+    pub fn merge_head(&self) -> Option<ObjectId> {
+        self.merge_head.lock().unwrap().clone()
+    }
+
+    fn seal_view(&self, cause: &str, commit: &ObjectId) -> Result<OperationId> {
+        let new_gen = {
+            let mut g = self.generation.lock().unwrap();
+            *g += 1;
+            *g
+        };
+        let mut view = WorkspaceView::root(glm_core::WorkspaceViewId(vec![]), Some(commit.clone()));
+        view.attached_branch = self.cfg.attached_branch.clone();
+        view.attached_branch_expected = self.attached_expected.lock().unwrap().clone();
+        view.mount_generation = new_gen;
+        let op = self.oplog.commit(
+            view,
+            NewOperation {
+                cause: Cause::Command(cause.to_string()),
+                description: cause.to_string(),
+                durability: glm_core::Durability::OperationSealed,
+                external_effects: vec![],
+            },
+        )?;
+        self.oplog.mark_applied(new_gen)?;
+        Ok(op)
+    }
+
     /// Push the attached branch (or the workspace head) to the remote using a
     /// `--force-with-lease` compare-and-swap (spec §13 saga step).
     pub fn push(&self, policy: FetchPolicy) -> Result<()> {
@@ -959,4 +1108,21 @@ fn rel_after(dir: &RepoPath, p: &RepoPath) -> Option<Vec<Vec<u8>>> {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
+}
+
+fn short_hex(oid: &ObjectId) -> String {
+    let h = oid.to_hex();
+    h[..h.len().min(10)].to_string()
+}
+
+fn read_merge_head(ws_dir: &std::path::Path) -> Option<ObjectId> {
+    let bytes = std::fs::read_to_string(ws_dir.join("MERGE_HEAD")).ok()?;
+    // The object format is inferred at parse time; default to sha1/sha256 by
+    // length. We parse leniently and let an invalid value simply clear it.
+    let hex = bytes.trim();
+    let format = match hex.len() {
+        64 => glm_core::ObjectFormat::Sha256,
+        _ => glm_core::ObjectFormat::Sha1,
+    };
+    ObjectId::parse_hex(format, hex).ok()
 }
