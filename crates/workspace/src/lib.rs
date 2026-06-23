@@ -318,11 +318,8 @@ impl Workspace {
                 self.read_blob_for_mode(&oid, path, mode, policy)
             }
             None => match self.resolve_base_entry(path, policy)? {
-                Some(e) if e.mode.is_file() => {
-                    self.provider.filtered_blob(&e.object_id, path, policy)
-                }
-                Some(e) if matches!(e.mode, GitMode::Symlink) => {
-                    self.provider.raw_blob(&e.object_id, policy)
+                Some(e) if e.mode.is_file() || matches!(e.mode, GitMode::Symlink) => {
+                    self.read_blob_for_mode(&e.object_id, path, e.mode, policy)
                 }
                 _ => Err(not_found(path)),
             },
@@ -337,9 +334,12 @@ impl Workspace {
         policy: FetchPolicy,
     ) -> Result<Vec<u8>> {
         if matches!(mode, GitMode::Symlink) {
+            // A symlink blob is the raw link target; never filtered.
             self.provider.raw_blob(oid, policy)
         } else {
-            self.provider.filtered_blob(oid, path, policy)
+            let attr = self.base_commit();
+            self.provider
+                .filtered_blob(oid, path, attr.as_ref(), policy)
         }
     }
 
@@ -356,13 +356,10 @@ impl Workspace {
                 Ok(self.read_blob_for_mode(&oid, path, mode, policy)?.len() as u64)
             }
             None => match self.resolve_base_entry(path, policy)? {
-                Some(e) if e.mode.is_file() => Ok(self
-                    .provider
-                    .filtered_blob(&e.object_id, path, policy)?
-                    .len() as u64),
-                Some(e) if matches!(e.mode, GitMode::Symlink) => {
-                    Ok(self.provider.raw_blob(&e.object_id, policy)?.len() as u64)
-                }
+                Some(e) if e.mode.is_file() || matches!(e.mode, GitMode::Symlink) => Ok(self
+                    .read_blob_for_mode(&e.object_id, path, e.mode, policy)?
+                    .len()
+                    as u64),
                 _ => Err(not_found(path)),
             },
         }
@@ -501,7 +498,10 @@ impl Workspace {
             Some(OverlayKind::Tombstone) => self.stage.remove(path.clone()),
             Some(OverlayKind::File { executable }) => {
                 let bytes = self.overlay.read_content(path)?.unwrap_or_default();
-                let oid = self.store.hash_blob_clean(path.as_bytes(), &bytes, true)?;
+                let attr = self.base_commit().map(|c| c.to_hex());
+                let oid =
+                    self.store
+                        .hash_blob_clean(path.as_bytes(), &bytes, attr.as_deref(), true)?;
                 let mode = if executable {
                     GitMode::Executable
                 } else {
@@ -588,7 +588,10 @@ impl Workspace {
             Some(OverlayKind::Tombstone) => Ok(None),
             Some(OverlayKind::File { executable }) => {
                 let bytes = self.overlay.read_content(path)?.unwrap_or_default();
-                let oid = self.store.hash_blob_clean(path.as_bytes(), &bytes, false)?;
+                let attr = self.base_commit().map(|c| c.to_hex());
+                let oid =
+                    self.store
+                        .hash_blob_clean(path.as_bytes(), &bytes, attr.as_deref(), false)?;
                 let mode = if executable {
                     GitMode::Executable
                 } else {
@@ -733,7 +736,13 @@ impl Workspace {
                         Some(OverlayKind::BaseRef { oid: o, .. }) => &o == oid,
                         Some(OverlayKind::File { .. }) => {
                             let bytes = self.overlay.read_content(p)?.unwrap_or_default();
-                            &self.store.hash_blob_clean(p.as_bytes(), &bytes, false)? == oid
+                            let attr = self.base_commit().map(|c| c.to_hex());
+                            &self.store.hash_blob_clean(
+                                p.as_bytes(),
+                                &bytes,
+                                attr.as_deref(),
+                                false,
+                            )? == oid
                         }
                         Some(OverlayKind::Symlink) => {
                             let bytes = self.overlay.read_content(p)?.unwrap_or_default();

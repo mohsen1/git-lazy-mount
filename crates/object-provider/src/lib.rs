@@ -72,8 +72,15 @@ pub trait ObjectProvider: Send + Sync {
     /// Read raw (unfiltered) blob bytes.
     fn raw_blob(&self, id: &ObjectId, policy: FetchPolicy) -> Result<Vec<u8>>;
     /// Read working-tree (smudge-filtered) bytes for a blob at `path`.
-    fn filtered_blob(&self, id: &ObjectId, path: &RepoPath, policy: FetchPolicy)
-        -> Result<Vec<u8>>;
+    /// `attr_source` is a tree-ish from which `.gitattributes` are resolved
+    /// (the workspace base commit); see [`glm_git_store::GitStore::smudge_blob`].
+    fn filtered_blob(
+        &self,
+        id: &ObjectId,
+        path: &RepoPath,
+        attr_source: Option<&ObjectId>,
+        policy: FetchPolicy,
+    ) -> Result<Vec<u8>>;
     /// Ensure objects are present locally, coalescing/batching as needed.
     fn ensure_objects(&self, ids: &[ObjectId], priority: FetchPriority) -> Result<EnsureResult>;
     /// Whether the provider knows the object is locally present (cached view).
@@ -206,10 +213,18 @@ impl ObjectProvider for GitObjectProvider {
         &self,
         id: &ObjectId,
         path: &RepoPath,
+        attr_source: Option<&ObjectId>,
         policy: FetchPolicy,
     ) -> Result<Vec<u8>> {
         self.ensure_present_locally(id, policy)?;
-        let bytes = self.store.smudge_blob(id, path.as_bytes(), false)?;
+        let attr_hex = attr_source.map(|o| o.to_hex());
+        // Faithful filtering may need attribute blobs (`.gitattributes`) along
+        // the path, which can be absent under a blob:none clone. When the policy
+        // permits network, let Git fault them in; under cache-only the smudge
+        // fails with an offline error (the caller must prefetch attributes).
+        let bytes =
+            self.store
+                .smudge_blob(id, path.as_bytes(), attr_hex.as_deref(), policy.may_fetch())?;
         self.metrics.inc_filtered(bytes.len() as u64);
         Ok(bytes)
     }

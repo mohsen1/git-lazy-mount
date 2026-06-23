@@ -110,6 +110,14 @@ version = "0.1.0"
 [[package]]
 name = "glm-filters"
 version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "glm-fs-common"
