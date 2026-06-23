@@ -5,10 +5,17 @@ for older systems), and what is required (spec §5.5, §41)?
 
 ## Status
 
-**Not testable in this environment** (no macOS host) and **not implemented.**
-`glm-fs-fskit` is a documented scaffold. macOS is explicitly **not**
-production-ready (spec §54); we will not label it supported on the basis of
-compilation.
+**Backend logic implemented and tested; on-device mount not yet validated.**
+`glm-fs-fskit` now carries the full backend-independent macOS implementation —
+the `FskitOps` `FSVolume` bridge, runtime capability detection + diagnostics,
+APFS case-/normalization collision handling, the macOS metadata commit policy,
+the NSFileCoordination cooperation model, the system-extension lifecycle, and the
+mount-recovery re-attach path — all unit-tested on every platform, with extra
+real-FS tests on macOS hosts. macOS is still explicitly **not** production-ready
+(spec §54): the signed FSKit system extension + Swift `FSVolume` adapter must be
+validated on real Apple hardware via the manual CI job (issue #12) before macOS
+is labeled supported. See [`platform-macos.md`](../platform-macos.md) for the
+per-sub-issue status table.
 
 ## What can be reused
 
@@ -31,6 +38,11 @@ macOS-specific, and it should expose the same operations as `FuseOps`.
 
 ## Decision
 
-Defer FSKit until it can be validated on real hardware with real filesystem
-tests (spec §54). The shared logic is ready; the macOS bridge is future work
-tracked in `docs/platform-macos.md`.
+The backend-independent macOS implementation has landed (the bridge, capability
+detection, collision handling, metadata policy, coordination, lifecycle, and
+recovery), so the open questions above are resolved in software and covered by
+tests. The remaining gate is purely on-device: a signed FSKit extension + the
+Swift `FSVolume` adapter, validated on real Apple hardware with real filesystem
+tests (spec §54) via the manual CI job (issue #12). macOS is **not** labeled
+supported until that run lands. Progress is tracked in
+`docs/platform-macos.md`.
