@@ -30,6 +30,9 @@ use glm_stage::{Stage, StagedChange};
 pub use status::{StatusCode, StatusEntry};
 pub use tree_build::{build_tree, TreeChange};
 
+// `ResetMode`, `EntryKind`, `DirEntry`, `WorkspaceConfig`, `Workspace`,
+// `CommitOutcome` are defined in this module and re-exported at the crate root.
+
 /// The kind of a resolved directory/file entry, for projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
@@ -79,6 +82,27 @@ pub struct WorkspaceConfig {
     pub remote: Option<String>,
     /// Author/committer identity, or `None` to use Git config.
     pub identity: Option<Identity>,
+}
+
+/// Reset modes (spec §36).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResetMode {
+    /// Move HEAD only; keep stage and working tree.
+    Soft,
+    /// Move HEAD and reset the stage; keep the working tree.
+    Mixed,
+    /// Move HEAD, reset stage, and replace working state (not implemented).
+    Hard,
+}
+
+impl ResetMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ResetMode::Soft => "soft",
+            ResetMode::Mixed => "mixed",
+            ResetMode::Hard => "hard",
+        }
+    }
 }
 
 /// The transactional working-copy engine.
@@ -764,6 +788,76 @@ impl Workspace {
             }
         }
         Ok(())
+    }
+
+    /// Whether the workspace has no staged or working-tree changes.
+    pub fn is_clean(&self) -> bool {
+        self.stage.is_empty() && self.overlay.is_empty()
+    }
+
+    /// List local branches as `(refname, oid)` (read-only).
+    pub fn list_branches(&self) -> Result<Vec<(String, ObjectId)>> {
+        self.store.for_each_ref("refs/heads/")
+    }
+
+    fn advance_base(&self, target: ObjectId, cause: &str) -> Result<OperationId> {
+        let old = self.base_commit();
+        self.store
+            .update_ref_cas(&self.cfg.workspace_head_ref, &target, old.as_ref())?;
+        *self.base.lock().unwrap() = Some(target.clone());
+        let new_gen = {
+            let mut g = self.generation.lock().unwrap();
+            *g += 1;
+            *g
+        };
+        let mut view = WorkspaceView::root(glm_core::WorkspaceViewId(vec![]), Some(target));
+        view.attached_branch = self.cfg.attached_branch.clone();
+        view.attached_branch_expected = self.attached_expected.lock().unwrap().clone();
+        view.mount_generation = new_gen;
+        let op = self.oplog.commit(
+            view,
+            NewOperation {
+                cause: Cause::Command(cause.to_string()),
+                description: cause.to_string(),
+                durability: glm_core::Durability::OperationSealed,
+                external_effects: vec![],
+            },
+        )?;
+        self.oplog.mark_applied(new_gen)?;
+        Ok(op)
+    }
+
+    /// Switch the base revision (spec §35). Clean-workspace only in this build:
+    /// a dirty workspace is refused (the `--carry/--merge/--stash/--discard`
+    /// policies are designed but not implemented). Open handles keep the
+    /// generation they opened; new lookups see the new generation.
+    pub fn switch(&self, target: ObjectId) -> Result<OperationId> {
+        if !self.is_clean() {
+            return Err(Error::new(
+                ErrorCode::DirtyWorkspaceConflict,
+                "cannot switch with a dirty workspace",
+            )
+            .with_action("commit, restore, or stash changes first"));
+        }
+        self.advance_base(target, "switch")
+    }
+
+    /// Reset semantics (spec §36). `Soft` moves HEAD only; `Mixed` also resets
+    /// the stage; both preserve the working tree. `Hard` (which would replace
+    /// working state) is not implemented here because it must first snapshot
+    /// discarded overlay content into the operation log for recoverability.
+    pub fn reset(&self, mode: ResetMode, target: ObjectId) -> Result<OperationId> {
+        match mode {
+            ResetMode::Soft => {}
+            ResetMode::Mixed => self.stage.clear()?,
+            ResetMode::Hard => {
+                return Err(Error::unsupported(
+                    "reset --hard is not implemented yet (requires a recoverable \
+                     operation-log snapshot of discarded working content; spec §36)",
+                ))
+            }
+        }
+        self.advance_base(target, &format!("reset --{}", mode.as_str()))
     }
 
     /// Push the attached branch (or the workspace head) to the remote using a

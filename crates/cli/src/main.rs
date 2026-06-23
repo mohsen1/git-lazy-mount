@@ -89,6 +89,27 @@ enum Command {
     },
     /// Push the attached branch to the remote (compare-and-swap).
     Push,
+    /// List local branches.
+    Branch,
+    /// Switch the base revision (clean workspace only).
+    Switch {
+        /// Branch name or commit to switch to.
+        rev: String,
+    },
+    /// Reset HEAD (soft/mixed; hard is not implemented).
+    Reset {
+        /// Move HEAD only; keep stage and working tree.
+        #[arg(long)]
+        soft: bool,
+        /// Move HEAD and reset the stage (default).
+        #[arg(long)]
+        mixed: bool,
+        /// Replace working state (not implemented).
+        #[arg(long)]
+        hard: bool,
+        /// Target revision (defaults to current HEAD).
+        rev: Option<String>,
+    },
     /// List a directory through the workspace projection.
     Ls {
         /// Directory to list (defaults to the root).
@@ -282,6 +303,14 @@ fn run(cli: &Cli, format: Format) -> Result<()> {
             message_file,
         } => cmd_commit(cli, message.clone(), message_file.clone(), format),
         Command::Push => cmd_push(cli, format),
+        Command::Branch => cmd_branch(cli, format),
+        Command::Switch { rev } => cmd_switch(cli, rev, format),
+        Command::Reset {
+            soft,
+            mixed,
+            hard,
+            rev,
+        } => cmd_reset(cli, *soft, *mixed, *hard, rev.clone(), format),
         Command::Ls { path } => cmd_ls(cli, path.clone(), format),
         Command::Cat { path } => cmd_cat(cli, path),
         Command::Hydrate { pathspec } | Command::Prefetch { pathspec } => {
@@ -569,6 +598,91 @@ fn cmd_push(cli: &Cli, format: Format) -> Result<()> {
     let mount = open_mount(cli)?;
     mount.workspace.push(POLICY)?;
     emit_simple(format, "push", json!({ "pushed": true }), "pushed");
+    Ok(())
+}
+
+fn resolve_rev(mount: &OpenMount, rev: &str) -> Result<glm_core::ObjectId> {
+    mount.store.rev_parse(rev)?.ok_or_else(|| {
+        Error::new(
+            ErrorCode::Configuration,
+            format!("cannot resolve revision '{rev}'"),
+        )
+    })
+}
+
+fn cmd_branch(cli: &Cli, format: Format) -> Result<()> {
+    let mount = open_mount(cli)?;
+    let branches = mount.workspace.list_branches()?;
+    let current = mount.spec.attached_branch.clone();
+    if format == Format::Human {
+        for (name, oid) in &branches {
+            let marker = if Some(name) == current.as_ref() {
+                "* "
+            } else {
+                "  "
+            };
+            println!("{marker}{}  {}", short(&oid.to_hex()), name);
+        }
+    } else {
+        let arr: Vec<_> = branches
+            .iter()
+            .map(|(n, o)| json!({ "ref": n, "oid": o.to_hex(), "attached": Some(n) == current.as_ref() }))
+            .collect();
+        Envelope::new("branch", json!(arr)).print_json();
+    }
+    Ok(())
+}
+
+fn cmd_switch(cli: &Cli, rev: &str, format: Format) -> Result<()> {
+    let mount = open_mount(cli)?;
+    let target = resolve_rev(&mount, rev)?;
+    let op = mount.workspace.switch(target.clone())?;
+    let mut env =
+        Envelope::new("switch", json!({ "base": target.to_hex() })).workspace(mount.spec.id);
+    env.operation_id = Some(op.to_hex());
+    if format == Format::Human {
+        println!("switched to {}", short(&target.to_hex()));
+    } else {
+        env.print_json();
+    }
+    Ok(())
+}
+
+fn cmd_reset(
+    cli: &Cli,
+    soft: bool,
+    _mixed: bool,
+    hard: bool,
+    rev: Option<String>,
+    format: Format,
+) -> Result<()> {
+    let mount = open_mount(cli)?;
+    let mode = if hard {
+        glm_workspace::ResetMode::Hard
+    } else if soft {
+        glm_workspace::ResetMode::Soft
+    } else {
+        glm_workspace::ResetMode::Mixed
+    };
+    let target = match rev {
+        Some(r) => resolve_rev(&mount, &r)?,
+        None => mount
+            .workspace
+            .base_commit()
+            .ok_or_else(|| Error::new(ErrorCode::Configuration, "no HEAD to reset"))?,
+    };
+    let op = mount.workspace.reset(mode, target.clone())?;
+    let mut env = Envelope::new(
+        "reset",
+        json!({ "mode": format!("{mode:?}").to_lowercase(), "base": target.to_hex() }),
+    )
+    .workspace(mount.spec.id);
+    env.operation_id = Some(op.to_hex());
+    if format == Format::Human {
+        println!("reset ({:?}) to {}", mode, short(&target.to_hex()));
+    } else {
+        env.print_json();
+    }
     Ok(())
 }
 

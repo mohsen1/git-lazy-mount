@@ -349,3 +349,53 @@ fn executable_bit_change_without_fetch() {
         glm_core::GitMode::Executable
     );
 }
+
+#[test]
+fn switch_clean_and_refuse_when_dirty() {
+    use glm_workspace::ResetMode;
+    let (h, base) = harness(&[("a.txt", b"v1\n")]);
+
+    // Advance to a new commit.
+    h.ws.write_full(&p("a.txt"), b"v2\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+    let out = h.ws.commit("v2", POLICY).unwrap();
+    assert_eq!(h.ws.base_commit(), Some(out.commit.clone()));
+
+    // Clean switch back to the original base.
+    assert!(h.ws.is_clean());
+    h.ws.switch(base.clone()).unwrap();
+    assert_eq!(h.ws.base_commit(), Some(base.clone()));
+    // The working tree reflects the original content again.
+    assert_eq!(h.ws.read_file(&p("a.txt"), POLICY).unwrap(), b"v1\n");
+
+    // A dirty workspace refuses to switch.
+    h.ws.write_full(&p("a.txt"), b"dirty\n", false).unwrap();
+    let err = h.ws.switch(out.commit).unwrap_err();
+    assert_eq!(err.code, glm_core::ErrorCode::DirtyWorkspaceConflict);
+
+    // reset --hard is honestly reported as unimplemented (not a silent no-op).
+    let err = h.ws.reset(ResetMode::Hard, base).unwrap_err();
+    assert_eq!(err.code, glm_core::ErrorCode::UnsupportedOperation);
+}
+
+#[test]
+fn reset_mixed_clears_stage_keeps_worktree() {
+    use glm_workspace::ResetMode;
+    let (h, base) = harness(&[("a.txt", b"v1\n")]);
+    h.ws.write_full(&p("a.txt"), b"v2\n", false).unwrap();
+    h.ws.stage_path(&p("a.txt"), POLICY).unwrap();
+
+    // Mixed reset to the same base: stage cleared, working tree preserved.
+    h.ws.reset(ResetMode::Mixed, base).unwrap();
+    let status = h.ws.status(POLICY).unwrap();
+    let a = status.iter().find(|e| e.path == p("a.txt")).unwrap();
+    assert_eq!(a.index, StatusCode::Unmodified); // unstaged
+    assert_eq!(a.worktree, StatusCode::Modified); // working change kept
+}
+
+#[test]
+fn branch_lists_local_branches() {
+    let (h, _base) = harness(&[("a", b"b")]);
+    let branches = h.ws.list_branches().unwrap();
+    assert!(branches.iter().any(|(name, _)| name == "refs/heads/main"));
+}
