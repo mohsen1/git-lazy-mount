@@ -37,7 +37,7 @@ The whole stack (a transparent kernel-mounted working tree) is built on Linux FU
 
 ### Windows and macOS
 
-Windows and macOS are not supported. The design notes and feasibility studies are kept under [`docs/design/future-platforms/`](docs/design/future-platforms/) if we pick them up later.
+Windows and macOS are not supported. The design notes and feasibility studies are kept under [`docs/future-platforms/`](docs/future-platforms/) if we pick them up later.
 
 
 ## Install / build
@@ -49,6 +49,8 @@ cargo build --release -p glm-cli --features fuse   # produces `git-lazy-mount`
 
 ## Docs
 
-* [How it works and internals](docs/design/architecture.md) — the architecture overview, with per-area docs (the [worktree projection](docs/design/worktree-model.md), [FUSE semantics](docs/design/fuse-semantics.md), [object fetching](docs/design/object-fetching.md)) in [`docs/design/`](docs/design/).
-* [Design specification](design.md) — the authoritative spec the implementation is built and tested against.
-* [Limitations](docs/design/limitations.md) and the [git compatibility report](docs/design/compatibility.md).
+Everything is in [`docs/`](docs/) ([index](docs/README.md)):
+
+* **Using it** — [compatibility](docs/compatibility.md) (which `git` commands work, and how lazily) and [limitations](docs/limitations.md) (what's deferred, and why).
+* **How it works** — the [architecture overview](docs/architecture.md), then deep-dives into the [worktree model](docs/worktree-model.md), [FUSE semantics](docs/fuse-semantics.md), and [object fetching](docs/object-fetching.md).
+* **Reference** — the full [specification](docs/design.md) and the [decision records](docs/adr/).

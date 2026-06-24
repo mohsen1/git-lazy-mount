@@ -2,7 +2,7 @@
 
 Short records of the load-bearing decisions in git-lazy-mount, each grounded in
 the code as it exists today. Format: Title, Status, Context, Decision,
-Consequences. See [../design/architecture.md](../design/architecture.md) for the system
+Consequences. See [../design/architecture.md](../architecture.md) for the system
 overview.
 
 | # | Decision | Status |

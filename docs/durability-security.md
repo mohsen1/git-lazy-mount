@@ -1,6 +1,6 @@
 # Overlay durability, recovery journal, auth/offline, security
 
-Authoritative spec: [`design.md`](../../design.md), primarily §32 (overlay
+This area of the [specification](design.md) covers, primarily §32 (overlay
 storage and durability), §33 (optional operation journal), §35 (auth/offline),
 §36 (security model), §22 (stable synthetic metadata + racy-clean). Read
 alongside [`architecture.md`](architecture.md) (baseline+overlay model,

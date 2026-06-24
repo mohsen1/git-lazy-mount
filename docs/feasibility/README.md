@@ -13,8 +13,8 @@ the implementation and its tests.
 | [file-metadata.md](file-metadata.md) | Can `stat` avoid fetching content? | Often **no** — filtered size differs from raw and is platform-dependent (`autocrlf`); exact mode fetches and records it. |
 | [git-compatibility.md](git-compatibility.md) | What stock-Git behavior can we rely on? | Tree subtree mode must serialize `40000` not `040000` (else `git fsck` rejects); commits/push to a bare remote interoperate. |
 | [linux-fuse.md](linux-fuse.md) | Is the FUSE callback model viable? | Callback logic is implemented/tested without libfuse; real kernel mount needs the libfuse adapter + privileged runner. |
-| [macos-fskit.md](../design/future-platforms/feasibility-macos-fskit.md) | FSKit viability? | Not testable in this environment; scaffold + requirements recorded. |
-| [windows-projfs.md](../design/future-platforms/feasibility-windows-projfs.md) | ProjFS viability? | Distinct architecture; not testable here; `autocrlf=true` system default already surfaced via CI. |
+| [macos-fskit.md](../future-platforms/feasibility-macos-fskit.md) | FSKit viability? | Not testable in this environment; scaffold + requirements recorded. |
+| [windows-projfs.md](../future-platforms/feasibility-windows-projfs.md) | ProjFS viability? | Distinct architecture; not testable here; `autocrlf=true` system default already surfaced via CI. |
 
 The object-fetching and metadata findings are **release gates** (spec §5.1/§5.3)
 and are enforced by the test suite.

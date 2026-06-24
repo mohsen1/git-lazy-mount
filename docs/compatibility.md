@@ -1,8 +1,9 @@
 # Git compatibility report
 
-The design asks for two independent classifications per command (§3): a
-**compatibility** verdict (correct / partially correct / unsupported) and a
-**laziness** verdict (fully lazy / bounded hydration / potentially eager).
+Which `git` commands work through the mount, and how lazily. Each command gets
+two verdicts: a **compatibility** verdict (correct / partial / unsupported) and a
+**laziness** verdict — how many blobs it has to fetch (fully lazy / bounded /
+potentially eager).
 
 This matrix is generated from the real-mount tests (Docker + the CI `design
 linux mount` job). "Correct" means the command's exit status, refs, index,
