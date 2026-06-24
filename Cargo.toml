@@ -12,11 +12,13 @@ members = [
     "crates/oplog",
     "crates/filters",
     "crates/workspace",
+    "crates/worktree",
     "crates/fsmonitor",
     "crates/ipc",
     "crates/projection",
     "crates/fs-common",
     "crates/fs-fuse",
+    "crates/fuse",
     "crates/fs-fskit",
     "crates/fskit-ffi",
     "crates/fs-projfs",
@@ -46,11 +48,13 @@ glm-stage = { path = "crates/stage" }
 glm-oplog = { path = "crates/oplog" }
 glm-filters = { path = "crates/filters" }
 glm-workspace = { path = "crates/workspace" }
+glm-worktree = { path = "crates/worktree" }
 glm-fsmonitor = { path = "crates/fsmonitor" }
 glm-ipc = { path = "crates/ipc" }
 glm-projection = { path = "crates/projection" }
 glm-fs-common = { path = "crates/fs-common" }
 glm-fs-fuse = { path = "crates/fs-fuse" }
+glm-fuse = { path = "crates/fuse" }
 glm-fs-fskit = { path = "crates/fs-fskit" }
 glm-daemon = { path = "crates/daemon" }
 glm-testkit = { path = "crates/testkit" }

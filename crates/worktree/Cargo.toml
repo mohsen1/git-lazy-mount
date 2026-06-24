@@ -1,0 +1,22 @@
+[package]
+name = "glm-worktree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Virtual working-tree projection: baseline (HEAD tree) + protected synthetic .git, resolved without hydrating blobs (redesign.md §8, §14, §16)."
+
+[lints]
+workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-git-store.workspace = true
+glm-git-repo.workspace = true
+glm-fs-common.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+glm-testkit.workspace = true
+tempfile.workspace = true

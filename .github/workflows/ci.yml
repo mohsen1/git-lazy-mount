@@ -39,6 +39,29 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # The transparent redesign's mount, exercised through a REAL /dev/fuse mount on
+  # every push (redesign.md §40.2 requires real-mount CI, not just unit tests).
+  # GitHub's ubuntu runners expose /dev/fuse and permit unprivileged FUSE. Unlike
+  # the manual `linux-mount` job below, this runs automatically so the transparent
+  # slice can never regress unnoticed.
+  redesign-mount:
+    name: redesign linux mount
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: install libfuse3
+        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
+      - name: enable user_allow_other
+        run: echo user_allow_other | sudo tee -a /etc/fuse.conf
+      - name: clippy (fuse mount)
+        run: cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
+      - name: real /dev/fuse mount — Experiments A & B
+        run: cargo test -p glm-worktree -p glm-git-repo && cargo test -p glm-fuse --features fuse
+
   msrv:
     name: msrv build
     runs-on: ubuntu-latest
