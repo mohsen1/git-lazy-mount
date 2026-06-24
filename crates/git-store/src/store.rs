@@ -106,6 +106,21 @@ impl GitStore {
         cmd
     }
 
+    /// Point the store's `HEAD` symbolic ref at `refname`.
+    ///
+    /// `git init --bare` leaves `HEAD` at its default (`refs/heads/main`). After a
+    /// single-branch partial clone of a repo whose default branch isn't `main`
+    /// (e.g. `master`), that ref never gets created, so `git rev-parse HEAD` — and
+    /// anything resolving the literal `HEAD` (e.g. `reset HEAD`, `merge HEAD`) —
+    /// fails. Pointing `HEAD` at the attached branch keeps it resolvable for any
+    /// default branch name.
+    pub fn set_head(&self, refname: &str) -> Result<()> {
+        let mut cmd = self.git(true);
+        cmd.args(["symbolic-ref", "HEAD", refname]);
+        run_checked(cmd, None, "symbolic-ref HEAD")?;
+        Ok(())
+    }
+
     /// Set a config key in the store.
     pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
         let mut cmd = self.git(true);
