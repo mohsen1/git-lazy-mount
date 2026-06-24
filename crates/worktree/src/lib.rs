@@ -1250,4 +1250,49 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn pathological_names_roundtrip() {
+        // §31/§40.7: paths are raw bytes — newlines, tabs, leading dashes, quotes,
+        // and invalid UTF-8 must create, resolve, read back, and list correctly.
+        use std::io::Write as _;
+        let (_t, _r, p) = projection_of(&[("normal.txt", b"n\n")]);
+        let root = p.root_ino();
+        let names: &[&[u8]] = &[
+            b"with\nnewline",
+            b"with\ttab",
+            b"-leading-dash",
+            b"quote\"name",
+            b"back\\slash",
+            b"\xff\xfe-invalid-utf8",
+        ];
+        for &name in names {
+            let (_a, mut f) = p.create(root, name, false).unwrap();
+            f.write_all(name).unwrap(); // content == the raw name bytes
+            drop(f);
+        }
+        for &name in names {
+            let a = p
+                .lookup(root, name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("name {name:?} should resolve"));
+            assert_eq!(
+                p.open_content(a.ino).unwrap().read_at(0, 4096).unwrap(),
+                name,
+                "content roundtrip for {name:?}"
+            );
+        }
+        let listed: Vec<Vec<u8>> = p
+            .readdir(root)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        for &name in names {
+            assert!(
+                listed.iter().any(|n| n.as_slice() == name),
+                "readdir missing {name:?}"
+            );
+        }
+    }
 }
