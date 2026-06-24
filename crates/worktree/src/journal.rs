@@ -18,12 +18,30 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use glm_core::{Error, ErrorCode, Result};
 
 const TOKEN_PREFIX: &str = "glm1";
+
+/// The journal directory inside an admin gitdir. The serve daemon writes the log
+/// here; the `core.fsmonitor` hook reads it.
+pub fn journal_dir(gitdir: &Path) -> PathBuf {
+    gitdir.join("glm-fsmonitor")
+}
+
+/// A stable per-workspace id derived from the admin gitdir path. The serve daemon
+/// and the FSMonitor hook derive it identically, so their tokens match without a
+/// shared metadata file. The journal's `epoch`/`generation` are fixed (1/0): the
+/// durable log preserves continuity across remount, and a reset/short log is
+/// caught by the seq comparison in [`ChangeJournal::query`] (→ full invalidation).
+pub fn workspace_id(gitdir: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    gitdir.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
 
 /// A parsed FSMonitor token (§12.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,6 +222,23 @@ impl ChangeJournal {
         let cur_seq = st.paths.len() as u64;
         let token = self.token_at(cur_seq);
 
+        // §12.2 bootstrap: an empty `prev` while the journal is still at seq 0 (no
+        // worktree write recorded) means "nothing changed since the index was
+        // built from HEAD" — return an EMPTY change set so git trusts the freshly
+        // `read-tree`'d index WITHOUT hashing/statting every file. This makes the
+        // *first* clean `git status` fault 0 blobs (§38.4). The moment any write
+        // advances seq, an empty/unknown prev falls back to full invalidation.
+        if prev.is_empty() {
+            return if cur_seq == 0 {
+                Query::Changes {
+                    token,
+                    paths: Vec::new(),
+                }
+            } else {
+                Query::FullInvalidation { token }
+            };
+        }
+
         let Some(p) = Token::parse(prev) else {
             return Query::FullInvalidation { token };
         };
@@ -299,6 +334,31 @@ mod tests {
         // the wire reply for a full invalidation is `token \0 / \0`
         let enc = j.query("").encode();
         assert!(enc.ends_with(b"/\0"));
+    }
+
+    #[test]
+    fn empty_prev_at_seq_zero_is_the_bootstrap_no_changes() {
+        // §12.2: a fresh journal (no writes recorded) answers an empty prev with
+        // an EMPTY change set, so git trusts the freshly read-tree'd index without
+        // hashing — the first clean `git status` faults 0 blobs.
+        let tmp = tempfile::tempdir().unwrap();
+        let j = ChangeJournal::open(tmp.path(), "ws", 1, 0).unwrap();
+        match j.query("") {
+            Query::Changes { paths, token } => {
+                assert!(paths.is_empty(), "bootstrap must report no changes");
+                assert_eq!(token.seq, 0, "bootstrap token is at seq 0");
+            }
+            other => panic!("bootstrap must be empty changes, got {other:?}"),
+        }
+        // The wire reply is the token + a NUL with NO trailing `/` path.
+        let enc = j.query("").encode();
+        assert!(
+            enc.ends_with(b"\0") && !enc.ends_with(b"/\0"),
+            "bootstrap reply has no paths"
+        );
+        // After a write, empty prev is no longer quiescent → full invalidation.
+        j.record(b"f.txt").unwrap();
+        assert!(matches!(j.query(""), Query::FullInvalidation { .. }));
     }
 
     #[test]

@@ -64,7 +64,13 @@ Branch-changing commands (`switch`/`checkout`/`reset --hard`/`merge`/`rebase`)
 are **correct but potentially eager**: unmodified Git materializes and writes
 every changed path through the FUSE write path. This is the design-sanctioned
 M-stage behavior (§27) — we do **not** claim google3-style lazy branch switching.
-The §27 100k-file eagerness *measurement* (tree objects read, blobs fetched,
-bytes, paths materialized, wall time) is tracked as future work (P3 in
-[`limitations.md`](limitations.md)); clean `status` becomes 0-blob once the
-FSMonitor wiring lands (P1).
+The switch eagerness is now *measured* — it is bounded by the delta, not the
+repo (`switch_eagerness`, P3).
+
+The **first** clean `git status` faults each tracked blob once and is
+**fundamentally eager** under `blob:none`: git must populate the index stat
+(including size) to skip the content check, and the size requires fetching the
+blob (R6). FSMonitor is wired (`core.fsmonitor` → `git-lazy-mount-fsmonitor`) and
+gives correct change detection plus a faster *repeat* status (no redundant stat
+scan), but it **cannot** make the first status zero-blob — verified via
+`GIT_TRACE_FSMONITOR` (see limitations P1/R6).
