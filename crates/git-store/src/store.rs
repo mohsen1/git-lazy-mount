@@ -298,6 +298,53 @@ impl GitStore {
         Ok(r.stdout)
     }
 
+    /// The raw object size in bytes, from the object header only (`cat-file -s`)
+    /// — no content is read into memory. Used by `getattr` for an exact size
+    /// (redesign.md §21); under a `blob:none` clone this can fault the object in
+    /// when `allow_fetch` is set (metadata-triggered hydration).
+    pub fn object_size(&self, oid: &ObjectId, allow_fetch: bool) -> Result<u64> {
+        let mut cmd = self.git(!allow_fetch);
+        cmd.args(["cat-file", "-s", &oid.to_hex()]);
+        let r = run(cmd, None)?;
+        if !r.status_ok {
+            return Err(missing_or_offline(oid, allow_fetch, &r.stderr));
+        }
+        String::from_utf8_lossy(&r.stdout)
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("bad cat-file -s output: {e}")))
+    }
+
+    /// Stream a blob's raw bytes directly to `dst` via `cat-file blob` — git
+    /// writes the content to the file; it is **never** buffered in this process
+    /// (redesign.md §4.6, §17.1). Faults the object in when `allow_fetch` is set.
+    /// The spawned git inherits no FUSE session descriptor (CLOEXEC; §19).
+    pub fn blob_to_file(&self, oid: &ObjectId, allow_fetch: bool, dst: &Path) -> Result<()> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let file = std::fs::File::create(dst)
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("create cache file: {e}")))?;
+        let mut cmd = self.git(!allow_fetch);
+        cmd.args(["cat-file", "blob", &oid.to_hex()]);
+        cmd.stdout(Stdio::from(file));
+        cmd.stderr(Stdio::piped());
+        crate::proc::harden_fds(&mut cmd);
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn cat-file: {e}")))?;
+        let mut err = Vec::new();
+        if let Some(mut s) = child.stderr.take() {
+            let _ = s.read_to_end(&mut err);
+        }
+        let status = child
+            .wait()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("cat-file wait: {e}")))?;
+        if !status.success() {
+            return Err(missing_or_offline(oid, allow_fetch, &err));
+        }
+        Ok(())
+    }
+
     /// Apply the configured working-tree (smudge) filters for `path` to a blob,
     /// returning the bytes a normal checkout would write (spec §25). Uses Git's
     /// own filter plumbing.

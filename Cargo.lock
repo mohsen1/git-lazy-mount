@@ -351,6 +351,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "glm-fuse"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "glm-core",
+ "glm-fs-common",
+ "glm-git-repo",
+ "glm-testkit",
+ "glm-worktree",
+ "libc",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "glm-git-repo"
+version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-git-store",
+ "glm-platform",
+ "glm-testkit",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "glm-git-store"
 version = "0.1.0"
 dependencies = [
@@ -465,6 +492,19 @@ dependencies = [
  "glm-stage",
  "glm-testkit",
  "serde",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "glm-worktree"
+version = "0.1.0"
+dependencies = [
+ "glm-core",
+ "glm-fs-common",
+ "glm-git-repo",
+ "glm-git-store",
+ "glm-testkit",
  "tempfile",
  "tracing",
 ]

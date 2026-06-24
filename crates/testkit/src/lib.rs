@@ -100,6 +100,49 @@ pub fn seed_remote_with(files: &[(&str, &[u8])], branch: &str) -> SeededRemote {
     }
 }
 
+/// Seed a remote whose tree contains a symlink `name` -> `target` (Git mode
+/// 120000) plus a regular `keep.txt`. Unix-only (Git records the link from the
+/// real symlink in the seed working tree).
+#[cfg(unix)]
+pub fn seed_remote_symlink(name: &str, target: &str) -> SeededRemote {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "-b", "main"]);
+    git(&work, &["config", "commit.gpgsign", "false"]);
+    git(&work, &["config", "user.name", "Test"]);
+    git(&work, &["config", "user.email", "test@example.com"]);
+    std::fs::write(work.join("keep.txt"), b"k\n").unwrap();
+    std::os::unix::fs::symlink(target, work.join(name)).unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-m", "symlink"]);
+
+    let bare = tmp.path().join("remote.git");
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+    git(&bare, &["config", "uploadpack.allowFilter", "true"]);
+    git(&bare, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+    let head_hex = String::from_utf8(git(&bare, &["rev-parse", "main"]))
+        .unwrap()
+        .trim()
+        .to_string();
+    let url = format!("file://{}", bare.display());
+    SeededRemote {
+        bare_path: bare,
+        url,
+        head_hex,
+        branch: "main".to_string(),
+        _tmp: tmp,
+    }
+}
+
 impl SeededRemote {
     /// Add a new commit to the remote's branch with the given files, returning
     /// the new tip hex. Useful for simulating concurrent branch movement.
