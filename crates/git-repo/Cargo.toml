@@ -1,0 +1,21 @@
+[package]
+name = "glm-git-repo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transparent per-workspace admin Git repository (clone --separate-git-dir --no-checkout, core.worktree); the redesign's git-repo (redesign.md §6)."
+
+[lints]
+workspace = true
+
+[dependencies]
+glm-core.workspace = true
+glm-git-store.workspace = true
+glm-platform.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+glm-testkit.workspace = true
+tempfile.workspace = true

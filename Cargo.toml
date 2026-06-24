@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/platform",
     "crates/git-store",
+    "crates/git-repo",
     "crates/object-provider",
     "crates/metadata",
     "crates/overlay",
@@ -37,6 +38,7 @@ authors = ["git-lazy-mount contributors"]
 glm-core = { path = "crates/core" }
 glm-platform = { path = "crates/platform" }
 glm-git-store = { path = "crates/git-store" }
+glm-git-repo = { path = "crates/git-repo" }
 glm-object-provider = { path = "crates/object-provider" }
 glm-metadata = { path = "crates/metadata" }
 glm-overlay = { path = "crates/overlay" }
