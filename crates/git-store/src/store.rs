@@ -298,6 +298,23 @@ impl GitStore {
         Ok(r.stdout)
     }
 
+    /// The raw object size in bytes, from the object header only (`cat-file -s`)
+    /// — no content is read into memory. Used by `getattr` for an exact size
+    /// (redesign.md §21); under a `blob:none` clone this can fault the object in
+    /// when `allow_fetch` is set (metadata-triggered hydration).
+    pub fn object_size(&self, oid: &ObjectId, allow_fetch: bool) -> Result<u64> {
+        let mut cmd = self.git(!allow_fetch);
+        cmd.args(["cat-file", "-s", &oid.to_hex()]);
+        let r = run(cmd, None)?;
+        if !r.status_ok {
+            return Err(missing_or_offline(oid, allow_fetch, &r.stderr));
+        }
+        String::from_utf8_lossy(&r.stdout)
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("bad cat-file -s output: {e}")))
+    }
+
     /// Apply the configured working-tree (smudge) filters for `path` to a blob,
     /// returning the bytes a normal checkout would write (spec §25). Uses Git's
     /// own filter plumbing.

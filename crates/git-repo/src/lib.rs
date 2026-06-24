@@ -93,6 +93,11 @@ impl AdminRepo {
         let store = GitStore::open(&gitdir)?;
         store.set_config("core.worktree", &worktree.to_string_lossy())?;
         store.set_config("core.bare", "false")?;
+        // A `file://` promisor needs this for *lazy* fetches too (not just the
+        // initial clone) — otherwise a later blob fault is refused.
+        if is_local_url(url) {
+            store.set_config("protocol.file.allow", "always")?;
+        }
 
         // The anchor's own `.git` gitfile is discarded; the projection serves the
         // synthetic one. Do not depend on a temporary physical checkout (§6.1).

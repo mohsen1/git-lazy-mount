@@ -12,6 +12,7 @@ members = [
     "crates/oplog",
     "crates/filters",
     "crates/workspace",
+    "crates/worktree",
     "crates/fsmonitor",
     "crates/ipc",
     "crates/projection",
@@ -46,6 +47,7 @@ glm-stage = { path = "crates/stage" }
 glm-oplog = { path = "crates/oplog" }
 glm-filters = { path = "crates/filters" }
 glm-workspace = { path = "crates/workspace" }
+glm-worktree = { path = "crates/worktree" }
 glm-fsmonitor = { path = "crates/fsmonitor" }
 glm-ipc = { path = "crates/ipc" }
 glm-projection = { path = "crates/projection" }
