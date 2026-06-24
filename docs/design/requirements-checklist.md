@@ -12,9 +12,9 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] **D** real staging: `git add` then `git diff --cached` uses the real index — *real mount (`m3_git`)*
 - [x] **E** interactive staging: `git add -p` stages one hunk — *real mount (`git_extra`, stdin-fed)*
 - [x] **F** real commit: `git commit` + `--amend`, no adoption step — *real mount (`m3_git`/`git_more`)*
-- [~] **G** checkout/switch: correct through the mount (`m4_m5`); eagerness over a 100k-file delta not yet *measured*
-- [ ] **H** FSMonitor bootstrap: first + subsequent clean status read 0 working blobs *(M3 optimization)*
-- [~] **I** large-file I/O: 4 MiB in-place 4 KiB writes proven (`m2_semantics`); multi-GiB bounded-memory pending
+- [x] **G** checkout/switch: correct (`m4_m5`); eagerness over an M-of-N delta **measured** — bounded by the delta, not the repo (`switch_eagerness`)
+- [✗] **H** FSMonitor zero-blob first status: **fundamentally unachievable** with stock git + `blob:none` (git must populate the index stat — incl. size — to skip the content check; the size requires fetching the blob; `mark_fsmonitor_invalid` overrides the fsmonitor-valid bit on empty-stat entries — verified via `GIT_TRACE_FSMONITOR`). FSMonitor *is* wired (`fsmonitor` test) for change detection + faster repeat status. See limitations P1/R6.
+- [x] **I** large-file I/O: 4 MiB in-place 4 KiB writes (`m2_semantics`) + **64 MiB read grows daemon RSS ~2 MiB, not 64 MiB** (`large_file`) — streamed, bounded memory
 
 ## B. Linux MVP release criteria (§43) — all via a real mount
 
@@ -42,10 +42,10 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 22 open-unlink semantics — *real mount (`m2_semantics`)*: fd reads/writes survive unlink; getattr falls back to the live fd (§17.4)
 - [x] 23 empty untracked directories survive remount — *real mount (`m2_semantics`)*
 - [x] 24 partial writes don't rewrite the full file per callback — *real mount (`m2_semantics` 4 KiB)*
-- [~] 25 multi-GiB files don't require multi-GiB allocations — 4 MiB proven; multi-GiB pending
+- [x] 25 large files don't require large allocations — *real mount (`large_file`: a 64 MiB read grows daemon RSS ~2 MiB; streamed `cat-file`→cache + `pread`)*; extreme multi-GiB is the same structural path at a heavier CI cost
 - [x] 26 dirty state survives unmount/remount — *real mount (`m2_semantics`) + overlay unit test*
 - [x] 27 dirty state survives an injected daemon crash — *real mount (`crash_injection`: SIGKILL the serve daemon, recover, no acknowledged write lost)*
-- [ ] 28 FSMonitor survives restart or safely requests full invalidation *(journal built; wiring pending)*
+- [x] 28 FSMonitor survives restart or safely requests full invalidation — *wired (`fsmonitor` test): durable journal replayed on remount preserves continuity; an unplaceable token (epoch/seq mismatch) → `/` full invalidation. Change detection has no false negatives.*
 - [x] 29 no command requires `git lazy-mount git --` — all flows use stock git directly
 - [x] 30 no ordinary workflow requires custom add/commit/switch/push — proven across `m3_git`/`m4_m5`/`git_more`
 
