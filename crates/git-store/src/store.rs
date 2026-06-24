@@ -300,7 +300,7 @@ impl GitStore {
 
     /// The raw object size in bytes, from the object header only (`cat-file -s`)
     /// — no content is read into memory. Used by `getattr` for an exact size
-    /// (redesign.md §21); under a `blob:none` clone this can fault the object in
+    /// (design.md §21); under a `blob:none` clone this can fault the object in
     /// when `allow_fetch` is set (metadata-triggered hydration).
     pub fn object_size(&self, oid: &ObjectId, allow_fetch: bool) -> Result<u64> {
         let mut cmd = self.git(!allow_fetch);
@@ -317,7 +317,7 @@ impl GitStore {
 
     /// Stream a blob's raw bytes directly to `dst` via `cat-file blob` — git
     /// writes the content to the file; it is **never** buffered in this process
-    /// (redesign.md §4.6, §17.1). Faults the object in when `allow_fetch` is set.
+    /// (design.md §4.6, §17.1). Faults the object in when `allow_fetch` is set.
     /// The spawned git inherits no FUSE session descriptor (CLOEXEC; §19).
     pub fn blob_to_file(&self, oid: &ObjectId, allow_fetch: bool, dst: &Path) -> Result<()> {
         use std::io::Read;

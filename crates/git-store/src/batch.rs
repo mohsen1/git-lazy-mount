@@ -25,9 +25,9 @@ pub struct ObjectInfo {
 /// **Contract:** only query objects known to be locally present. Because the
 /// session runs with `GIT_NO_LAZY_FETCH=1`, asking for a *promisor* object that
 /// is missing locally makes Git terminate the process (it refuses the lazy
-/// fetch). The [`ObjectProvider`](../../glm_object_provider/index.html) is the
-/// residency authority and must guarantee presence before reading. A death is
-/// surfaced as an error so the owner can respawn.
+/// fetch). The caller is the residency authority and must guarantee presence
+/// (materialize the object) before reading. A death is surfaced as an error so
+/// the owner can respawn.
 pub struct BatchSession {
     child: Child,
     stdin: ChildStdin,

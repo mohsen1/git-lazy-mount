@@ -14,7 +14,7 @@ mount-recovery re-attach path — all unit-tested on every platform, with extra
 real-FS tests on macOS hosts. macOS is still explicitly **not** production-ready
 (spec §54): the signed FSKit system extension + Swift `FSVolume` adapter must be
 validated on real Apple hardware via the manual CI job (issue #12) before macOS
-is labeled supported. See [`platform-macos.md`](../platform-macos.md) for the
+is labeled supported. See [`platform-macos.md`](macos.md) for the
 per-sub-issue status table.
 
 ## What can be reused

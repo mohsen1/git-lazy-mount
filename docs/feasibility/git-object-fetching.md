@@ -28,7 +28,7 @@ A one-shot `git cat-file -e <oid>` with `NO_LAZY_FETCH=1` is **graceful**
   session for an object it has not confirmed present. Presence is checked with
   graceful `cat-file -e` and cached; content is read via the batch session only
   for confirmed-present objects; a session death is treated as an error and the
-  session respawns. (See ADR-0006 and `docs/git-object-fetching.md`.)
+  session respawns. (See ADR-0006 and `docs/design/object-fetching.md`.)
 * `GIT_NO_LAZY_FETCH=1` is the default for read paths; only the fetch scheduler
   escalates to network. `FetchPolicy::{MustNotFetch,CacheOnly}` reads of a
   missing object return a structured `offline_missing_object` error.

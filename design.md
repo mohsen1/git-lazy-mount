@@ -1,12 +1,16 @@
-# Rebuild `git-lazy-mount`: a transparent, stock-Git, lazily hydrated working tree in Rust
+# `git-lazy-mount`: a transparent, stock-Git, lazily hydrated working tree in Rust
 
-You are an expert Rust systems engineer, Git internals engineer, Linux filesystem engineer, and distributed version-control engineer.
+This is the design of `git-lazy-mount` — the authoritative specification the
+implementation is built and tested against. It targets **Linux only** (FUSE);
+macOS (FSKit) and Windows (ProjFS) are out of scope but possible, with notes
+under [`docs/design/future-platforms/`](docs/design/future-platforms/).
 
-Build a fresh implementation of `git-lazy-mount`.
+The design is deliberately a clean one, not an incremental refactor: it does not
+carry a custom stage, custom branch state, a commit-adoption bridge, or a
+headless-first architecture. The real `.git/index` is the only stage and stock
+Git owns refs, HEAD, commits, merges, and conflict stages.
 
-An earlier implementation exists and may be inspected for test cases and failure modes, but this is a redesign rather than an incremental refactor. Do not preserve its custom stage, custom branch state, commit-adoption bridge, or headless-first architecture merely to reuse code.
-
-The executable must be named:
+The executable is named:
 
 ```text
 git-lazy-mount

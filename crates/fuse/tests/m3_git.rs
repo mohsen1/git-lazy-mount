@@ -1,5 +1,5 @@
 //! M3 correctness: stock `git status` / `add` / `commit` through the transparent
-//! mount, operating the REAL `.git/index` (redesign.md §43 criteria 8/9/11,
+//! mount, operating the REAL `.git/index` (design.md §43 criteria 8/9/11,
 //! Experiments C/D/F). Real `/dev/fuse` mount — runs under `--features fuse`.
 #![cfg(feature = "fuse")]
 

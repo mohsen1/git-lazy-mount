@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Linux FUSE mount of the transparent read-only projection, with real file handles (redesign.md §14–§19). The redesign's fuse crate."
+description = "Linux FUSE mount of the transparent read-only projection, with real file handles (design.md §14–§19). The design's fuse crate."
 
 [lints]
 workspace = true

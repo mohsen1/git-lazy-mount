@@ -34,7 +34,7 @@ of the bare store's `HEAD`.
   yields CRLF, resolved via `--attr-source` from the workspace base.
 * Because filtering can change byte length (CRLF), exact `stat` size is filter-/
   context-dependent — relevant to the Windows ProjFS ContentID and placeholder
-  size requirements (see [../platform-windows.md](../platform-windows.md)).
+  size requirements (see [../design/future-platforms/windows.md](../design/future-platforms/windows.md)).
 * Under a `blob:none` clone the `.gitattributes` blobs themselves may be absent;
   the provider lets Git fault them in when the policy permits network, and fails
   with an offline error under a cache-only policy (the caller must prefetch

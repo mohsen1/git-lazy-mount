@@ -4,8 +4,6 @@ on:
   push:
     branches: ["**"]
   pull_request:
-  # Enables the manually-triggered backend-mount jobs below (`linux-mount`,
-  # `macos-mount`), which are gated on `github.event_name == 'workflow_dispatch'`.
   workflow_dispatch:
 
 env:
@@ -13,16 +11,11 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Backend-independent core: builds and runs the full state model, transaction,
-  # and recovery test suite on every platform. Real kernel mounting is NOT
-  # exercised here (see the `linux-mount` manual job).
+  # Backend-independent core: fmt, clippy, and the full unit/integration suite.
+  # Real kernel mounting is exercised by the `linux-mount` job below.
   check:
-    name: check (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: check
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -31,21 +24,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all --check
-      # NOT `--all-features`: the only feature is `glm-fs-fuse/fuse`, which links
-      # libfuse3 and so can't build on macOS/Windows (or a libfuse-less Linux).
-      # It is covered by the manual `linux-mount` job instead.
+      # NOT `--all-features`: the `fuse` feature links libfuse3 and needs
+      # /dev/fuse, so it is covered by the `linux-mount` job instead.
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
 
-  # The transparent redesign's mount, exercised through a REAL /dev/fuse mount on
-  # every push (redesign.md §40.2 requires real-mount CI, not just unit tests).
-  # GitHub's ubuntu runners expose /dev/fuse and permit unprivileged FUSE. Unlike
-  # the manual `linux-mount` job below, this runs automatically so the transparent
-  # slice can never regress unnoticed.
-  redesign-mount:
-    name: redesign linux mount
+  # The transparent design's mount, exercised through a REAL /dev/fuse mount on
+  # every push (design.md §40.2 requires real-mount CI, not just unit tests).
+  # GitHub's ubuntu runners expose /dev/fuse and permit unprivileged FUSE, so this
+  # runs automatically — the transparent slice can never regress unnoticed.
+  linux-mount:
+    name: linux mount (/dev/fuse)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +48,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - name: enable user_allow_other
         run: echo user_allow_other | sudo tee -a /etc/fuse.conf
-      - name: clippy (fuse mount + transparent cli)
+      - name: clippy (fuse mount + cli)
         run: |
           cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
           cargo clippy -p glm-cli --all-targets --features fuse -- -D warnings
@@ -75,31 +66,3 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace
-
-  # Real FUSE mounting requires libfuse3 and a loopback-capable runner. It is a
-  # separate, manually-triggered job: a green `check` matrix does NOT imply the
-  # kernel backend was exercised. This builds the `fuse` feature (the libfuse
-  # `fuser` adapter) and runs the real loopback-mount test (`--include-ignored`),
-  # which mounts the engine and drives it with plain `std::fs` calls. The same
-  # flow is reproducible locally in Docker (see docs/platform-linux.md).
-  linux-mount:
-    name: linux fuse backend (manual)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: install libfuse3
-        run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
-      - name: enable user_allow_other
-        run: echo user_allow_other | sudo tee -a /etc/fuse.conf
-      - name: clippy (fuse adapter)
-        run: cargo clippy -p glm-fs-fuse --all-targets --features fuse -- -D warnings
-      - name: real loopback mount + backend logic
-        run: cargo test -p glm-fs-fuse --features fuse -- --include-ignored
-
-  # macOS is M8 (redesign.md §42): implemented separately on the transparent
-  # stack after Linux is proven. The old FSKit backend (built on the superseded
-  # daemon) was retired with the old `cli`/`daemon`/`fs-fskit` stack.

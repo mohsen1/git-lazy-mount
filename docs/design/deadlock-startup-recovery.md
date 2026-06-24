@@ -1,6 +1,6 @@
 # Git/FUSE deadlock analysis + startup/recovery state machines
 
-Authoritative spec: [`redesign.md`](../../redesign.md) §19 (deadlock), §10
+Authoritative spec: [`design.md`](../../design.md) §19 (deadlock), §10
 (startup), §32.2 (recovery), §4.1 (lifecycle). Companion docs:
 [`architecture.md`](architecture.md), [`requirements-checklist.md`](requirements-checklist.md).
 
@@ -196,7 +196,7 @@ The prior controller created the mountpoint dir and **immediately** wrote
 `MountState::Mounted` (`daemon/src/controller.rs:179` —
 `state: MountState::Mounted` with only a `create_dir_all`, *no kernel mount*).
 That is exactly the §4.1 / §44 anti-claim "the mount registry says mounted
-without a kernel mount." The redesign replaces the coarse
+without a kernel mount." The design replaces the coarse
 `registry.rs::MountState` (8 states) with the full §4.1 set and forbids `Mounted`
 before a kernel mount + Git health checks.
 
@@ -405,7 +405,7 @@ a non-terminal state recoverable by §3-recovery with no acknowledged-write loss
 Runs on daemon startup when the registry shows a non-terminal state (INV-L2), on
 explicit `git lazy-mount recover <mnt>` / `--export <dir>`, and after a detected
 backend/daemon restart (cf. the existing FSKit path
-`crates/fs-fskit/src/recovery.rs` — same *shape*, but the redesign’s authority is
+`crates/fs-fskit/src/recovery.rs` — same *shape*, but the design’s authority is
 the real gitdir + durable overlay, not the oplog). The seven §32.2 steps, in
 order, each a function returning structured findings:
 
@@ -507,7 +507,7 @@ journal compaction past a needed token   unreconciled crash (we were non-termina
 namespace generation bumped during recovery
 ```
 
-The redesign’s FSMonitor token is `(workspace, journal-epoch, monotonic-seq,
+The design’s FSMonitor token is `(workspace, journal-epoch, monotonic-seq,
 projection-generation)` (§12.1) — note the current
 `crates/fsmonitor/src/lib.rs` journal is an in-memory `Mutex<Vec<…>>` (§4.10
 anti-pattern) and must become a durable WAL/append log that survives restart or

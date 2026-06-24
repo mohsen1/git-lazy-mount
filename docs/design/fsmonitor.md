@@ -1,11 +1,11 @@
 # Durable FSMonitor v2 protocol + hook multiplexing
 
-Authoritative spec: [`redesign.md`](../../redesign.md) §12 (FSMonitor v2),
+Authoritative spec: [`design.md`](../../design.md) §12 (FSMonitor v2),
 §13 (observe gitdir without replacing Git), with supporting context from §10.5
 (config), §25 (real index), §32 (durability), §22 (synthetic metadata). This is
 the M0/M3 design doc (§45.1 item 5: "the FSMonitor durability protocol").
 
-This is a **redesign**, not a refactor. The existing
+This is a **design**, not a refactor. The existing
 [`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs) is a
 process-local `Mutex<Vec<ChangeRecord>>` journal — exactly the non-durable shape
 §4.10 forbids ("A process-local `Mutex<Vec<ChangeRecord>>` is not a sufficient
@@ -667,4 +667,4 @@ Superseded and removed: legacy `ChangedPathJournal`
 ([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) and the
 interop bridge
 ([`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs)) —
-neither survives the no-wrapper, durable-FSMonitor redesign.
+neither survives the no-wrapper, durable-FSMonitor design.

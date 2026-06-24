@@ -1,6 +1,6 @@
 # Known limitations & tracked refinements
 
-Honest status of the transparent rebuild (redesign.md §44: do not claim what is
+Honest status of the transparent rebuild (design.md §44: do not claim what is
 not proven). What **works today** is in [`requirements-checklist.md`](requirements-checklist.md);
 this lists what is deliberately deferred, with the spec reference and the test
 that will be un-`#[ignore]`d when it lands.
@@ -28,10 +28,9 @@ that will be un-`#[ignore]`d when it lands.
 
 | # | Area | Status | Spec |
 |---|------|--------|------|
-| S1 | **One-command CLI** — `git lazy-mount <url> <path>` (daemonized, returns after the mount is ready) + lifecycle/diagnostic verbs. The mount + git-workflows are proven in-process via tests; the user-facing binary + daemonization (re-exec serve) are pending. The old `crates/cli`/`crates/daemon` (forbidden subcommands) are superseded and await quarantine. | pending | §1, §9, §10, §43.1 |
-| S2 | **Conflict-stage / rebase / fetch-pull / add -p tests** — being added (coverage teammate). | in progress | §26 |
-| S3 | **Crash-injection durability** (criterion 27), **multi-GiB** large-file (criterion 25 / Experiment I full scale), **100k-file** scale (Experiment B), **macOS/Windows** (M8). | deferred | §40.5, §39, §42 |
-| S4 | **Shared object cache** (M7), **LFS / filters** beyond identity (§23/§24), **submodules/worktrees** (§26.8). | deferred | §34, §23, §24 |
+| S1 | **multi-GiB** large-file bounded-memory (criterion 25 / Experiment I full scale; 4 MiB proven) and **full 100k-file** scale (Experiment B proven at 1000). | deferred (scale) | §39 |
+| S2 | **Shared object cache** across workspaces, **LFS / filters** beyond identity (§23/§24), **submodules / nested worktrees** (§26.8). | deferred | §34, §23, §24 |
+| S3 | **Windows (ProjFS) / macOS (FSKit)** backends — out of scope for this Linux-only tool; the engine is platform-neutral and the design notes are kept under [`future-platforms/`](future-platforms/). | out of scope | §42 |
 
 Nothing above is claimed as working in the checklist. Each refinement has a spec
 reference and (where applicable) a test that will flip from `#[ignore]` to green

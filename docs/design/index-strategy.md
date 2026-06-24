@@ -1,6 +1,6 @@
 # Index + scalability feasibility (Profiles A–D)
 
-Authoritative spec: [`redesign.md`](../../redesign.md) §11 (the scalability gate),
+Authoritative spec: [`design.md`](../../design.md) §11 (the scalability gate),
 §27 (checkout/switch/rebase eagerness), §38 (hydration budgets). Companion
 overview: [`architecture.md`](./architecture.md). This doc is the Milestone-0
 deliverable "index strategy comparison" (§42 M0, §45 item 9) and the design that
@@ -19,7 +19,7 @@ Milestone 6 (§42 M6) selects a winner from.
 Stock Git keeps one authoritative stage: `$GIT_DIR/index` (§4.2, §7, §25). For a
 repo of `N` tracked paths, that index is `O(N)` entries on disk and the cost of
 parsing it bounds every `status`, `diff`, `add`, and ref-moving command. A
-1M-path monorepo has a ~100–300 MB v4 index. The redesign removes the old
+1M-path monorepo has a ~100–300 MB v4 index. The design removes the old
 `crates/stage` JSON delta and the `crates/git-store/src/interop.rs` skip-worktree
 bridge (both **superseded**, §4.2, §4.4) and operates the *real* index directly.
 Three independent costs must each be bounded or measured:
@@ -467,5 +467,5 @@ Milestone 6 (§42 M6, §43, §44):
 | `crates/workspace/src/status.rs` (three-tree XY) | **rework** — status comes from stock Git porcelain, not a re-implementation (§25) |
 
 Detailed FSMonitor durability/token design is out of scope here; see
-`docs/redesign/fsmonitor.md` (§12). This doc owns only the index strategy and the
+`docs/design/fsmonitor.md` (§12). This doc owns only the index strategy and the
 A–D selection gate.

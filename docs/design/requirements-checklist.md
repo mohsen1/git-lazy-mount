@@ -1,6 +1,6 @@
-# Redesign requirements checklist (Linux MVP)
+# Design requirements checklist (Linux MVP)
 
-Living tracker for [`redesign.md`](../../redesign.md). Updated as items pass
+Living tracker for [`design.md`](../../design.md). Updated as items pass
 through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 `[x]` = done + tested. Nothing is checked until proven by a mounted test.
 

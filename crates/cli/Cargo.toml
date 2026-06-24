@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The transparent `git-lazy-mount` executable (redesign.md §1): `git lazy-mount <url> <path>` then plain stock git works."
+description = "The transparent `git-lazy-mount` executable (design.md §1): `git lazy-mount <url> <path>` then plain stock git works."
 
 [[bin]]
 name = "git-lazy-mount"

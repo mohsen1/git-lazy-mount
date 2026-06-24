@@ -1,10 +1,10 @@
 # Git compatibility report
 
-The redesign asks for two independent classifications per command (§3): a
+The design asks for two independent classifications per command (§3): a
 **compatibility** verdict (correct / partially correct / unsupported) and a
 **laziness** verdict (fully lazy / bounded hydration / potentially eager).
 
-This matrix is generated from the real-mount tests (Docker + the CI `redesign
+This matrix is generated from the real-mount tests (Docker + the CI `design
 linux mount` job). "Correct" means the command's exit status, refs, index,
 working-tree bytes, and resulting commits match a normal checkout for the cases
 exercised. Laziness is the *measured* fetch behavior; where it is not yet
@@ -43,7 +43,7 @@ measured it says so.
 
 Branch-changing commands (`switch`/`checkout`/`reset --hard`/`merge`/`rebase`)
 are **correct but potentially eager**: unmodified Git materializes and writes
-every changed path through the FUSE write path. This is the redesign-sanctioned
+every changed path through the FUSE write path. This is the design-sanctioned
 M-stage behavior (§27) — we do **not** claim google3-style lazy branch switching.
 The §27 100k-file eagerness *measurement* (tree objects read, blobs fetched,
 bytes, paths materialized, wall time) is tracked as future work (P3 in

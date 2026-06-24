@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Transparent per-workspace admin Git repository (clone --separate-git-dir --no-checkout, core.worktree); the redesign's git-repo (redesign.md §6)."
+description = "Transparent per-workspace admin Git repository (clone --separate-git-dir --no-checkout, core.worktree); the design's git-repo (design.md §6)."
 
 [lints]
 workspace = true

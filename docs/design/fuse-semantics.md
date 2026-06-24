@@ -1,12 +1,12 @@
 # FUSE operations, inode/namespace model, file-handle state machine
 
-Authoritative spec: [`redesign.md`](../../redesign.md), primarily **§14** (inode
+Authoritative spec: [`design.md`](../../design.md), primarily **§14** (inode
 model), **§15** (namespace), **§16** (required ops), **§17** (file handles),
 **§28** (editor/build semantics), **§29** (rename). Cross-cuts §4.5–§4.9 (prior
 mistakes turned into invariants), §18–§19 (executor/deadlock), §20–§23
 (provider/filters), §32 (overlay durability), §38 (hydration budgets).
 
-This is the design for the `fuse` and `namespace` crates of the redesign
+This is the design for the `fuse` and `namespace` crates of the design
 workspace (§41). It supersedes the current `glm-fs-fuse` `FuseOps`
 (`crates/fs-fuse/src/lib.rs`), the path-keyed `InodeTable`
 (`crates/fs-common/src/inode.rs`), and the buffer-everything content path in
@@ -18,7 +18,7 @@ state, commit-adoption (`Workspace::adopt_commit`), and the `git lazy-mount git
 Scope boundary: this doc owns the FUSE callback layer, the inode table, the
 persistent namespace store, and the file-handle state machine. It does **not**
 own index/FSMonitor strategy (`index-strategy.md`, `fsmonitor.md`), object
-fetching/filters (`object-fetching.md`, `filters-and-lfs.md`), or the
+fetching/filters (`object-fetching.md`), or the
 baseline+overlay content model itself (`worktree-model.md`) — it consumes them.
 
 ---
@@ -64,7 +64,7 @@ Today's `InodeTable` (`crates/fs-common/src/inode.rs`) is **path-keyed**: a
 single `path_to_ino: HashMap<RepoPath,u64>`, lookup/forget/rename/unlink mutate
 in place, never reuses numbers, and carries a per-inode `generation`. That core
 is correct (it already passes FS-INO-1..5) and is **reused as the substrate**.
-Three changes are required for the redesign:
+Three changes are required for the design:
 
 1. **Generation must be per-inode, surfaced through getattr/lookup/create.** The
    current `FuseOps::getattr` hardcodes `generation = 1` (`fs-fuse/src/lib.rs`
@@ -174,7 +174,7 @@ paths) per `readdir` and violates §15/§4.5/FS-NS-1. The overlay's flat
 `children(parent)`, `has_children`, subtree rename, or case collision in better
 than O(N).
 
-The redesign introduces a dedicated **`namespace` crate**: a persistent,
+The design introduces a dedicated **`namespace` crate**: a persistent,
 parent-indexed store (SQLite WAL per §32) that is the authority for overlay
 *structure* (the overlay content store keeps owning bytes). It does **not**
 store baseline tree structure — baseline children come from the object provider
@@ -338,13 +338,13 @@ A guard at the op-layer entry of every mutating op: if the target inode is
 
 ## 4. The file-handle state machine (§17)
 
-This is the heart of the redesign and the largest departure from the current
+This is the heart of the design and the largest departure from the current
 code, where `open`/`opendir` return `fh = 0` (`adapter.rs` lines 160–166) and
 `read`/`write` re-resolve by **inode→path→buffer the whole file**
 (`fs-fuse/src/lib.rs::read` calls `ws.read_file` → `Vec<u8>`;
 `workspace/src/lib.rs::write_at` reads the entire file, mutates, rewrites). That
 buffers whole blobs (§4.6 violation) and cannot do open-unlink/rename-while-open
-(FS-FH-5/6). The redesign allocates a **real handle per successful open** and
+(FS-FH-5/6). The design allocates a **real handle per successful open** and
 services I/O from a file descriptor.
 
 ### 4.1 Handle record (§17)
@@ -550,5 +550,5 @@ Streaming caveat (§4.6/§20): the current provider returns `Vec<u8>`
 FS-FH-1 the read path must gain a streaming form — `open_worktree_file(...) ->
 ContentHandle` (§20 trait) that writes the filtered representation into a
 verified cache file and hands back an FD — so large files never allocate a full
-`Vec`. That is owned by `object-fetching.md`/`filters-and-lfs.md`; this layer
+`Vec`. That is owned by `object-fetching.md`; this layer
 *consumes* the resulting cache-file FD as `HandleSource::CacheFile`.

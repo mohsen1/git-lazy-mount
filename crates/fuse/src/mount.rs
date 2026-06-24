@@ -35,7 +35,7 @@ fn file_type(kind: Kind) -> FileType {
 /// Map neutral projection attributes to `fuser::FileAttr` with writable perms
 /// (the overlay backs writes; the synthetic `.git` is protected by the
 /// projection, which rejects mutations regardless of perms — §6). Times are
-/// stable synthetic values (redesign.md §22).
+/// stable synthetic values (design.md §22).
 fn fuse_attr(a: &Attr, uid: u32, gid: u32) -> FuseFileAttr {
     let (kind, perm) = match a.kind {
         Kind::Dir => (FileType::Directory, 0o755),

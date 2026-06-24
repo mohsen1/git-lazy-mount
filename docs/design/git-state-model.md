@@ -1,6 +1,6 @@
 # Git state model: what Git owns, what the daemon caches
 
-Authoritative spec: [`redesign.md`](../../redesign.md), primarily **§7**
+Authoritative spec: [`design.md`](../../design.md), primarily **§7**
 (Git is authoritative for repository state) and **§25** (stock Git index
 behavior), with §8 (baseline+overlay), §2/§4.2/§4.3 (no second
 stage/branch/commit model), §13 (observe gitdir without replacing Git).
@@ -8,7 +8,7 @@ Overview: [`architecture.md`](./architecture.md). This doc is the
 two-source-of-truth analysis and the real-index integration plan (§45 items
 2 and 4).
 
-This is a *redesign*, not a refactor. The mechanisms this doc replaces are
+This is a *design*, not a refactor. The mechanisms this doc replaces are
 named explicitly in [§9](#9-what-this-supersedes-in-the-existing-tree); do
 not preserve them.
 
@@ -403,7 +403,7 @@ returns the FSMonitor full-invalidation path (§12, §32.2).
 
 ## 9. What this supersedes in the existing tree
 
-The redesign removes these mechanisms (§4). They are listed so they are not
+The design removes these mechanisms (§4). They are listed so they are not
 reused:
 
 - **Custom stage.** [`crates/stage/src/lib.rs`](../../crates/stage/src/lib.rs)
@@ -417,7 +417,7 @@ reused:
   **every entry marked skip-worktree**, and reads back `bridge_head` to
   *adopt* the commit. This is exactly the per-command disposable gitdir
   (§44), the commit-adoption step (§4.3, §44), and the skip-worktree-as-
-  universal-trick (§4.4) the redesign forbids. **Replaced by** stock Git
+  universal-trick (§4.4) the design forbids. **Replaced by** stock Git
   operating directly on the real worktree via the synthetic `.git` gitfile
   (§6); the daemon only *observes* the resulting index/refs.
 - **Custom branch/merge state in the workspace.**

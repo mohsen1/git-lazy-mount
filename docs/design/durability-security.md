@@ -1,6 +1,6 @@
 # Overlay durability, recovery journal, auth/offline, security
 
-Authoritative spec: [`redesign.md`](../../redesign.md), primarily §32 (overlay
+Authoritative spec: [`design.md`](../../design.md), primarily §32 (overlay
 storage and durability), §33 (optional operation journal), §35 (auth/offline),
 §36 (security model), §22 (stable synthetic metadata + racy-clean). Read
 alongside [`architecture.md`](architecture.md) (baseline+overlay model,
@@ -8,7 +8,7 @@ two-sources-of-truth) and [`requirements-checklist.md`](requirements-checklist.m
 
 This document covers the daemon's **own** durable state — the writable working
 tree. Git's gitdir owns refs/index/reflogs/commits (§7); we never duplicate
-them and never journal them here (§33). The redesign **supersedes** the old
+them and never journal them here (§33). The design **supersedes** the old
 custom-stage / commit-adoption / `git lazy-mount git --` bridge: the operation
 journal in this design is a *crash-recovery* artifact, not a second history.
 
@@ -66,7 +66,7 @@ Content is addressed by an opaque **content id** (a random 128-bit nonce, hex),
 is what makes rename/subtree-rename O(namespace rows) with **zero content
 copies** (§29): a rename rewrites the `path → content_id` mapping, the content
 file is untouched. (The current `id_for(path)` scheme forces a content rename on
-every path rename; the redesign drops it.)
+every path rename; the design drops it.)
 
 ```rust
 /// Opaque, location-independent handle to one overlay content file.
@@ -357,7 +357,7 @@ redaction) — `detail` is bounded structured metadata only.
 ## 5. Stable synthetic metadata + racy-clean (§22)
 
 For unmaterialized **clean** files we synthesize stable metadata; the existing
-`FileAttr` / `unix_mode_of` (fs-common/src/attr.rs) is the shape. The redesign
+`FileAttr` / `unix_mode_of` (fs-common/src/attr.rs) is the shape. The design
 nails down *stability* and *racy-clean* (§22), which are durability concerns
 because Git compares index timestamps against what we project.
 

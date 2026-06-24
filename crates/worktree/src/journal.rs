@@ -1,4 +1,4 @@
-//! Durable change journal + FSMonitor v2 token (redesign.md §12).
+//! Durable change journal + FSMonitor v2 token (design.md §12).
 //!
 //! Git's FSMonitor v2 hook is given `(version, previous_token)` and must return a
 //! new token, a NUL, then the relative paths that changed since that token. The

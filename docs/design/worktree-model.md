@@ -1,11 +1,11 @@
 # Virtual working-tree model: baseline + overlay
 
-Authoritative spec: [`redesign.md`](../../redesign.md), primarily **§8** (the
+Authoritative spec: [`design.md`](../../design.md), primarily **§8** (the
 custom state represents *only* the virtual working tree), **§29** (rename
 semantics), **§30** (symlinks / hard links / special files), **§31** (raw
 repository paths). Cross-references: §7 (Git is authoritative), §25 (stock-Git
 index behavior), §14–§17 (inode/handle model), §23 (filters/attributes), §32
-(overlay durability). This is a design doc for the *redesign*: the custom stage,
+(overlay durability). This is a design doc for the *design*: the custom stage,
 custom branch DB, commit-adoption, and `git lazy-mount git --` bridge are
 **superseded** and out of scope here (§4.2, §4.3, §1).
 
@@ -34,7 +34,7 @@ user bytes and must be durable (§32, §8.2).
 
 ### Reuse map (existing code)
 
-| Concept | Existing file | Redesign disposition |
+| Concept | Existing file | Design disposition |
 |---------|---------------|----------------------|
 | `RepoPath` (raw bytes) | `crates/core/src/path.rs` | **Keep as-is.** Already meets §31. |
 | `Overlay` + `OverlayKind` (`File`/`Symlink`/`BaseRef`/`Tombstone`) | `crates/overlay/src/lib.rs` | **Keep**; add `Synthetic` resolution above it; drop dependence on the custom stage. |
@@ -45,7 +45,7 @@ user bytes and must be durable (§32, §8.2).
 
 The salvageable resolution lives today in `Workspace::lookup` /
 `Workspace::list_dir` / `Workspace::read_file` (`crates/workspace/src/lib.rs`
-lines ~278–542). The redesign extracts it into a `worktree` crate (§41) with no
+lines ~278–542). The design extracts it into a `worktree` crate (§41) with no
 stage, no refs, no oplog-as-history.
 
 ---
@@ -292,7 +292,7 @@ embedded `NUL`, absolute (`/`-leading), `.`/`..` traversal, empty components
 safely, §8 below), not in `from_bytes` (the bytes themselves are legal Git path
 bytes).
 
-### 6.1 The non-UTF-8 filter gap (must-fix in redesign)
+### 6.1 The non-UTF-8 filter gap (must-fix in design)
 
 `GitStore::smudge_blob` / `hash_blob_clean` (`crates/git-store/src/store.rs`)
 pass `--path=<utf8>` to `git cat-file --filters` and **error** on non-UTF-8
@@ -350,7 +350,7 @@ working (§14, §29 "rename with open source and destination handles").
 ### 7.2 Clean subtree rename = no descendant reads (§29)
 
 The current code returns *unsupported* for directory rename
-(`crates/workspace/src/lib.rs` ~532). The redesign **must** implement it as a
+(`crates/workspace/src/lib.rs` ~532). The design **must** implement it as a
 metadata operation: re-parent the subtree in the namespace DB
 (`rename subtree`, §15) so the baseline tree at `from/...` is logically relocated
 to `to/...` **without reading any descendant blob** (§29: "A clean subtree rename

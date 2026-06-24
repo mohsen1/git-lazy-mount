@@ -61,7 +61,7 @@ transactional view. The backend must:
   drift from notifications lost across a crash or restart.
 
 This mirrors the engine's append-only operation log discipline (CURRENT advanced
-last; see [operation-log.md](operation-log.md)) but is a distinct,
+last; see the durable change journal) but is a distinct,
 Windows-specific journal because the ordering hazard is ProjFS-specific.
 
 ### Offline-modification reconciliation

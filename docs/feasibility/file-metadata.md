@@ -51,4 +51,4 @@ matches a checkout. Tests pin `core.autocrlf=false` for determinism.
 ## Status
 
 Exact mode implemented and tested (sizes, CRLF, symlink, exec bit). Manifest mode
-and a raw-size cache are future. See `docs/metadata-limitations.md`.
+and a raw-size cache are future. See `docs/design/limitations.md`.

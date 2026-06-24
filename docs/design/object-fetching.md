@@ -1,13 +1,13 @@
 # Object provider, fetch scheduler, filters + LFS, metadata/size
 
-Authoritative spec: [`redesign.md`](../../redesign.md) §20 (object provider),
+Authoritative spec: [`design.md`](../../design.md) §20 (object provider),
 §21/§22 (metadata & size), §23 (filters/attributes), §24 (LFS). Supporting:
 §18/§19 (bounded I/O, deadlock), §34 (alternates), §35 (auth/offline), §38
 (hydration budgets). This doc specifies the **daemon-internal** object/content
 layer. It owns none of Git's repository state (§7) — it only turns object IDs +
 filter context into bounded, streamable working-tree bytes and correct sizes.
 
-This is a *redesign*. The streaming-provider shape and the
+This is a *design*. The streaming-provider shape and the
 residency-authority + coalescing core (`crates/object-provider`,
 `crates/git-store/src/batch.rs`) are **reusable substrate**. What changes:
 `raw_blob`/`filtered_blob` returning `Vec<u8>` (§4.6, §20) become `ReadSeek` /
@@ -140,7 +140,7 @@ read that misses returns `offline_missing_object` rather than escalating.
 
 Today's coalescing lives inline in `GitObjectProvider::ensure_objects`
 (`object-provider/src/lib.rs`): an in-flight `HashSet` + `Condvar`, fetch with
-no lock held. The redesign extracts a dedicated `FetchScheduler` owning the
+no lock held. The design extracts a dedicated `FetchScheduler` owning the
 network budget. ADR-0002 (synchronous, thread-based) and ADR-0006 (residency
 authority) still hold; this adds the missing pieces the feasibility doc lists as
 TODO (`docs/feasibility/git-object-fetching.md`: per-remote limits, retries,

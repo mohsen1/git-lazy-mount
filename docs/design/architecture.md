@@ -1,6 +1,6 @@
-# Redesign architecture — transparent, stock-Git, lazily hydrated working tree
+# Design architecture — transparent, stock-Git, lazily hydrated working tree
 
-Authoritative spec: [`redesign.md`](../../redesign.md). This is the concise
+Authoritative spec: [`design.md`](../../design.md). This is the concise
 overview (§45.1). Detailed per-area docs live beside it.
 
 ## The thesis: transparency
