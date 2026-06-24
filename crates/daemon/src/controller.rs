@@ -142,6 +142,9 @@ impl Controller {
         if store.resolve_ref(&attached_branch)?.is_none() {
             store.update_ref_cas(&attached_branch, &base, None)?;
         }
+        // Point the store's HEAD at the attached branch so the literal `HEAD`
+        // resolves for any default branch (not just `main`) — see set_head.
+        store.set_head(&attached_branch)?;
 
         // Create the workspace.
         let ws_id = workspace_id(mountpoint, &repo_id);

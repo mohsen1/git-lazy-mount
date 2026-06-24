@@ -1,0 +1,135 @@
+name: e2e matrix
+
+# End-to-end validation of the native lazy-mount workflow (clone → inspect →
+# edit → stage → commit → branch → reset → hydrate → fsck) across a Linux distro
+# × large-repo × partial-clone-filter matrix. Drives the CLI exactly as a user
+# would via scripts/e2e-lazy-mount.sh (27 asserted scenarios per cell).
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "scripts/e2e-lazy-mount.sh"
+      - ".github/workflows/e2e-matrix.yml"
+  schedule:
+    - cron: "0 5 * * 2" # weekly, Tuesday 05:00 UTC (catches remote/protocol drift)
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-cli:
+    name: build static CLI (musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: build
+        run: cargo build --release --target x86_64-unknown-linux-musl -p glm-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glm-cli-musl
+          path: target/x86_64-unknown-linux-musl/release/git-lazy-mount
+          if-no-files-found: error
+
+  # Portability: the same static binary against microsoft/TypeScript inside many
+  # distro containers (every distro here ships git >= 2.43; older-git distros are
+  # in the known-issues job, ref #32).
+  distros:
+    name: ${{ matrix.distro }} × TypeScript
+    needs: build-cli
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: "ubuntu:24.04", install: "apt-get update -qq && apt-get install -y -qq git ca-certificates bash" }
+          - { distro: "fedora:41", install: "dnf install -y -q git bash ca-certificates" }
+          - { distro: "fedora:40", install: "dnf install -y -q git bash ca-certificates" }
+          - { distro: "rockylinux:9", install: "dnf install -y -q git bash ca-certificates" }
+          - { distro: "alpine:3.20", install: "apk add --no-cache bash git ca-certificates" }
+          - { distro: "archlinux:latest", install: "pacman -Sy --noconfirm git bash ca-certificates" }
+          - { distro: "opensuse/leap:15.6", install: "zypper -n install git bash ca-certificates" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: glm-cli-musl, path: bin }
+      - run: chmod +x bin/git-lazy-mount
+      - name: e2e in ${{ matrix.distro }}
+        run: |
+          docker run --rm \
+            -v "$PWD/bin/git-lazy-mount":/glm:ro \
+            -v "$PWD/scripts/e2e-lazy-mount.sh":/e2e.sh:ro \
+            "${{ matrix.distro }}" sh -c '${{ matrix.install }} && GLM_BIN=/glm GLM_DEMO_REPO=https://github.com/microsoft/TypeScript bash /e2e.sh'
+
+  # Repo breadth: many huge repositories on the host runner (recent git).
+  large-repos:
+    name: ${{ matrix.name }}
+    needs: build-cli
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "TypeScript (~81k files)", repo: "https://github.com/microsoft/TypeScript" }
+          - { name: "golang/go (~16k files)", repo: "https://github.com/golang/go" }
+          - { name: "nodejs/node (~49k files)", repo: "https://github.com/nodejs/node" }
+          - { name: "kubernetes/kubernetes (~30k files)", repo: "https://github.com/kubernetes/kubernetes" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: glm-cli-musl, path: bin }
+      - run: chmod +x bin/git-lazy-mount
+      - name: e2e against ${{ matrix.repo }}
+        run: GLM_BIN="$PWD/bin/git-lazy-mount" GLM_DEMO_REPO="${{ matrix.repo }}" bash scripts/e2e-lazy-mount.sh
+
+  # Partial-clone filter / depth variants against TypeScript.
+  filters:
+    name: filter=${{ matrix.filter }} depth=${{ matrix.depth }}
+    needs: build-cli
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { filter: "blob:none", depth: "1" }
+          - { filter: "blob:none", depth: "" }
+          - { filter: "blob:limit=10k", depth: "1" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: glm-cli-musl, path: bin }
+      - run: chmod +x bin/git-lazy-mount
+      - name: e2e filter=${{ matrix.filter }}
+        run: GLM_BIN="$PWD/bin/git-lazy-mount" GLM_FILTER="${{ matrix.filter }}" GLM_DEPTH="${{ matrix.depth }}" bash scripts/e2e-lazy-mount.sh
+
+  # Combos that exercise open bugs (#32). They run so we notice the day they pass,
+  # but do not gate the workflow.
+  known-issues:
+    name: "known-issue: ${{ matrix.label }}"
+    needs: build-cli
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: "ubuntu × git/git (clean filter, #32)", image: "ubuntu:24.04", install: "apt-get update -qq && apt-get install -y -qq git ca-certificates bash", repo: "https://github.com/git/git" }
+          - { label: "debian:12 × TypeScript (older git, #32)", image: "debian:12", install: "apt-get update -qq && apt-get install -y -qq git ca-certificates bash", repo: "https://github.com/microsoft/TypeScript" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: glm-cli-musl, path: bin }
+      - run: chmod +x bin/git-lazy-mount
+      - name: e2e ${{ matrix.label }}
+        run: |
+          docker run --rm \
+            -v "$PWD/bin/git-lazy-mount":/glm:ro \
+            -v "$PWD/scripts/e2e-lazy-mount.sh":/e2e.sh:ro \
+            "${{ matrix.image }}" sh -c '${{ matrix.install }} && GLM_BIN=/glm GLM_DEMO_REPO=${{ matrix.repo }} bash /e2e.sh'
