@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 glm-core.workspace = true
 glm-git-store.workspace = true
-glm-platform.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

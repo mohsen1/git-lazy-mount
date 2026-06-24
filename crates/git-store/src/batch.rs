@@ -49,7 +49,7 @@ impl BatchSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        // Never let the long-lived cat-file session inherit a FUSE/FSKit mount
+        // Never let the long-lived cat-file session inherit a FUSE mount
         // descriptor (see proc::harden_fds).
         crate::proc::harden_fds(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| {

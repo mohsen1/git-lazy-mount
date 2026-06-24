@@ -186,19 +186,10 @@ impl ContentHandle {
     }
 }
 
-/// Positional read, cross-platform (`pread` on unix, `seek_read` on Windows).
-/// The mount is Linux-only, but the projection stays portable so the workspace
-/// `check` matrix builds everywhere.
-#[cfg(unix)]
+/// Positional read (`pread`). git-lazy-mount targets Linux only.
 fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     use std::os::unix::fs::FileExt;
     f.read_at(buf, offset)
-}
-
-#[cfg(windows)]
-fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    f.seek_read(buf, offset)
 }
 
 impl Projection {
