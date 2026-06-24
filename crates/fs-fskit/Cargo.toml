@@ -15,6 +15,7 @@ glm-core.workspace = true
 glm-platform.workspace = true
 glm-workspace.workspace = true
 glm-fs-common.workspace = true
+glm-ipc.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

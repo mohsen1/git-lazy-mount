@@ -32,6 +32,7 @@ mod bridge;
 mod capability;
 pub mod collision;
 pub mod coordination;
+mod ipc;
 pub mod lifecycle;
 pub mod recovery;
 
