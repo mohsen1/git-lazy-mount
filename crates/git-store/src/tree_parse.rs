@@ -1,5 +1,4 @@
-//! Parse and build raw Git tree objects, byte-exactly (spec §17: arbitrary
-//! non-UTF-8 names).
+//! Parse and build raw Git tree objects, byte-exactly.
 //!
 //! A raw tree object (the bytes `git cat-file <tree>` prints, header already
 //! stripped) is a concatenation of entries:

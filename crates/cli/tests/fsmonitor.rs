@@ -1,17 +1,17 @@
-//! End-to-end FSMonitor (design.md §12): with `core.fsmonitor` wired to the
+//! End-to-end FSMonitor: with `core.fsmonitor` wired to the
 //! `git-lazy-mount-fsmonitor` hook, the durable change journal lets git learn
 //! what changed without re-statting the whole tree — and, crucially, **without
 //! ever a false negative** (a real edit is always surfaced).
 //!
-//! NOTE on the §12.2 "zero-blob first status": it is **not achievable** with
-//! stock git + a `blob:none` clone, and that is a fundamental limitation, not a
-//! bug. `GIT_TRACE_FSMONITOR` shows git marks each read-tree'd entry clean from
-//! the hook's empty reply, then immediately `mark_fsmonitor_invalid` because the
+//! NOTE on the zero-blob first status: it is **not achievable** with stock git +
+//! a `blob:none` clone, and that is a fundamental limitation, not a bug.
+//! `GIT_TRACE_FSMONITOR` shows git marks each read-tree'd entry clean from the
+//! hook's empty reply, then immediately `mark_fsmonitor_invalid` because the
 //! entry has **no stat data** — git must populate the stat (size + mtime) to skip
 //! the content check, and under `blob:none` the size requires fetching the blob.
 //! The fsmonitor-valid bit does not override an empty-stat entry. So the *first*
-//! clean status faults each blob once (see `limitations.md` R6); fsmonitor's win
-//! is the *subsequent* statuses (no redundant stat scan on huge repos).
+//! clean status faults each blob once; fsmonitor's win is the *subsequent*
+//! statuses (no redundant stat scan on huge repos).
 //!
 //! Real `/dev/fuse` mount.
 #![cfg(feature = "fuse")]

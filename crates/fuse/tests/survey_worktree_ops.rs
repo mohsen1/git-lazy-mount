@@ -6,11 +6,11 @@
 //! * `git restore <path>` and `git checkout -- <path>` — discard a working-tree
 //!   edit of a baseline file (the clean blob faults in once over the promisor,
 //!   then the overlay copy is overwritten with the restored bytes).
-//! * DIRECTORY RENAME (formerly the R5 gap, now fixed): a whole-directory
-//!   rename, whether via `std::fs::rename` or `git mv <dir> <newdir>`, moves the
-//!   entire subtree — `Projection::rename` recurses, re-keying overlay
-//!   descendants and re-pointing baseline descendants as base-refs, then
-//!   tombstoning the source. Metadata-only, no blob fetch (§29).
+//! * DIRECTORY RENAME: a whole-directory rename, whether via `std::fs::rename`
+//!   or `git mv <dir> <newdir>`, moves the entire subtree — `Projection::rename`
+//!   recurses, re-keying overlay descendants and re-pointing baseline
+//!   descendants as base-refs, then tombstoning the source. Metadata-only, no
+//!   blob fetch.
 //!
 //! Real `/dev/fuse` mount — runs under `--features fuse`.
 #![cfg(feature = "fuse")]
@@ -168,7 +168,7 @@ fn git_clean_fd_removes_untracked_files_and_dirs() {
 
 #[test]
 fn git_restore_discards_a_working_tree_edit() {
-    // criterion: `git restore <path>` reverts an edited baseline file to HEAD.
+    // `git restore <path>` reverts an edited baseline file to HEAD.
     let (m, _remote) = Mounted::new(&[("doc.txt", b"committed content\n")]);
 
     // Edit the baseline file through the mount (copy-up into the overlay).
@@ -212,16 +212,15 @@ fn git_checkout_dashdash_discards_a_working_tree_edit() {
 }
 
 // ------------------------------------------------------------------------
-// DIRECTORY RENAME — the known R5 gap. These tests pin the CURRENT behavior:
-// the rename fails, and the repository stays consistent (the directory and its
-// contents remain readable at the ORIGINAL path; the destination is absent).
+// DIRECTORY RENAME — a whole-directory rename moves the entire subtree, and the
+// repository stays consistent (contents readable at the new path, source gone).
 // ------------------------------------------------------------------------
 
 #[test]
 fn fs_rename_of_a_directory_moves_the_subtree() {
     // A whole-directory rename via the raw `rename(2)` syscall through the mount.
-    // `Projection::rename` now moves the entire subtree (baseline + overlay,
-    // nested) with no blob fetch (§29). R5 fixed.
+    // `Projection::rename` moves the entire subtree (baseline + overlay, nested)
+    // with no blob fetch.
     let (m, _remote) = Mounted::new(&[("d/a.txt", b"alpha\n"), ("d/sub/b.txt", b"beta\n")]);
     // An untracked overlay file inside the dir, to prove overlay descendants move.
     std::fs::write(m.mnt.join("d").join("c.txt"), b"gamma\n").unwrap();
@@ -249,7 +248,7 @@ fn fs_rename_of_a_directory_moves_the_subtree() {
 fn git_mv_of_a_directory_moves_tracked_paths() {
     // `git mv <dir> <newdir>` renames the directory then restages. Through the
     // mount the tracked paths move to the destination and a commit records the
-    // new layout. R5 fixed.
+    // new layout.
     let (m, _remote) = Mounted::new(&[("pkg/one.rs", b"// one\n"), ("pkg/two.rs", b"// two\n")]);
 
     let (ok, _out, err) = git(&m.mnt, &["mv", "pkg", "lib"]);
@@ -277,8 +276,8 @@ fn git_mv_of_a_directory_moves_tracked_paths() {
 #[test]
 fn git_mv_of_a_single_file_still_works() {
     // Contrast with the directory case: a single-FILE `git mv` is a file
-    // rename, which the projection DOES support (clean base-ref move, no blob
-    // fetch). This guards that the R5 gap is scoped to directories only.
+    // rename, which the projection supports (clean base-ref move, no blob
+    // fetch).
     let (m, _remote) = Mounted::new(&[("old.txt", b"contents\n"), ("other.txt", b"x\n")]);
 
     let (ok, _out, err) = git(&m.mnt, &["mv", "old.txt", "new.txt"]);

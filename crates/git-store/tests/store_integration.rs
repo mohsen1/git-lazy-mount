@@ -1,5 +1,5 @@
 //! Integration tests against a real `git`, proving the core laziness and
-//! Git-interop claims (spec §53 MVP criteria 1, 4, 10, 15, 17, 18).
+//! Git-interop claims.
 
 use glm_core::{GitMode, ObjectFormat, ObjectId, TreeEntry};
 use glm_git_store::{CommitParams, FetchOptions, GitStore, Identity};
@@ -323,8 +323,8 @@ fn batch_session_serves_local_and_reports_missing() {
     assert!(session.info(&unknown).unwrap().is_none());
 
     // NOTE: we deliberately do NOT query the promisor-missing blob before
-    // fetching it — that would fatally terminate the session (see
-    // docs/feasibility/git-object-fetching.md). The provider fetches first.
+    // fetching it — that would fatally terminate the session. The provider
+    // fetches first.
     store.fetch_objects(std::slice::from_ref(&blob)).unwrap();
     let (info, bytes) = session.contents(&blob).unwrap().expect("present now");
     assert_eq!(info.kind, "blob");

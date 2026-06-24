@@ -1,4 +1,4 @@
-//! Workspace, operation, repository, and generation identifiers (spec §10).
+//! Workspace, operation, repository, and generation identifiers.
 //!
 //! These are deliberately *distinct* newtypes so the type system prevents, say,
 //! passing an operation id where a workspace id is expected.
@@ -7,11 +7,11 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Identifies an immutable workspace view (spec §2.4, §11).
+/// Identifies an immutable workspace view.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct WorkspaceViewId(pub Vec<u8>);
 
-/// Identifies an entry in the operation log (spec §13).
+/// Identifies an entry in the operation log.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationId(pub Vec<u8>);
 
@@ -20,12 +20,12 @@ pub struct OperationId(pub Vec<u8>);
 pub struct WorkspaceId(pub String);
 
 /// Stable identity of a shared repository store, derived from canonical
-/// repository identity *without embedding credentials* (spec §8).
+/// repository identity *without embedding credentials*.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepoId(pub String);
 
 /// Monotonic generation counter for a mount's desired/applied filesystem state
-/// (spec §2.5, §19). Used to detect stale kernel entries and stale views.
+///. Used to detect stale kernel entries and stale views.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MountGeneration(pub u64);
 

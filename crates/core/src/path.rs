@@ -1,6 +1,6 @@
 //! Canonical Git repository paths, stored as raw bytes.
 //!
-//! Spec §17 / §30: Git path bytes are never *implicitly* UTF-8. A `RepoPath`
+//! /: Git path bytes are never *implicitly* UTF-8. A `RepoPath`
 //! preserves arbitrary non-NUL bytes (legal on Linux), uses `/` as the only
 //! separator, and exposes *separate* APIs for identity (`as_bytes`), lossy
 //! human display (`display`), and reversible escaping for logs/JSON

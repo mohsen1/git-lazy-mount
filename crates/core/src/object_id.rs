@@ -1,6 +1,6 @@
 //! Git object identity, abstracted over the repository's object format.
 //!
-//! Requirement (spec §3.16): never assume SHA-1 or 40-character object IDs.
+//! Requirement: never assume SHA-1 or 40-character object IDs.
 //! Object IDs are opaque byte strings tagged with the format Git reported for
 //! the repository. We parse and compare them; we never compute them ourselves
 //! (Git remains authoritative for hashing).

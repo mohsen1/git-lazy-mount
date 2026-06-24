@@ -1,4 +1,4 @@
-//! A long-lived `git cat-file --batch-command` session (spec §5.3).
+//! A long-lived `git cat-file --batch-command` session.
 //!
 //! One process answers many `info`/`contents` requests without re-spawning Git
 //! per object. The session runs with `GIT_NO_LAZY_FETCH=1`: it serves only what

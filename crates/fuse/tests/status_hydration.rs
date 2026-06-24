@@ -1,7 +1,6 @@
-//! Measure `git status` hydration through the mount (design.md §38.4, §27):
-//! how many working-file blobs does a clean status fault in, the first time and
-//! on repeat? This quantifies the current (pre-FSMonitor) eagerness rather than
-//! hiding it. Real `/dev/fuse` mount — runs under `--features fuse`.
+//! Measure `git status` hydration through the mount: how many working-file
+//! blobs does a clean status fault in, the first time and on repeat? Real
+//! `/dev/fuse` mount — runs under `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;
@@ -89,7 +88,7 @@ fn clean_status_hydration_is_measured() {
         "STATUS HYDRATION: cold(first)={cold} warm(repeat)={warm} files={}",
         files.len()
     );
-    // The headline budget (§38.4): a *repeated* clean status fetches no blobs.
+    // The headline budget: a *repeated* clean status fetches no blobs.
     assert_eq!(
         warm, 0,
         "repeat clean status must fetch 0 blobs, got {warm}"

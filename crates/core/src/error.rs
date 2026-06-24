@@ -1,9 +1,9 @@
-//! Typed error model with stable machine-readable codes (spec §47).
+//! Typed error model with stable machine-readable codes.
 //!
 //! Every error carries a stable [`ErrorCode`], a human summary, a `retryable`
 //! flag, an optional recommended action, optional workspace/operation ids, a
 //! redacted diagnostic breadcrumb trail, and a causal chain. The FS layer maps
-//! codes to errno *without losing* the structured diagnostic (spec §47 end).
+//! codes to errno *without losing* the structured diagnostic.
 
 use std::fmt;
 
@@ -133,7 +133,7 @@ impl ErrorCode {
 /// The crate-wide result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A structured error (spec §47).
+/// A structured error.
 #[derive(Debug)]
 pub struct Error(Box<ErrorRepr>);
 
@@ -230,7 +230,7 @@ impl Error {
     }
 
     /// The errno the FS layer should surface, preserving `self` for the daemon
-    /// diagnostic (spec §47 end: map without losing structure).
+    /// diagnostic.
     pub fn errno(&self) -> i32 {
         self.code.errno()
     }
@@ -260,7 +260,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// JSON-serializable projection of an [`Error`] for `--json` output (spec §6).
+/// JSON-serializable projection of an [`Error`] for `--json` output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorJson {
     /// Stable code.

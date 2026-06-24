@@ -1,8 +1,8 @@
 //! More stock-git workflows through the transparent mount, focused on the
-//! index-only-vs-working-tree separation the design insists on (§8.1/§25.1):
-//! `git rm --cached` and `git reset --mixed` change the index but must NOT
-//! change the projected working-tree bytes. Plus amend (criterion 12) and stash
-//! (criterion 18). Real `/dev/fuse` mount — runs under `--features fuse`.
+//! index-only-vs-working-tree separation: `git rm --cached` and
+//! `git reset --mixed` change the index but must NOT change the projected
+//! working-tree bytes. Plus amend and stash. Real `/dev/fuse` mount — runs
+//! under `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;
@@ -84,7 +84,7 @@ impl Drop for Mounted {
 
 #[test]
 fn rm_cached_preserves_the_working_tree_file() {
-    // criterion 19: `git rm --cached` unstages but the working-tree file stays.
+    // `git rm --cached` unstages but the working-tree file stays.
     let m = Mounted::new(&[("a.txt", b"alpha\n"), ("b.txt", b"beta\n")]);
     let (ok, _, e) = git(&m.mnt, &["rm", "--cached", "a.txt"]);
     assert!(ok, "rm --cached failed: {e}");
@@ -107,8 +107,8 @@ fn rm_cached_preserves_the_working_tree_file() {
 
 #[test]
 fn reset_mixed_changes_index_not_projected_bytes() {
-    // criterion 20: stage an edit, then `git reset` (mixed) — the index unstages
-    // but the projected working-tree bytes are unchanged (§8.1/§25.1).
+    // Stage an edit, then `git reset` (mixed) — the index unstages but the
+    // projected working-tree bytes are unchanged.
     let m = Mounted::new(&[("f.txt", b"v1\n")]);
     std::fs::write(m.mnt.join("f.txt"), b"v2-edited\n").unwrap();
     let (ok_add, _, _) = git(&m.mnt, &["add", "f.txt"]);
@@ -131,7 +131,7 @@ fn reset_mixed_changes_index_not_projected_bytes() {
 
 #[test]
 fn commit_amend_rewrites_the_tip() {
-    // criterion 12: amend.
+    // Amend rewrites the tip commit.
     let m = Mounted::new(&[("x.txt", b"one\n")]);
     std::fs::write(m.mnt.join("x.txt"), b"two\n").unwrap();
     git(&m.mnt, &["add", "x.txt"]);
@@ -150,7 +150,7 @@ fn commit_amend_rewrites_the_tip() {
 
 #[test]
 fn stash_and_pop_round_trip() {
-    // criterion 18: stash save reverts the worktree, pop restores it.
+    // Stash save reverts the worktree, pop restores it.
     let m = Mounted::new(&[("s.txt", b"original\n")]);
     std::fs::write(m.mnt.join("s.txt"), b"work in progress\n").unwrap();
     let (ok_s, _, e) = git(&m.mnt, &["stash"]);

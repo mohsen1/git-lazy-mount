@@ -1,4 +1,4 @@
-//! M2 transparent-mount semantics: real-mount integration tests that mount the
+//! Transparent-mount semantics: real-mount integration tests that mount the
 //! projection through the kernel (`spawn_mount`) and drive it with ordinary
 //! `std::fs` calls, exactly as an editor or a build tool would. Each test owns
 //! its own `Arc<Projection>` clone (taken before `spawn_mount`, which clones
@@ -11,19 +11,18 @@
 //! the crate's PUBLIC API only: `glm_fuse::{spawn_mount, BackgroundMount}` plus
 //! the `glm_worktree::Projection` / `glm_git_repo::AdminRepo` it is built from.
 //!
-//! Coverage (design.md):
-//! * §17.4 open-then-unlink — handle survives namespace removal
-//! * §17.5 / §28 rename-while-open — atomic editor save, fd identity preserved
-//! * §4.9 empty untracked dir survives unmount → remount (same overlay/cache)
-//! * §38.7 `O_TRUNC` open fetches no old blob
-//! * §38.6 100 concurrent reads → one retrieval (target == 1; ignored until
-//!   coalescing lands)
-//! * §38.8 repeated 4 KiB writes into a large file (in-place pwrite)
+//! Coverage:
+//! * open-then-unlink — handle survives namespace removal
+//! * rename-while-open — atomic editor save, fd identity preserved
+//! * empty untracked dir survives unmount → remount (same overlay/cache)
+//! * `O_TRUNC` open fetches no old blob
+//! * 100 concurrent reads → one retrieval (target == 1)
+//! * repeated 4 KiB writes into a large file (in-place pwrite)
 //!
-//! NOTE: Experiment C (`git status` sees a transparent edit) is already covered
-//! by `m3_git.rs::git_status_add_commit_through_the_transparent_mount`, which
+//! NOTE: `git status` seeing a transparent edit is already covered by
+//! `m3_git.rs::git_status_add_commit_through_the_transparent_mount`, which
 //! builds the real index via `proj.repo().build_index()` and drives status/add/
-//! commit — so it is intentionally NOT duplicated here (it is M3 work).
+//! commit — so it is intentionally NOT duplicated here.
 
 #![cfg(feature = "fuse")]
 
@@ -112,7 +111,7 @@ fn mount_ready(proj: Arc<Projection>, mnt: &Path) -> BackgroundMount {
 }
 
 // ---------------------------------------------------------------------------
-// 1. §17.4 — open then unlink: the handle outlives the name.
+// 1. open then unlink: the handle outlives the name.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -147,7 +146,7 @@ fn open_then_unlink_handle_survives_and_name_is_gone() {
     );
     assert!(names.iter().any(|n| n == "keep.txt"));
 
-    // The open fd still reads and writes correctly (storage retained, §17.4).
+    // The open fd still reads and writes correctly (storage retained).
     fd.seek(SeekFrom::Start(0)).unwrap();
     let mut again = String::new();
     fd.read_to_string(&mut again).unwrap();
@@ -168,8 +167,8 @@ fn open_then_unlink_handle_survives_and_name_is_gone() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. §17.5 / §28 — rename-over-original (editor atomic save) while a reader fd
-//    is open; the final content is the new file's, the open fd keeps identity.
+// 2. rename-over-original (editor atomic save) while a reader fd is open; the
+//    final content is the new file's, the open fd keeps identity.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -205,7 +204,7 @@ fn rename_over_original_atomic_editor_save() {
 
     // The pre-existing reader fd keeps its OWN file identity: per POSIX a rename
     // over the path does not redirect an already-open fd. It still reads the
-    // bytes it was opened on (§17.5: handles refer to the same identity).
+    // bytes it was opened on — handles refer to the same identity.
     reader.seek(SeekFrom::Start(0)).unwrap();
     let mut via_old_fd = String::new();
     reader.read_to_string(&mut via_old_fd).unwrap();
@@ -219,8 +218,8 @@ fn rename_over_original_atomic_editor_save() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. §4.9 — an empty untracked dir is durable workspace state: it survives an
-//    unmount and a remount of the SAME overlay/cache dirs.
+// 3. An empty untracked dir is durable workspace state: it survives an unmount
+//    and a remount of the SAME overlay/cache dirs.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -249,7 +248,7 @@ fn empty_untracked_dir_survives_unmount_remount() {
         let mount = mount_ready(Arc::clone(&proj), &fx.mnt);
         assert!(
             fx.mnt.join("empty_dir").is_dir(),
-            "empty untracked dir did not survive remount (§4.9)"
+            "empty untracked dir did not survive remount"
         );
         let names: Vec<String> = std::fs::read_dir(&fx.mnt)
             .unwrap()
@@ -264,7 +263,7 @@ fn empty_untracked_dir_survives_unmount_remount() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. §38.7 — open(O_WRONLY|O_TRUNC) of a baseline file fetches NO old blob.
+// 4. open(O_WRONLY|O_TRUNC) of a baseline file fetches NO old blob.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -293,7 +292,7 @@ fn otrunc_open_fetches_no_old_blob() {
     assert_eq!(
         proj.hydrations(),
         before,
-        "O_TRUNC open hydrated the old blob (§38.7)"
+        "O_TRUNC open hydrated the old blob"
     );
 
     // The new content reads back; this read serves from the overlay copy-up, not
@@ -309,9 +308,8 @@ fn otrunc_open_fetches_no_old_blob() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. §38.6 — 100 concurrent reads of one not-yet-materialized file must perform
-//    exactly ONE underlying retrieval. Coalescing is not implemented yet, so
-//    this asserts the CORRECT target (== 1) and is ignored until §38.6 lands.
+// 5. 100 concurrent reads of one not-yet-materialized file must perform exactly
+//    ONE underlying retrieval (reads coalesce onto a single fault).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -338,16 +336,16 @@ fn hundred_concurrent_reads_coalesce_to_one_retrieval() {
     assert_eq!(
         proj.hydrations() - before,
         1,
-        "100 concurrent reads must cause exactly one object retrieval (§38.6)"
+        "100 concurrent reads must cause exactly one object retrieval"
     );
 
     mount.unmount();
 }
 
 // ---------------------------------------------------------------------------
-// 6. §38.8 — many 4 KiB writes at increasing offsets into a large file go
-//    through as in-place pwrites (no full-file rewrite); final size + spot bytes
-//    are correct.
+// 6. Many 4 KiB writes at increasing offsets into a large file go through as
+//    in-place pwrites (no full-file rewrite); final size + spot bytes are
+//    correct.
 // ---------------------------------------------------------------------------
 
 #[test]

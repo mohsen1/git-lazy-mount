@@ -1,10 +1,10 @@
-//! Object-fetch policy and priority (spec §16).
+//! Object-fetch policy and priority.
 
 use serde::{Deserialize, Serialize};
 
 /// Controls whether resolving an object may touch the network.
 ///
-/// Spec §16/§3.13: filesystem callbacks must run with `MustNotFetch` so a read
+/// filesystem callbacks must run with `MustNotFetch` so a read
 /// never triggers an implicit credential prompt; only the fetch scheduler is
 /// authorized to escalate to `AllowNetwork`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

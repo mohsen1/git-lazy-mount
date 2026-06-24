@@ -1,12 +1,12 @@
-//! Transparent per-workspace admin Git repository (design.md §6, §10.2).
+//! Transparent per-workspace admin Git repository.
 //!
 //! `git clone --filter=blob:none --no-checkout --separate-git-dir=<gitdir> <url>
 //! <anchor>`, then `core.worktree=<mountpoint>` — so stock Git resolves the
 //! repository through a synthetic `.git` gitfile the FUSE projection serves at
 //! the mount root, and operates on the mounted worktree using its normal index,
 //! refs, locks, and hooks. The admin gitdir lives on a **native** filesystem,
-//! never inside FUSE (design.md §6). This is the design's `git-repo`; Git is
-//! authoritative for all repository state (design.md §7).
+//! never inside FUSE. This is the design's `git-repo`; Git is
+//! authoritative for all repository state.
 
 #![forbid(unsafe_code)]
 
@@ -16,16 +16,16 @@ use std::process::Command;
 use glm_core::{Error, ErrorCode, ObjectId, Result};
 use glm_git_store::GitStore;
 
-/// Options for the transparent clone (design.md §10.2).
+/// Options for the transparent clone.
 #[derive(Debug, Clone)]
 pub struct CloneOptions {
     /// Branch to attach to; `None` = the remote's default.
     pub branch: Option<String>,
-    /// Shallow depth; `None` = full history (the default; §10.2).
+    /// Shallow depth; `None` = full history (the default).
     pub depth: Option<u32>,
     /// Partial-clone filter; defaults to `blob:none`.
     pub filter: Option<String>,
-    /// Permit a full-object clone if the remote rejects the filter (§10.2).
+    /// Permit a full-object clone if the remote rejects the filter.
     pub allow_full_object_clone: bool,
 }
 
@@ -49,10 +49,10 @@ pub struct AdminRepo {
 }
 
 impl AdminRepo {
-    /// Transparent clone (design.md §6.1): create the admin gitdir and point it
+    /// Transparent clone: create the admin gitdir and point it
     /// at `worktree`. `anchor` is a temporary clone anchor that is discarded after
-    /// init — we do **not** depend on a physical checkout (§6.1). A full-object
-    /// clone (filter rejected) still implies **no** checkout (§10.2).
+    /// init — we do **not** depend on a physical checkout. A full-object
+    /// clone (filter rejected) still implies **no** checkout.
     pub fn clone(
         url: &str,
         gitdir: &Path,
@@ -100,7 +100,7 @@ impl AdminRepo {
         }
 
         // The anchor's own `.git` gitfile is discarded; the projection serves the
-        // synthetic one. Do not depend on a temporary physical checkout (§6.1).
+        // synthetic one. Do not depend on a temporary physical checkout.
         let _ = std::fs::remove_dir_all(anchor);
         std::fs::create_dir_all(&worktree)
             .map_err(|e| Error::new(ErrorCode::Internal, format!("create worktree: {e}")))?;
@@ -134,7 +134,7 @@ impl AdminRepo {
         &self.store
     }
 
-    /// The exact bytes of the synthetic root `.git` gitfile (design.md §6).
+    /// The exact bytes of the synthetic root `.git` gitfile.
     /// Stock Git reads this and follows it to the admin gitdir.
     pub fn synthetic_gitfile(&self) -> Vec<u8> {
         format!("gitdir: {}\n", self.gitdir.display()).into_bytes()
@@ -145,14 +145,14 @@ impl AdminRepo {
         self.store.rev_parse("HEAD")
     }
 
-    /// The HEAD commit's tree — the initial projection baseline (§8). `None` if
+    /// The HEAD commit's tree — the initial projection baseline. `None` if
     /// HEAD is unborn.
     pub fn head_tree(&self) -> Result<Option<ObjectId>> {
         self.store.rev_parse("HEAD^{tree}")
     }
 
     /// A `git --git-dir=<gitdir>` command with lazy fetch disabled, so index/
-    /// inspection plumbing can never trigger a network blob fetch (§19).
+    /// inspection plumbing can never trigger a network blob fetch.
     fn git(&self) -> Command {
         let mut cmd = Command::new("git");
         cmd.arg("--git-dir").arg(&self.gitdir);
@@ -162,10 +162,10 @@ impl AdminRepo {
     }
 
     /// Populate the real `.git/index` from the baseline (HEAD) tree **without
-    /// fetching any blobs** (design.md §10.4). This is `git read-tree HEAD`:
+    /// fetching any blobs**. This is `git read-tree HEAD`:
     /// O(tracked paths), reads tree objects only (present under `blob:none`),
     /// touches no working-tree files. The real index is then the single stage
-    /// (§4.2) that stock `git add`/`status`/`commit` operate on.
+    /// that stock `git add`/`status`/`commit` operate on.
     pub fn build_index(&self) -> Result<()> {
         let mut cmd = self.git();
         cmd.args(["read-tree", "HEAD"]);
@@ -174,7 +174,7 @@ impl AdminRepo {
     }
 
     /// The paths tracked in the real index (`git ls-files -z`), as raw bytes
-    /// (§31: not necessarily UTF-8). Reads the index only.
+    ///. Reads the index only.
     pub fn tracked_paths(&self) -> Result<Vec<Vec<u8>>> {
         let mut cmd = self.git();
         cmd.args(["ls-files", "-z"]);
@@ -297,7 +297,7 @@ mod tests {
         .unwrap();
 
         // read-tree runs with GIT_NO_LAZY_FETCH=1, so succeeding proves the real
-        // index was built from tree objects alone — zero blobs fetched (§10.4).
+        // index was built from tree objects alone — zero blobs fetched.
         repo.build_index().unwrap();
 
         let mut paths: Vec<String> = repo

@@ -1,4 +1,4 @@
-//! Parsed Git tree objects (spec §10).
+//! Parsed Git tree objects.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use crate::object_id::ObjectId;
 /// `name` is raw bytes (a single path component; never contains `/` or NUL).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeEntry {
-    /// The component name, raw bytes (spec §17: not implicitly UTF-8).
+    /// The component name, raw bytes.
     pub name: Vec<u8>,
     /// The entry's mode.
     pub mode: GitMode,
@@ -41,7 +41,7 @@ impl TreeObject {
     }
 
     /// Number of directly-contained entries (used to assert `readdir` is
-    /// O(entries in this directory), spec §49).
+    /// O(entries in this directory)).
     pub fn len(&self) -> usize {
         self.entries.len()
     }
