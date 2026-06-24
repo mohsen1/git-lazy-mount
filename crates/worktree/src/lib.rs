@@ -139,16 +139,29 @@ impl ContentHandle {
                 Ok(b[start..end].to_vec())
             }
             ContentInner::File(f) => {
-                use std::os::unix::fs::FileExt;
                 let mut buf = vec![0u8; len];
-                let n = f
-                    .read_at(&mut buf, offset)
+                let n = pread(f, &mut buf, offset)
                     .map_err(|e| Error::new(ErrorCode::Internal, format!("pread: {e}")))?;
                 buf.truncate(n);
                 Ok(buf)
             }
         }
     }
+}
+
+/// Positional read, cross-platform (`pread` on unix, `seek_read` on Windows).
+/// The mount is Linux-only, but the projection stays portable so the workspace
+/// `check` matrix builds everywhere.
+#[cfg(unix)]
+fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    use std::os::unix::fs::FileExt;
+    f.read_at(buf, offset)
+}
+
+#[cfg(windows)]
+fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    use std::os::windows::fs::FileExt;
+    f.seek_read(buf, offset)
 }
 
 impl Projection {
