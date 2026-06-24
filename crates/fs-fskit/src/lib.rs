@@ -45,6 +45,7 @@ pub use capability::{Capability, MacBackend, FSKIT_MODULE_BUNDLE_ID};
 pub use collision::{AppleVolume, Collision};
 pub use coordination::{Coordinator, Intent};
 pub use glm_fs_common::ROOT_INO;
+pub use ipc::serve_fs_connection;
 pub use lifecycle::{extension_state, ExtensionState};
 pub use recovery::{reattach, ReattachReport, RecoveryPhase};
 

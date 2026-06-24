@@ -297,6 +297,7 @@ dependencies = [
  "glm-testkit",
  "glm-workspace",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

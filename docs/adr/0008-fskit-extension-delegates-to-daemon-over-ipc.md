@@ -64,9 +64,12 @@ usable for unsandboxed harness testing.
   (`FsRequest`/`FsResponse`, exact-byte names), and the daemon-side handler that
   maps each request onto the engine is
   [`FskitOps::serve_ipc`](../../crates/fs-fskit/src/ipc.rs), exercised over a
-  seeded workspace (lookup/read/enumerate/create/write + errno mapping). What
-  remains is the **socket transport** and the **Swift client** in the extension
-  (a thin marshaller), plus on-device validation.
+  seeded workspace (lookup/read/enumerate/create/write + errno mapping). The
+  framed socket transport (`serve_fs_connection`: length-prefixed JSON,
+  request→response until EOF) is also implemented and round-trip-tested over a
+  real `UnixStream` pair. What remains is the **Swift client** in the extension
+  (a thin marshaller that frames each callback to the daemon socket), plus
+  on-device validation.
 * This is **not yet exercised end-to-end**: third-party FSKit module
   *enablement* is currently broken on macOS 26.4.1 (reproduces on Apple's own
   sample), so no mount — and therefore no live IPC round-trip — has run on-device

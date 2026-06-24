@@ -17,6 +17,7 @@ glm-workspace.workspace = true
 glm-fs-common.workspace = true
 glm-ipc.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 glm-git-store.workspace = true
