@@ -52,6 +52,10 @@ pub enum ErrorCode {
     UnsupportedOperation,
     /// A configured resource limit was exceeded.
     ResourceLimit,
+    /// A path does not exist (maps to `ENOENT`).
+    NotFound,
+    /// A path already exists where a fresh one was required (maps to `EEXIST`).
+    AlreadyExists,
     /// An unexpected internal invariant violation (bug).
     Internal,
 }
@@ -78,6 +82,8 @@ impl ErrorCode {
             ErrorCode::MountLifecycle => "mount_lifecycle",
             ErrorCode::UnsupportedOperation => "unsupported_operation",
             ErrorCode::ResourceLimit => "resource_limit",
+            ErrorCode::NotFound => "not_found",
+            ErrorCode::AlreadyExists => "already_exists",
             ErrorCode::Internal => "internal",
         }
     }
@@ -111,6 +117,8 @@ impl ErrorCode {
             ErrorCode::FilesystemBackendUnavailable => 19, // ENODEV
             ErrorCode::UnsupportedOperation => 95,         // EOPNOTSUPP
             ErrorCode::ResourceLimit => 28,                // ENOSPC
+            ErrorCode::NotFound => 2,                      // ENOENT
+            ErrorCode::AlreadyExists => 17,                // EEXIST
             ErrorCode::StaleWorkspace => 116,              // ESTALE
             ErrorCode::DirtyWorkspaceConflict => 39,       // ENOTEMPTY (closest)
             ErrorCode::ConcurrentBranchMovement => 11,     // EAGAIN

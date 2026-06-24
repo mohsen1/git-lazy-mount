@@ -72,7 +72,10 @@ impl InodeTable {
     /// Look up (allocating if needed) the inode for `path`, incrementing its
     /// kernel reference count. Returns `(ino, generation)`.
     pub fn lookup(&self, path: &RepoPath) -> (u64, u64) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&ino) = inner.path_to_ino.get(path) {
             let gen = {
                 let e = inner.entries.get_mut(&ino).expect("entry exists");
@@ -112,7 +115,10 @@ impl InodeTable {
         if ino == ROOT_INO {
             return;
         }
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(e) = inner.entries.get_mut(&ino) {
             e.lookups = e.lookups.saturating_sub(n);
             if e.lookups == 0 && e.path.is_none() {
@@ -124,7 +130,10 @@ impl InodeTable {
     /// Rename: the same inode now answers to `new` (identity preserved; spec
     /// §19, §22). Open handles remain valid.
     pub fn rename(&self, old: &RepoPath, new: &RepoPath) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ino) = inner.path_to_ino.remove(old) {
             // Evict any prior occupant of the destination name.
             if let Some(prev) = inner.path_to_ino.insert(new.clone(), ino) {
@@ -141,7 +150,10 @@ impl InodeTable {
     /// Unlink: the name disappears from the namespace, but the inode stays alive
     /// (its number reserved) until the final `forget` (open-unlink semantics).
     pub fn unlink(&self, path: &RepoPath) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(ino) = inner.path_to_ino.remove(path) {
             if let Some(e) = inner.entries.get_mut(&ino) {
                 e.path = None;
@@ -156,14 +168,21 @@ impl InodeTable {
     /// allocated inodes carry the new generation; existing ones keep theirs so
     /// open handles are unaffected (spec §35).
     pub fn bump_generation(&self) -> u64 {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.generation += 1;
         inner.generation
     }
 
     /// Whether an inode number is currently allocated.
     pub fn is_live(&self, ino: u64) -> bool {
-        self.inner.lock().unwrap().entries.contains_key(&ino)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .contains_key(&ino)
     }
 }
 

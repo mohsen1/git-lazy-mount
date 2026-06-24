@@ -16,6 +16,9 @@ glm-git-store.workspace = true
 glm-git-repo.workspace = true
 glm-fs-common.workspace = true
 tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 glm-testkit.workspace = true

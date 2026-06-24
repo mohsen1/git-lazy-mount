@@ -150,6 +150,51 @@ impl AdminRepo {
     pub fn head_tree(&self) -> Result<Option<ObjectId>> {
         self.store.rev_parse("HEAD^{tree}")
     }
+
+    /// A `git --git-dir=<gitdir>` command with lazy fetch disabled, so index/
+    /// inspection plumbing can never trigger a network blob fetch (§19).
+    fn git(&self) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.arg("--git-dir").arg(&self.gitdir);
+        cmd.env("GIT_NO_LAZY_FETCH", "1");
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        cmd
+    }
+
+    /// Populate the real `.git/index` from the baseline (HEAD) tree **without
+    /// fetching any blobs** (redesign.md §10.4). This is `git read-tree HEAD`:
+    /// O(tracked paths), reads tree objects only (present under `blob:none`),
+    /// touches no working-tree files. The real index is then the single stage
+    /// (§4.2) that stock `git add`/`status`/`commit` operate on.
+    pub fn build_index(&self) -> Result<()> {
+        let mut cmd = self.git();
+        cmd.args(["read-tree", "HEAD"]);
+        run(cmd, "read-tree")?;
+        Ok(())
+    }
+
+    /// The paths tracked in the real index (`git ls-files -z`), as raw bytes
+    /// (§31: not necessarily UTF-8). Reads the index only.
+    pub fn tracked_paths(&self) -> Result<Vec<Vec<u8>>> {
+        let mut cmd = self.git();
+        cmd.args(["ls-files", "-z"]);
+        let out = cmd
+            .output()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn ls-files: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!("ls-files failed: {}", err.trim()),
+            ));
+        }
+        Ok(out
+            .stdout
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_vec())
+            .collect())
+    }
 }
 
 fn absolute(p: &Path) -> Result<PathBuf> {
@@ -232,5 +277,37 @@ mod tests {
         assert!(gf.starts_with(b"gitdir: "));
         assert!(gf.ends_with(b"\n"));
         assert!(String::from_utf8_lossy(&gf).contains(&*gitdir.to_string_lossy()));
+    }
+
+    #[test]
+    fn build_index_from_baseline_without_fetching_blobs() {
+        let remote = glm_testkit::seed_remote(&[
+            ("README.md", b"hi\n"),
+            ("src/main.rs", b"fn main() {}\n"),
+            ("src/lib.rs", b"pub fn f() {}\n"),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = AdminRepo::clone(
+            &remote.url,
+            &tmp.path().join("git"),
+            &tmp.path().join("mnt"),
+            &tmp.path().join("anchor"),
+            &CloneOptions::default(),
+        )
+        .unwrap();
+
+        // read-tree runs with GIT_NO_LAZY_FETCH=1, so succeeding proves the real
+        // index was built from tree objects alone — zero blobs fetched (§10.4).
+        repo.build_index().unwrap();
+
+        let mut paths: Vec<String> = repo
+            .tracked_paths()
+            .unwrap()
+            .into_iter()
+            .map(|p| String::from_utf8(p).unwrap())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["README.md", "src/lib.rs", "src/main.rs"]);
+        let _ = remote; // keep the promisor alive for the duration
     }
 }
