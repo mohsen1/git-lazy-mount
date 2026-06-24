@@ -57,10 +57,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fuse3 libfuse3-dev
       - name: enable user_allow_other
         run: echo user_allow_other | sudo tee -a /etc/fuse.conf
-      - name: clippy (fuse mount)
-        run: cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
-      - name: real /dev/fuse mount — Experiments A & B
-        run: cargo test -p glm-worktree -p glm-git-repo && cargo test -p glm-fuse --features fuse
+      - name: clippy (fuse mount + transparent cli)
+        run: |
+          cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
+          cargo clippy -p glm-cli --all-targets --features fuse -- -D warnings
+      - name: real /dev/fuse mount + transparent git stack + one-command CLI
+        run: |
+          cargo test -p glm-worktree -p glm-git-repo
+          cargo test -p glm-fuse --features fuse
+          cargo test -p glm-cli --features fuse
 
   msrv:
     name: msrv build
@@ -95,24 +100,6 @@ jobs:
       - name: real loopback mount + backend logic
         run: cargo test -p glm-fs-fuse --features fuse -- --include-ignored
 
-  # Real FSKit mounting requires a SIGNED, user-APPROVED system extension, which
-  # a GitHub-hosted `macos-latest` runner cannot load. So this is a separate,
-  # manually-triggered job: a green `check` matrix does NOT imply the macOS
-  # backend was exercised (spec §54). On a hosted runner it runs the backend-logic
-  # tests plus the on-device harness, which self-skips the real-mount assertions
-  # when no FSKit backend is present. To actually validate a real mount, target a
-  # SELF-HOSTED Apple host that has the signed extension installed and approved by
-  # overriding `runs-on: [self-hosted, macOS]` (see crates/fs-fskit/extension and
-  # crates/fs-fskit/tests/on_device.rs). This job gates the umbrella support claim
-  # in docs/platform-macos.md (#4); findings are recorded there.
-  macos-mount:
-    name: macos fskit backend (manual)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: backend capability probe
-        run: cargo run -p glm-cli -- doctor --json
-      - name: test fskit backend logic + on-device harness
-        run: cargo test -p glm-fs-fskit -- --include-ignored
+  # macOS is M8 (redesign.md §42): implemented separately on the transparent
+  # stack after Linux is proven. The old FSKit backend (built on the superseded
+  # daemon) was retired with the old `cli`/`daemon`/`fs-fskit` stack.

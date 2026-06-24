@@ -4,3 +4,6 @@
 .DS_Store
 # Local scratch
 /scratch
+
+# Xcode build output (macOS work is M8; never commit build artifacts)
+**/DerivedData/

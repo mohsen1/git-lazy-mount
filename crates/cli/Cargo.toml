@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "git-lazy-mount command-line interface (the 'git-lazy-mount' executable)."
+description = "The transparent `git-lazy-mount` executable (redesign.md §1): `git lazy-mount <url> <path>` then plain stock git works."
 
 [[bin]]
 name = "git-lazy-mount"
@@ -14,15 +14,17 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# The real libfuse-backed mount (Linux). Without it the CLI builds (clap/clone/
+# diagnostics) but `git lazy-mount <url> <path>` reports that mount support was
+# not compiled in.
+fuse = ["glm-fuse/fuse"]
+
 [dependencies]
 glm-core.workspace = true
-glm-platform.workspace = true
-glm-git-store.workspace = true
-glm-object-provider.workspace = true
-glm-workspace.workspace = true
-glm-filters.workspace = true
-glm-fs-fskit.workspace = true
-glm-daemon.workspace = true
+glm-git-repo.workspace = true
+glm-worktree.workspace = true
+glm-fuse.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
