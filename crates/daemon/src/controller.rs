@@ -111,7 +111,21 @@ impl Controller {
             depth: opts.depth,
             tags: false,
         };
-        if let Err(e) = store.fetch("origin", &[], &fetch) {
+        // Fetch only the branch we attach to. Huge repos have hundreds of
+        // branches and fetching every ref dominates clone time (the difference
+        // between ~2s and minutes on microsoft/TypeScript). Resolve the target
+        // branch name — explicit `--branch`, else the remote's default `HEAD`,
+        // else `main` — and fetch just its ref into the remote-tracking namespace.
+        let target_branch = match opts.branch.clone() {
+            Some(b) => b,
+            None => store
+                .remote_head_branch("origin")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "main".to_string()),
+        };
+        let refspec = format!("+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}");
+        if let Err(e) = store.fetch("origin", &[refspec.as_str()], &fetch) {
             if e.code == ErrorCode::UnsupportedRemoteCapability && filter.is_some() {
                 return Err(e.context(
                     "the remote does not support the requested partial-clone filter; \
@@ -122,8 +136,8 @@ impl Controller {
             return Err(e);
         }
 
-        // Resolve the attached branch tip.
-        let (branch_name, base) = self.resolve_branch(&store, opts.branch.as_deref())?;
+        // Resolve the attached branch tip (just fetched into refs/remotes/origin).
+        let (branch_name, base) = self.resolve_branch(&store, Some(&target_branch))?;
         let attached_branch = format!("refs/heads/{branch_name}");
         if store.resolve_ref(&attached_branch)?.is_none() {
             store.update_ref_cas(&attached_branch, &base, None)?;

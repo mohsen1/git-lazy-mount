@@ -148,6 +148,26 @@ impl GitStore {
         Ok(())
     }
 
+    /// The remote's default branch (the target of its `HEAD`), e.g. `"main"`.
+    /// A lightweight `ls-remote --symref` network call — used so a clone can
+    /// fetch a *single* branch instead of every ref (huge repos have hundreds).
+    pub fn remote_head_branch(&self, remote: &str) -> Result<Option<String>> {
+        let mut cmd = self.git(false); // network allowed (ref advertisement only)
+        cmd.args(["ls-remote", "--symref", remote, "HEAD"]);
+        let out = run_checked(cmd, None, "ls-remote")?;
+        for line in String::from_utf8_lossy(&out).lines() {
+            // Format: "ref: refs/heads/<name>\tHEAD"
+            if let Some(rest) = line.strip_prefix("ref: ") {
+                if let Some(refname) = rest.split('\t').next() {
+                    if let Some(branch) = refname.strip_prefix("refs/heads/") {
+                        return Ok(Some(branch.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Lazily fetch specific objects into the local store (spec §16). This is
     /// the only entry point allowed to fault objects in over the network.
     pub fn fetch_objects(&self, oids: &[ObjectId]) -> Result<()> {
