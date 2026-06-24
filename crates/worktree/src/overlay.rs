@@ -226,6 +226,20 @@ impl Overlay {
         }
     }
 
+    /// The real on-disk mtime of the overlay content file at `path` — reported by
+    /// `getattr` so git's stat cache / racy-clean logic detects in-place edits
+    /// (including same-size ones). Falls back to the epoch if unavailable.
+    pub fn content_mtime(&self, path: &RepoPath) -> Result<std::time::SystemTime> {
+        match self.lookup(path) {
+            Some(OverlayEntry::File { content, .. }) => {
+                let m = std::fs::metadata(self.content_path(&content))
+                    .map_err(io("stat overlay mtime"))?;
+                Ok(m.modified().unwrap_or(std::time::UNIX_EPOCH))
+            }
+            _ => Err(Error::new(ErrorCode::Internal, "not an overlay file")),
+        }
+    }
+
     /// Open the existing overlay content file at `path` for read+write.
     pub fn open_content(&self, path: &RepoPath) -> Result<File> {
         let content = match self.lookup(path) {
