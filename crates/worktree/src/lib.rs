@@ -17,6 +17,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod overlay;
+pub use overlay::{Overlay, OverlayEntry};
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
