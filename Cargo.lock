@@ -505,6 +505,9 @@ dependencies = [
  "glm-git-repo",
  "glm-git-store",
  "glm-testkit",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
 ]
