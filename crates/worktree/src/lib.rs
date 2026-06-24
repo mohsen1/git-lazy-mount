@@ -140,6 +140,11 @@ pub struct Projection {
     /// blob cause exactly one retrieval (§38.6/§20.1) — the first holder fetches,
     /// the rest wait and reuse the published cache file.
     inflight: Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>,
+    /// Optional FSMonitor change journal (§12). When present, every worktree
+    /// mutation is recorded **synchronously** (before the FUSE reply) so the
+    /// `git-lazy-mount-fsmonitor` hook, reading the same durable log, always sees
+    /// every acknowledged change — no false negatives.
+    journal: Option<journal::ChangeJournal>,
     // No global lock: the InodeTable, Overlay, and the content cache are each
     // internally synchronized, so callbacks never serialize behind a coarse mutex
     // held across a blocking `git` subprocess (§18/§19).
@@ -222,7 +227,29 @@ impl Projection {
             hydrations: AtomicU64::new(0),
             metadata_fetch: true,
             inflight: Mutex::new(HashMap::new()),
+            journal: None,
         })
+    }
+
+    /// Attach an FSMonitor change journal so worktree mutations are recorded for
+    /// the `core.fsmonitor` hook (§12). Call before wrapping in an `Arc`/mounting.
+    pub fn with_journal(mut self, journal: journal::ChangeJournal) -> Projection {
+        self.journal = Some(journal);
+        self
+    }
+
+    /// Record a worktree mutation in the journal (if attached): the path plus its
+    /// parent directory (§12.3 untracked-cache invalidation). Inclusive — an extra
+    /// path only costs git an `lstat`; a missing one would corrupt `status`.
+    fn record_change(&self, path: &RepoPath) {
+        if let Some(j) = &self.journal {
+            let _ = j.record(path.as_bytes());
+            if let Some(parent) = path.parent() {
+                if !parent.is_root() {
+                    let _ = j.record(parent.as_bytes());
+                }
+            }
+        }
     }
 
     /// Number of content hydrations so far (cache-miss blob materializations).
@@ -642,6 +669,7 @@ impl Projection {
     ) -> Result<(Attr, std::fs::File)> {
         let path = self.child_path(parent_ino, name)?;
         let file = self.overlay.create_file(&path, executable, None)?;
+        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok((
             Attr {
@@ -660,6 +688,7 @@ impl Projection {
     /// baseline fetch.
     pub fn open_write(&self, ino: u64, truncate: bool) -> Result<std::fs::File> {
         let path = self.path_of(ino)?;
+        self.record_change(&path); // write intent — inclusive (§12)
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             let f = self.overlay.open_content(&path)?;
             if truncate {
@@ -708,7 +737,9 @@ impl Projection {
             }
         };
         f.set_len(size)
-            .map_err(|e| Error::new(ErrorCode::Internal, format!("set_len: {e}")))
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("set_len: {e}")))?;
+        self.record_change(&path);
+        Ok(())
     }
 
     /// Remove a file/symlink (FUSE `unlink`): tombstone a baseline path, else
@@ -722,6 +753,7 @@ impl Projection {
         } else {
             return Err(Error::new(ErrorCode::NotFound, "no such file"));
         }
+        self.record_change(&path);
         // Drop the name→inode mapping so a later recreate gets a fresh inode and
         // the unlinked inode enters open-unlinked retention (§14, §17.4).
         self.inodes.unlink(&path);
@@ -735,6 +767,7 @@ impl Projection {
             return Err(Error::new(ErrorCode::AlreadyExists, "exists"));
         }
         self.overlay.put_dir(&path)?;
+        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok(Attr {
             ino,
@@ -758,6 +791,7 @@ impl Projection {
         } else {
             return Err(Error::new(ErrorCode::NotFound, "no such directory"));
         }
+        self.record_change(&path);
         self.inodes.unlink(&path);
         Ok(())
     }
@@ -785,6 +819,7 @@ impl Projection {
     pub fn symlink(&self, parent_ino: u64, name: &[u8], target: &[u8]) -> Result<Attr> {
         let path = self.child_path(parent_ino, name)?;
         self.overlay.put_symlink(&path, target)?;
+        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok(Attr {
             ino,
@@ -821,6 +856,8 @@ impl Projection {
         if flags & RENAME_NOREPLACE != 0 && self.resolve(&dst)?.is_some() {
             return Err(Error::new(ErrorCode::AlreadyExists, "destination exists"));
         }
+        self.record_change(&src);
+        self.record_change(&dst);
         // A directory moves its whole subtree.
         if matches!(self.resolve(&src)?, Some(Resolved::Dir { .. })) {
             return self.rename_dir(&src, &dst);
@@ -953,6 +990,7 @@ impl Projection {
     /// Set/clear the executable bit (FUSE `setattr` mode), copying up if needed.
     pub fn set_executable(&self, ino: u64, exec: bool) -> Result<()> {
         let path = self.path_of(ino)?;
+        self.record_change(&path);
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             return self.overlay.set_executable(&path, exec);
         }
