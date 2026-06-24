@@ -5,14 +5,16 @@ gitdir without replacing Git, with supporting context from config, the real inde
 durability, and synthetic metadata. This is the M0/M3 design doc for the FSMonitor
 durability protocol.
 
-This is a **design**, not a refactor. The existing
-[`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs) is a
+This shipped: FSMonitor is wired to `core.fsmonitor` via the
+`git-lazy-mount-fsmonitor` hook, which reads the durable change journal the
+daemon writes synchronously. The old
+[`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs) was a
 process-local `Mutex<Vec<ChangeRecord>>` journal — exactly the non-durable shape
 the design forbids ("A process-local `Mutex<Vec<ChangeRecord>>` is not a sufficient
-FSMonitor implementation"). It is superseded wholesale. The
+FSMonitor implementation"). It was superseded wholesale. The
 `git lazy-mount git --` interop bridge in
 [`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs) is
-also superseded: there is no wrapper, so FSMonitor must serve **stock
+also superseded: there is no wrapper, so FSMonitor serves **stock
 `git`** invoked directly inside the mount.
 
 ## 0. Where this fits
@@ -298,38 +300,55 @@ branch switches "correct but possibly eager", never wrong.
   comparison).
 - **I-RAW-PATHS**: A changed path containing invalid UTF-8 / newline / tab is
   emitted byte-exact and NUL-delimited.
-- **I-BOOTSTRAP-ZERO-BLOB**: First and every subsequent clean `git status`
-  fetches **zero** blob contents (see the bootstrap section below).
+- **I-SUBSEQUENT-ZERO-BLOB**: Once the index carries stat data, a subsequent
+  clean `git status` fetches **zero** blob contents — the hook's empty reply
+  lets Git skip the full-tree stat scan (see the bootstrap section below). The
+  **first** clean status is necessarily eager: it faults each tracked blob once
+  to populate the index stat (including size), which under a `blob:none` clone
+  requires fetching the blob.
 
 ---
 
-## 4. Bootstrap: FSMonitor-valid without hashing
+## 4. Bootstrap: the first status is eager, subsequent statuses are zero-blob
 
-The design requires the **first** clean `git status` (and all later clean ones) to
-fetch zero blobs and avoid statting every file. The challenge: Git normally only
-sets a path's FSMonitor-valid bit after it has confirmed the path clean via a
-stat/hash. The bootstrap:
+The original design hoped the **first** clean `git status` could fetch zero
+blobs by marking the read-tree'd index entries FSMonitor-valid from the hook's
+empty reply. That is **fundamentally unachievable** with stock Git on a
+`blob:none` clone, and was verified so via `GIT_TRACE_FSMONITOR`: Git marks each
+read-tree'd entry clean from the empty reply, then immediately marks it
+`fsmonitor_invalid` because the entry has **no stat data**. To skip the content
+check Git must populate the index stat — including the file **size** — and under
+`blob:none` the exact size of an unmaterialized blob requires fetching the blob.
+The FSMonitor-valid bit does **not** override an empty-stat entry. So the
+**first** clean `git status` faults each tracked blob **once** (the getattr
+size-hydration cost), and only **subsequent** statuses are zero-blob.
 
-1. After `init real index` — a full index built from the initial tree
-   with **no blob fetches** — the index entries are valid-by-construction: every
-   path equals its committed blob (overlay is empty in the initial state).
+What FSMonitor *does* deliver: correct change detection with no false negatives,
+and — once the index carries stat data — skipping the redundant full-tree stat
+scan on later clean statuses. The mechanism:
+
+1. After `init real index` — a full index built from the initial tree — the
+   index entries are valid-by-construction: every path equals its committed blob
+   (overlay is empty in the initial state). The first clean `git status` then
+   populates each entry's stat, faulting each blob once for its size.
 2. The daemon mints the **initial token** `glm1:<ws>:<epoch0>:<seq0=0>:<gen0>`.
-3. On the first `git status`, Git calls the hook with an **empty** `prev`. An
-   empty/unknown prev would normally mean `/` — but the daemon recognizes the
-   **distinguished empty-prev bootstrap** when the journal is at `seq 0` of
-   `epoch0` and overlay is empty: it returns an **empty path list** with the
-   initial token, asserting "nothing changed since the index was built".
-4. Git then trusts the index entries as FSMonitor-clean and sets their valid
-   bits **without hashing** (it only stats paths *returned* as changed — here,
-   none).
+3. On a subsequent `git status`, Git calls the hook with the prior token. The
+   daemon answers from the journal: when nothing has changed since the index was
+   stamped, it returns an **empty path list** with a fresh token, asserting
+   "nothing changed". Git then trusts the stat-populated entries as
+   FSMonitor-clean and skips the stat scan (it only stats paths *returned* as
+   changed — here, none), fetching **zero** blobs.
+4. An **empty** `prev` (a token Git never minted, e.g. a brand-new index) still
+   means `/`: the daemon cannot prove continuity from a token it did not issue.
 
 This is sound because the daemon **owns the filesystem** and **knows** no
-worktree write has occurred since index construction (any write would have
-incremented `seq`). The "empty prev = full invalidation" default is overridden
-**only** in the proven-quiescent bootstrap case; if any FUSE write or hook
-notification has advanced `seq` past 0, empty-prev → `/` as usual.
+worktree write has occurred since the stat was stamped (any write would have
+incremented `seq`); if any FUSE write or hook notification has advanced `seq`,
+the response includes the affected paths.
 
-Invariant **I-BOOTSTRAP-ZERO-BLOB** above gates this.
+Invariant **I-SUBSEQUENT-ZERO-BLOB** above gates the zero-blob subsequent-status
+behavior; the eager first status is a property of `blob:none` size hydration, not
+a defect to close (closing it would require a server-side size manifest).
 
 ---
 
@@ -651,20 +670,20 @@ floor to `fsmon_meta` in the same transaction that deletes the rows.
 
 ## 10. Crate plan
 
-- `crates/fsmonitor/` (rewrite): `FsmonToken`, `JournalEpoch`, durable
-  `Journal` (SQLite WAL), `serve_fsmon`, the barrier, compaction. Replaces the
+- `crates/fsmonitor/`: `FsmonToken`, `JournalEpoch`, durable
+  `Journal` (SQLite WAL), `serve_fsmon`, the barrier, compaction. Replaced the
   in-memory `ChangedPathJournal`. Keeps the `SyncMode`/`ChangeKind`
-  vocabulary; drops `Mutex<Vec<_>>`.
-- `crates/fsmonitor-hook/` (new, tiny): the `core.fsmonitor` client binary.
-- `crates/git-hooks/` (new): the `glm-hook` multiplexer
+  vocabulary; dropped `Mutex<Vec<_>>`.
+- `crates/fsmonitor-hook/` (tiny): the `core.fsmonitor` client binary.
+- `crates/git-hooks/`: the `glm-hook` multiplexer
   binary + hooks-dir installer (save/restore the user's `core.hooksPath`).
-- `crates/ipc/` (extend): `FsmonRequest`/`FsmonResponse` + `HookEvent` framed
+- `crates/ipc/`: `FsmonRequest`/`FsmonResponse` + `HookEvent` framed
   messages, BLOB-safe (`Vec<u8>`) like the existing `fs.rs` shapes.
-- `crates/daemon/` (extend): owns the `Journal`, the gitdir watchers, the
+- `crates/daemon/`: owns the `Journal`, the gitdir watchers, the
   reconcile-on-restart state machine, and the notification-event handlers.
 
 Superseded and removed: legacy `ChangedPathJournal`
 ([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) and the
 interop bridge
 ([`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs)) —
-neither survives the no-wrapper, durable-FSMonitor design.
+neither survived the no-wrapper, durable-FSMonitor design.

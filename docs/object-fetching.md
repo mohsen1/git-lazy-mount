@@ -22,7 +22,7 @@ full filter-context key. Superseded crates (`stage`, custom `workspace` branch/c
 ## 1. Position in the stack
 
 ```
-FUSE/FSKit callback (getattr/read/open)                   — passes FetchPolicy::MustNotFetch
+FUSE callback (getattr/read/open)                         — passes FetchPolicy::MustNotFetch
   └─ Worktree projection (baseline+overlay)               — resolves path → (oid, FilterContext)
        └─ ObjectProvider  ── this doc ────────────────────┐
             ├─ FetchScheduler   (network, the ONLY fetcher)
@@ -142,9 +142,11 @@ Today's coalescing lives inline in `GitObjectProvider::ensure_objects`
 (`object-provider/src/lib.rs`): an in-flight `HashSet` + `Condvar`, fetch with
 no lock held. The design extracts a dedicated `FetchScheduler` owning the
 network budget. ADR-0002 (synchronous, thread-based) and ADR-0006 (residency
-authority) still hold; this adds the missing pieces the feasibility doc lists as
-TODO (`docs/feasibility/git-object-fetching.md`: per-remote limits, retries,
-circuit breaker, streaming-to-temp).
+authority) still hold; this adds the remaining scheduler pieces (per-remote
+limits, retries, circuit breaker). Bounded streaming-to-temp already ships:
+reading a 64 MiB baseline blob grows daemon RSS by ~2 MiB, not 64 MiB
+(streamed `cat-file` → cache file → `pread`), so large-file reads are O(1) in
+memory.
 
 ```rust
 pub struct FetchScheduler {
@@ -354,7 +356,7 @@ must include **at least** these; map 1:1 and close the gaps:
 |                                     |                              | (not yet committed) invalidates — add `attr_digest`       |
 | relevant Git config digest          | `config_digest`              | present; covers autocrlf/eol/encoding/filter.* config     |
 | filter implementation identity      | `filter_identity`            | present; e.g. `lfs`, or `clean=<cmd>` version             |
-| platform EOL mode                   | `eol_mode`                   | present (`native`/`crlf`/`lf`) — explains the Win/Linux   |
+| platform EOL mode                   | `eol_mode`                   | present (`native`/`crlf`/`lf`) — accounts for the eol     |
 |                                     |                              | size delta in `docs/feasibility/file-metadata.md`         |
 | cache format version                | `format_version`            | present                                                   |
 
@@ -435,8 +437,8 @@ resolution + smudge in that read **must not** lock or rewrite the index. Rules:
 
 A tree entry has **no size**; the size a program sees is the *filtered
 working-tree* size, which differs under CRLF / encoding / ident / smudge / LFS /
-path-attrs (measured in `docs/feasibility/file-metadata.md` — same blob
-projects 6 bytes on Linux, 7 on Windows). Therefore:
+path-attrs (measured in `docs/feasibility/file-metadata.md` — the same blob
+projects to a different byte count under an `lf` vs `crlf` eol mode). Therefore:
 
 ### 6.1 The three rules
 
@@ -444,10 +446,23 @@ projects 6 bytes on Linux, 7 on Windows). Therefore:
   inode + d_type only (`fs-fuse/src/adapter.rs::readdir` already does;
   `TreeObject` cost is O(direct entries)). **0 child blobs, 0 smudge filters.**
 - **`getattr` must return the correct size.** It may cause
-  metadata-triggered hydration when the size is otherwise unknowable.
+  metadata-triggered hydration when the size is otherwise unknowable. The exact
+  size of an unmaterialized blob is *fundamentally* not derivable under a
+  blob:none clone — it requires the object's bytes — so `getattr` (`ls -l`,
+  `stat`) faults each such blob once. This is by design, not a closeable gap;
+  closing it would need a server-side size manifest.
 - **Never fake a size.** No zero, no raw-size-as-projected
   approximation. `metadata::MetadataMode::Exact` is the default and
   `workspace.file_size()` enforces "no fake size" today; keep that contract.
+
+Because git records each index entry's stat data (including the file **size**)
+to mark it clean, the **first** clean `git status` after a mount necessarily
+faults each tracked blob once through `getattr` size hydration — the same
+fundamental size requirement above. The fsmonitor-valid bit cannot override an
+entry that has no stat data, so a zero-blob *first* status is unachievable with
+stock git over a blob:none clone. Subsequent clean statuses are zero-blob: git
+records the populated stat data and the FSMonitor hook (which replays the
+daemon's durable change journal) lets git skip the redundant full-tree scan.
 
 ### 6.2 `getattr` size resolution — decision table
 

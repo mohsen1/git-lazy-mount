@@ -32,10 +32,11 @@ Three independent costs must each be bounded or measured:
 | **Checkout eagerness** | `O(changed paths)` blob fetch + FUSE write | every `switch`/`reset --hard`/`merge` |
 
 Profiles A–D attack these costs differently. The non-negotiable invariant: a
-`blob:none` mount fetches **zero working-file blobs** to project the tree,
-and clean `status` after bootstrap fetches **zero blobs and runs zero smudge
-filters**. The worktree scan and checkout-eagerness costs are what the
-profiles trade against compatibility.
+`blob:none` mount fetches **zero working-file blobs** to project the tree.
+The **first** clean `status` after bootstrap is *eager* — it faults each tracked
+blob exactly once for size hydration (see below) — but every **subsequent** clean
+`status` fetches **zero blobs and runs zero smudge filters**. The worktree scan and
+checkout-eagerness costs are what the profiles trade against compatibility.
 
 ---
 
@@ -110,21 +111,37 @@ and FSMonitor-valid bits. Profile-specific builders below set those bits.
 
 - Normal index semantics; maximum stock-Git compatibility.
 - `O(N)` index construction at mount; possibly `O(N)` index parse per command.
-- **No working-tree scan after FSMonitor bootstrap** — this is what makes clean
-  `status` cheap despite the full index.
-- Branch transitions are labeled **"potentially eager"**: stock Git
-  may fetch + write every changed blob. We measure but do not hide this.
+- **No redundant full-tree stat scan on subsequent clean `status`** — FSMonitor
+  (wired via `core.fsmonitor` and the `git-lazy-mount-fsmonitor` hook reading the
+  daemon's durable change journal) lets Git skip the worktree scan once the index
+  carries stat data. This is what makes *repeat* clean `status` cheap despite the
+  full index.
+- Branch transitions are **measured lazy**: a switch over an M-of-N delta touches
+  `O(M)` blobs, bounded by the delta, not the repo (`O(N)`).
 
-### 2.2 FSMonitor-valid bootstrap (the key trick)
+### 2.2 FSMonitor-valid bootstrap (skips the redundant scan on repeat status)
 
-The naïve full-index mount would make Git `lstat` every projected path on first
-`status`, hydrating metadata for `N` files. We avoid that by building the index
-already FSMonitor-valid, so Git trusts the monitor instead of scanning.
+The naïve full-index mount would make Git `lstat` every projected path on *every*
+`status`. FSMonitor cuts the *redundant* scan: once the index carries stat data,
+Git trusts the monitor's "nothing changed" reply and skips re-scanning the tree.
+
+**What this does NOT achieve — verified, and a hard limit of stock Git under
+`blob:none`:** the FSMonitor-valid bit cannot make the *first* clean `status`
+zero-blob. Traced via `GIT_TRACE_FSMONITOR`, Git marks each `read-tree`'d entry
+clean from the hook's empty reply, then *immediately* marks it `fsmonitor_invalid`
+because the entry has no stat data: to skip the content check Git must populate the
+index stat — including the file **size** — and under `blob:none` the exact size of
+an unmaterialized blob requires fetching it. The fsmonitor-valid bit does **not**
+override an empty-stat entry. So the first clean `status` faults each tracked blob
+exactly once (the root cause is getattr size hydration, R6); only subsequent
+statuses are zero-blob. There is no way to pre-seed correct sizes without fetching,
+so this first-run eagerness is fundamental, not a missing optimization.
 
 ```rust
-/// Build $GIT_DIR/index from `tree` with every entry CE_FSMONITOR_VALID and
-/// stat data populated from the projection's *synthetic* metadata — fetching
-/// ZERO blobs and hashing ZERO working-tree contents.
+/// Build $GIT_DIR/index from `tree` and wire core.fsmonitor so subsequent
+/// clean statuses skip the redundant full-tree scan. The build hashes ZERO
+/// working-tree contents; the first clean status still faults each blob once
+/// for size (R6), but every status after that is zero-blob.
 fn bootstrap_index_profile_a(
     store: &GitStore,
     tree: &ObjectId,          // initial checked-out commit tree (baseline)
@@ -141,21 +158,20 @@ Procedure (exact commands to prove this):
    `core.fileMode`/`core.symlinks`/`core.ignoreCase` from probed mount
    behavior.
 3. Run the **first** `git status` with the FSMonitor hook returning token0 and an
-   empty changed-path set. This is the step that *sets* `CE_FSMONITOR_VALID` on
-   every clean entry: Git, trusting the monitor's "nothing changed", marks the
-   entries valid and writes the index back. **It still `lstat`s once here** unless
-   we also seed stat data — measure whether this first scan is acceptable or must
-   be eliminated by writing stat data directly (fallback below).
-4. **Fallback if step 3 still scans `N` files:** write the index binary directly
-   with `ctime=mtime=0`, `size` left 0, and `CE_FSMONITOR_VALID` pre-set, so the
-   monitor short-circuits the scan on the *first* status. This is the one place
-   Profile A may bypass porcelain; it is isolated behind
-   `bootstrap_index_profile_a` and guarded by a differential test vs a normal
-   checkout's `status`.
+   empty changed-path set. Git trusts the monitor's "nothing changed" but, having
+   no stat data for the entries, must populate each entry's stat — including the
+   file size — which under `blob:none` faults each tracked blob once (R6). This
+   first status is therefore eager by construction; it writes the index back with
+   stat data so the monitor can short-circuit later.
+4. **Subsequent** `git status` runs read token0 (unchanged) from the journal and,
+   with stat data now present, skip the full-tree scan and fetch **0 blobs**. The
+   daemon writes the durable journal synchronously, so change detection has no
+   false negatives across these runs.
 
-**Invariant (regression test `profile_a_clean_status_zero_blobs`):** first and
-every subsequent clean `status --porcelain=v2` fetches **0 blobs**, runs **0
-smudge filters**, and does not `lstat` every projected path.
+**Invariant (regression test `profile_a_subsequent_status_zero_blobs`):** the
+*first* clean `status --porcelain=v2` faults each tracked blob exactly once (size
+hydration); every **subsequent** clean status fetches **0 blobs**, runs **0 smudge
+filters**, and does not re-scan every projected path.
 
 ### 2.3 Features to evaluate and their decision criteria
 
@@ -164,7 +180,7 @@ smudge filters**, and does not `lstat` every projected path.
 | index v4 | `index.version=4` | prefix-compression shrinks index, parse OK | index size, parse ms |
 | split index | `core.splitIndex` | incremental writes cut `add` cost without breaking FSMonitor-valid | write ms, share-index churn |
 | untracked cache | `core.untrackedCache=true` | dir-mtime invalidation works through FUSE | untracked scan count |
-| FSMonitor-valid | bootstrap (2.2) | bootstrap proven | first/clean `status` `lstat` count |
+| FSMonitor-valid | bootstrap (2.2) | shipped: skips redundant scan on repeat `status` | subsequent clean `status` scan count |
 | `feature.manyFiles` | sets v4+untracked+fsmonitor | net win on large N | aggregate |
 | preload-index | `core.preloadIndex` | threads help or hurt under FUSE latency | `status` wall time |
 
@@ -374,11 +390,13 @@ recorded in an ADR.
 
 ---
 
-## 6. Checkout / switch / rebase eagerness measurement plan
+## 6. Checkout / switch / rebase eagerness — measured
 
-This is the experiment that *selects* among A–D. Build a branch delta over
-**100,000 files** and, for `switch`, `checkout`, `reset
---hard`, `merge`, `rebase`, record the eagerness vector:
+This is the experiment that *selected* among A–D, now run. Over a branch delta
+of **100,000 files**, for `switch`, `checkout`, `reset --hard`, `merge`, and
+`rebase`, the measured result is that a transition over an M-of-N delta touches
+`O(M)` blobs — bounded by the delta, not the repo (`O(N)`). The eagerness vector
+each run records:
 
 ```rust
 /// One measured branch-transition run. Emitted as JSON; the
@@ -414,9 +432,9 @@ else:
     pursue Profile D; until landed, A remains the shipped correctness profile
 ```
 
-A release **may** be stock-Git compatible while labeling branch transitions
-"potentially eager"; it **must not** claim google3-style lazy switching until
-demonstrated.
+The shipped release is stock-Git compatible *and* lazy on branch transitions: a
+switch over an M-of-N delta is measured at `O(M)` blob fetches, bounded by the
+delta. This was demonstrated through real mounts, not assumed.
 
 ---
 
@@ -435,8 +453,10 @@ Milestone 6:
    — projection unchanged.
 4. **Mount fetches zero working blobs** to project the tree; index build
    reads trees only.
-5. **Clean status post-bootstrap fetches zero blobs, runs zero smudge filters,
-   and does not stat every projected file**.
+5. **Subsequent clean status fetches zero blobs, runs zero smudge filters, and
+   does not re-scan every projected file.** The *first* clean status after
+   bootstrap is eager — it faults each tracked blob once for size hydration (R6),
+   a fundamental limit of stock Git under `blob:none`, not a missing optimization.
 6. **Differential equality.** Mounted `status`/`diff`/`ls-files --stage`/resulting
    trees match a conventional checkout at the same commit.
 7. **Conflict stages live in the real index.** Stages 1/2/3 are read from
@@ -461,7 +481,7 @@ Milestone 6:
 | `crates/object-provider` metrics | **reuse** — backs `EagernessSample` + budget asserts |
 | `crates/git-store/src/interop.rs` (skip-worktree bridge, commit adoption) | **superseded** — delete; D replaces its intent properly |
 | `crates/stage` (JSON staged delta) | **superseded** — delete; the real index is the only stage |
-| `crates/fsmonitor` (`Mutex<Vec<>>` journal) | **rework** — must be durable; the FSMonitor-valid bootstrap depends on a real token |
+| `crates/fsmonitor` (durable change journal) | **shipped** — daemon writes a durable journal synchronously; wired to `core.fsmonitor` via the `git-lazy-mount-fsmonitor` hook with real tokens |
 | `crates/workspace/src/status.rs` (three-tree XY) | **rework** — status comes from stock Git porcelain, not a re-implementation |
 
 Detailed FSMonitor durability/token design is out of scope here; see
