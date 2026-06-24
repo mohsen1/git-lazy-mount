@@ -36,7 +36,7 @@ pub enum ErrorCode {
     InvalidRepositoryPath,
     /// A path cannot be represented on this platform (collision/reserved name).
     PlatformPathCollision,
-    /// The filesystem backend is unavailable (no FUSE/FSKit/ProjFS).
+    /// The FUSE filesystem backend is unavailable.
     FilesystemBackendUnavailable,
     /// The workspace's applied generation is behind the desired one.
     StaleWorkspace,

@@ -2,24 +2,11 @@
 resolver = "2"
 members = [
     "crates/core",
-    "crates/platform",
     "crates/git-store",
     "crates/git-repo",
-    "crates/object-provider",
-    "crates/metadata",
-    "crates/overlay",
-    "crates/stage",
-    "crates/oplog",
-    "crates/filters",
-    "crates/workspace",
     "crates/worktree",
-    "crates/fsmonitor",
-    "crates/ipc",
-    "crates/projection",
     "crates/fs-common",
-    "crates/fs-fuse",
     "crates/fuse",
-    "crates/fs-projfs",
     "crates/testkit",
     "crates/cli",
 ]
@@ -35,22 +22,10 @@ authors = ["git-lazy-mount contributors"]
 [workspace.dependencies]
 # Internal crates
 glm-core = { path = "crates/core" }
-glm-platform = { path = "crates/platform" }
 glm-git-store = { path = "crates/git-store" }
 glm-git-repo = { path = "crates/git-repo" }
-glm-object-provider = { path = "crates/object-provider" }
-glm-metadata = { path = "crates/metadata" }
-glm-overlay = { path = "crates/overlay" }
-glm-stage = { path = "crates/stage" }
-glm-oplog = { path = "crates/oplog" }
-glm-filters = { path = "crates/filters" }
-glm-workspace = { path = "crates/workspace" }
 glm-worktree = { path = "crates/worktree" }
-glm-fsmonitor = { path = "crates/fsmonitor" }
-glm-ipc = { path = "crates/ipc" }
-glm-projection = { path = "crates/projection" }
 glm-fs-common = { path = "crates/fs-common" }
-glm-fs-fuse = { path = "crates/fs-fuse" }
 glm-fuse = { path = "crates/fuse" }
 glm-testkit = { path = "crates/testkit" }
 

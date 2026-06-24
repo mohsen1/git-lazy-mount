@@ -1,4 +1,4 @@
-//! Linux FUSE mount of the transparent **read-only** projection (redesign.md
+//! Linux FUSE mount of the transparent **read-only** projection (design.md
 //! §14–§19). Compiled only with the `fuse` feature (links libfuse3; Linux-only),
 //! exercised by the Linux mount CI job and via Docker.
 //!

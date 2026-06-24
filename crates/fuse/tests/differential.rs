@@ -1,5 +1,5 @@
-//! Differential test against a normal checkout (redesign.md §40.1) — the
-//! redesign's primary correctness strategy. The same sequence of git operations
+//! Differential test against a normal checkout (design.md §40.1) — the
+//! design's primary correctness strategy. The same sequence of git operations
 //! applied to (a) a conventional full `git checkout` and (b) the transparent
 //! lazy mount of the same commit must yield identical results: the same HEAD
 //! tree, the same committed bytes, the same status. Real `/dev/fuse` mount.

@@ -1,4 +1,4 @@
-//! Measure `git status` hydration through the mount (redesign.md §38.4, §27):
+//! Measure `git status` hydration through the mount (design.md §38.4, §27):
 //! how many working-file blobs does a clean status fault in, the first time and
 //! on repeat? This quantifies the current (pre-FSMonitor) eagerness rather than
 //! hiding it. Real `/dev/fuse` mount — runs under `--features fuse`.

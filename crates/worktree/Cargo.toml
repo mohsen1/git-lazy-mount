@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Virtual working-tree projection: baseline (HEAD tree) + protected synthetic .git, resolved without hydrating blobs (redesign.md §8, §14, §16)."
+description = "Virtual working-tree projection: baseline (HEAD tree) + protected synthetic .git, resolved without hydrating blobs (design.md §8, §14, §16)."
 
 [lints]
 workspace = true

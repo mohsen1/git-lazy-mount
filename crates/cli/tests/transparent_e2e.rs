@@ -1,4 +1,4 @@
-//! End-to-end test of the transparent one-command flow (redesign.md §43.1): run
+//! End-to-end test of the transparent one-command flow (design.md §43.1): run
 //! the real `git-lazy-mount <url> <path>` binary, assert it RETURNS, then drive
 //! the mountpoint with plain stock `git` — no wrapper. Real `/dev/fuse` mount;
 //! runs under `--features fuse` (the Linux mount CI job).

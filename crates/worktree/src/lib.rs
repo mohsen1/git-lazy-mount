@@ -1,4 +1,4 @@
-//! Virtual working-tree projection (redesign.md §8, §14–§17, §29).
+//! Virtual working-tree projection (design.md §8, §14–§17, §29).
 //!
 //! The projected working tree is the durable [`overlay`] layered over the HEAD
 //! commit's tree (the *baseline*), plus a protected synthetic `.git` gitfile at
@@ -57,7 +57,7 @@ pub enum Kind {
     Symlink,
 }
 
-/// Neutral, stable attributes for a projected entry (redesign.md §22).
+/// Neutral, stable attributes for a projected entry (design.md §22).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attr {
     /// Inode number.
@@ -142,7 +142,7 @@ pub struct Projection {
 
 /// An open read handle backing a `read` callback. Content is served from a file
 /// descriptor (a cache file) or, for the tiny synthetic `.git`, from memory —
-/// **never** by allocating the whole blob (redesign.md §4.6, §17).
+/// **never** by allocating the whole blob (design.md §4.6, §17).
 pub struct ContentHandle {
     inner: ContentInner,
 }
@@ -186,19 +186,10 @@ impl ContentHandle {
     }
 }
 
-/// Positional read, cross-platform (`pread` on unix, `seek_read` on Windows).
-/// The mount is Linux-only, but the projection stays portable so the workspace
-/// `check` matrix builds everywhere.
-#[cfg(unix)]
+/// Positional read (`pread`). git-lazy-mount targets Linux only.
 fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
     use std::os::unix::fs::FileExt;
     f.read_at(buf, offset)
-}
-
-#[cfg(windows)]
-fn pread(f: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    f.seek_read(buf, offset)
 }
 
 impl Projection {
@@ -234,7 +225,7 @@ impl Projection {
         self.hydrations.load(Ordering::Relaxed)
     }
 
-    /// Release `n` kernel lookup references on `ino` (redesign.md §14 forget).
+    /// Release `n` kernel lookup references on `ino` (design.md §14 forget).
     pub fn forget(&self, ino: u64, n: u64) {
         if ino != ROOT_INO {
             self.inodes.forget(ino, n);
@@ -926,7 +917,7 @@ mod tests {
     #[test]
     fn synthetic_git_is_a_single_protected_regular_file_at_root() {
         // The root `.git` is the synthetic gitfile (a regular file → our gitdir),
-        // listed exactly once (redesign.md §6). The malicious case — a repo tree
+        // listed exactly once (design.md §6). The malicious case — a repo tree
         // that itself contains a `.git` entry shadowed by the synthetic one — is
         // covered by the mount integration tests (it requires a plumbing-built
         // tree, since `git add .git` is impossible in a normal working tree).

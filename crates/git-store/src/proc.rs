@@ -8,7 +8,7 @@ use glm_core::{Error, ErrorCode, Result};
 /// Mark inherited descriptors ≥ 3 close-on-exec so the spawned git never retains
 /// them past `exec`.
 ///
-/// This is essential when this process serves a FUSE/FSKit mount: a git
+/// This is essential when this process serves a FUSE mount: a git
 /// subprocess that inherited an **open file on that mount** would, on exit, have
 /// the kernel close the descriptor — issuing a `FLUSH` that blocks on the single
 /// FS-serving thread, which is itself blocked waiting for that very git to exit.

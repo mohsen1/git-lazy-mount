@@ -1,4 +1,4 @@
-//! The durable writable overlay (redesign.md §8, §32). The overlay is the layer
+//! The durable writable overlay (design.md §8, §32). The overlay is the layer
 //! that records local working-tree changes on top of the read-only baseline:
 //! created/modified files, symlinks, explicit (empty) directories, deletions
 //! (tombstones), and clean-rename base-refs.
@@ -359,7 +359,7 @@ fn atomic_write(dst: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::rename(&tmp, dst).map_err(io("publish sidecar"))?;
     // fsync the parent dir so the rename itself is durable — otherwise a crash
     // can lose an acknowledged create/rename even though the file was fsynced
-    // (redesign.md §32). Best-effort: a dir that can't be synced must not fail
+    // (design.md §32). Best-effort: a dir that can't be synced must not fail
     // the write.
     if let Some(parent) = dst.parent() {
         if let Ok(dir) = File::open(parent) {

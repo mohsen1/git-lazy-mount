@@ -37,7 +37,7 @@ Based on these findings and spec §37, commands are classified as:
 * **experimental / unsupported:** a raw `.git` facade (Level D) and `fsmonitor`
   authority are not exposed.
 
-See `docs/git-compatibility.md` for the living matrix. We do not advertise a
+See `docs/design/compatibility.md` for the living matrix. We do not advertise a
 command until a test proves it.
 
 ## Not yet measured

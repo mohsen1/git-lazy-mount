@@ -1,5 +1,5 @@
 //! M4/M5: branch-changing + remote workflows through the transparent mount,
-//! using stock git against the real index/refs (redesign.md §43 criteria
+//! using stock git against the real index/refs (design.md §43 criteria
 //! 13/15/16/17/18, Experiment G). These happy-path flows let git do the work
 //! (writing changed files into the overlay, §27 "correct but possibly eager");
 //! conflict-stage and hydration-budget measurement are tracked separately.
