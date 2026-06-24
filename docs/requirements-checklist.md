@@ -4,7 +4,7 @@ Living tracker of what's built and proven (against the [spec](design.md)). Updat
 through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 `[x]` = done + tested. Nothing is checked until proven by a mounted test.
 
-## A. Vertical-slice experiments (§39) — gate before broad work
+## A. Vertical-slice experiments — gate before broad work
 
 - [x] **A** real mounted `.git`: `git -C <mnt> rev-parse --show-toplevel` → `<mnt>` — *real mount*
 - [x] **B** zero-content readdir: a 1000-file directory readdir fetches **0** blobs (`large_directory_readdir`); full 100k-file CI stress is a noted scale refinement
@@ -16,7 +16,7 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [✗] **H** FSMonitor zero-blob first status: **fundamentally unachievable** with stock git + `blob:none` (git must populate the index stat — incl. size — to skip the content check; the size requires fetching the blob; `mark_fsmonitor_invalid` overrides the fsmonitor-valid bit on empty-stat entries — verified via `GIT_TRACE_FSMONITOR`). FSMonitor *is* wired (`fsmonitor` test) for change detection + faster repeat status. See limitations P1/R6.
 - [x] **I** large-file I/O: 4 MiB in-place 4 KiB writes (`m2_semantics`) + **64 MiB read grows daemon RSS ~2 MiB, not 64 MiB** (`large_file`) — streamed, bounded memory
 
-## B. Linux MVP release criteria (§43) — all via a real mount
+## B. Linux MVP release criteria — all via a real mount
 
 - [x] 1 `git lazy-mount <url> <path>` clones + mounts + validates (no subcommand) — *real mount (`transparent_e2e`: the binary returns, then stock git works)*
 - [x] 2 no required shell env changes afterward — stock `git` used directly
@@ -33,13 +33,13 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 13 plain `git push` to an ordinary remote — *real mount (`m4_m5`)*
 - [x] 14 plain `git fetch` + merge — *real mount (`git_extra`; remote commit faults in over the promisor)*
 - [x] 15 plain `git switch` correct — *real mount (`m4_m5`)*; hydration not yet measured
-- [x] 16 merge conflicts use the real index conflict stages — *real mount (`git_extra`: stages 1/2/3 + overlay markers, §25.3)*
+- [x] 16 merge conflicts use the real index conflict stages — *real mount (`git_extra`: stages 1/2/3 + overlay markers)*
 - [x] 17 rebase abort restores state — *real mount (`git_extra`)*; `--continue` flow not yet tested
 - [x] 18 stash create + restore — *real mount (`git_more`)*
 - [x] 19 `git rm --cached` preserves the working-tree file — *real mount (`git_more`)*
 - [x] 20 `git reset --mixed` changes index without changing projected bytes — *real mount (`git_more`)*
 - [x] 21 `git reset --hard` replaces projected working state — *real mount (`m4_m5`)*
-- [x] 22 open-unlink semantics — *real mount (`m2_semantics`)*: fd reads/writes survive unlink; getattr falls back to the live fd (§17.4)
+- [x] 22 open-unlink semantics — *real mount (`m2_semantics`)*: fd reads/writes survive unlink; getattr falls back to the live fd
 - [x] 23 empty untracked directories survive remount — *real mount (`m2_semantics`)*
 - [x] 24 partial writes don't rewrite the full file per callback — *real mount (`m2_semantics` 4 KiB)*
 - [x] 25 large files don't require large allocations — *real mount (`large_file`: a 64 MiB read grows daemon RSS ~2 MiB; streamed `cat-file`→cache + `pread`)*; extreme multi-GiB is the same structural path at a heavier CI cost
@@ -49,7 +49,7 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 29 no command requires `git lazy-mount git --` — all flows use stock git directly
 - [x] 30 no ordinary workflow requires custom add/commit/switch/push — proven across `m3_git`/`m4_m5`/`git_more`
 
-## C. Anti-claims (§44) — must NEVER be true at "done"
+## C. Anti-claims — must NEVER be true at "done"
 
 - [ ] registry says mounted without a kernel mount
 - [ ] plain Git cannot discover the repository
@@ -70,11 +70,11 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [ ] shared-cache maintenance invalidates active workspaces
 - [ ] another platform called supported without a real mount test
 
-## D. Hydration budgets (§38) — automated assertions
+## D. Hydration budgets — automated assertions
 
 - [x] mount (blob:none) fetches 0 working-file blobs to project the tree — *CI*
 - [x] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children) — *CI (small scale)*
-- [~] clean `git status`: **repeat** status fetches 0 blobs (measured, `status_hydration`); the *first* status is eager (12/12 files) until the §12.2 FSMonitor-valid bootstrap lands
+- [~] clean `git status`: **repeat** status fetches 0 blobs (measured, `status_hydration`); the *first* status is eager (12/12 files) until the FSMonitor-valid bootstrap lands
 - [x] `cat path`: ≤ the one required blob + its attr/filter metadata — *CI*
 - [x] 100 concurrent reads of one missing file → 1 retrieval — *real mount (`m2_semantics`, single-flight)*
 - [x] `O_TRUNC` open: no old-blob fetch — *real mount (`m2_semantics`, atomic_o_trunc)*
@@ -86,5 +86,5 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 - Linux-only focus; runs **fully in Linux CI** through a real `/dev/fuse` mount.
 - Every commit self-reviewed (reviewer teammate on substantial diffs).
-- Differential tests vs a conventional checkout for every workflow (§40.1).
-- The compatibility report (§3, §40.3) is generated from test results.
+- Differential tests vs a conventional checkout for every workflow.
+- The compatibility report is generated from test results.

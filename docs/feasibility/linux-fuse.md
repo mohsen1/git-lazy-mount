@@ -1,7 +1,7 @@
 # Feasibility: Linux FUSE
 
 **Question.** Is the FUSE callback model viable for the projection, and what is
-needed for a real kernel mount (spec §5.5, §40)?
+needed for a real kernel mount?
 
 ## Environment finding
 
@@ -46,4 +46,4 @@ tests; it is the place a real loopback mount test will be added with the adapter
 
 The callback model is viable and the logic is proven; real mounting is a
 well-scoped FFI adapter, deliberately gated so a green default build never
-implies the kernel backend was exercised (spec §51).
+implies the kernel backend was exercised.

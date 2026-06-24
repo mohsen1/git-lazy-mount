@@ -1,6 +1,6 @@
-# Platform: macOS (FSKit) — spec §41
+# Platform: macOS (FSKit)
 
-> **Status — BACKEND LOGIC BUILT; ON-DEVICE MOUNT NOT YET VALIDATED (spec §54).**
+> **Status — BACKEND LOGIC BUILT; ON-DEVICE MOUNT NOT YET VALIDATED.**
 > The backend-independent macOS logic is implemented and unit-tested on every
 > platform: the FSKit `FSVolume` callback bridge (`FskitOps`), runtime capability
 > detection + diagnostics, APFS collision handling, the macOS metadata commit
@@ -98,7 +98,7 @@ intents.
 * **Built:** `a.txt` → `A.txt` on a case-insensitive volume targets a name that
   "already exists" by the volume's comparison, but the bridge recognizes the
   folding-only rename (`collision::is_case_only_rename`) and performs it,
-  preserving identity via the inode table (spec §19). A bridge test covers
+  preserving identity via the inode table. A bridge test covers
   identity + content preservation.
 * **On-device (issue #12):** validation through a real FSKit mount.
 
@@ -122,7 +122,7 @@ intents.
 
 If the FSKit extension (or the controlling daemon) restarts, mounts must recover
 to a consistent state. This rides on the engine's crash-safe operation log and
-the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`, spec §39).
+the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`).
 
 * **Built:** `crates/fs-fskit/src/recovery.rs` — `reattach(ws, volume)` replays
   the operation log and drives the FSKit re-attach through `Recovering → Mounted`
@@ -150,13 +150,13 @@ the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`, spec §39).
   independent of macOS mount support.
 * **On-device (the gate):** run this job on Apple hardware with the signed
   extension installed + approved, and record the findings below. This is what
-  earns the macOS support claim (#4), per spec §54.
+  earns the macOS support claim (#4).
 
 ## Status (issue #4 rollup)
 
 The backend-independent macOS implementation is **landed and tested on every
 platform**; what remains is the on-device run of the harness above. macOS is
-**not** labeled supported until then (spec §54).
+**not** labeled supported until then.
 
 | Sub-issue | Software landed | On-device gate (issue #12) |
 |-----------|-----------------|----------------------------|
@@ -178,7 +178,7 @@ under `~/Library/Application Support/git-lazy-mount` and caches under
 ## Tracking — on-device findings
 
 Real FSKit behavior must be validated **on-device** before macOS is labeled
-supported (spec §54). Record each run of the manual `macos fskit backend
+supported. Record each run of the manual `macos fskit backend
 (manual)` job here.
 
 | Date | Host (OS / volume) | Extension state | Result | Notes |

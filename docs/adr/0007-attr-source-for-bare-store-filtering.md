@@ -6,7 +6,7 @@
 
 git-lazy-mount applies Git's own working-tree (smudge) filters so a projected file
 matches what a real `git checkout` would write — CRLF/`eol`, and any configured
-clean/smudge or LFS driver (spec §25). Git resolves which filters apply from
+clean/smudge or LFS driver. Git resolves which filters apply from
 `.gitattributes` along the path. Normally Git reads `.gitattributes` from the
 working tree and `HEAD`. But git-lazy-mount has **no checked-out working tree**,
 and content is filtered against a **bare shared store** whose `HEAD` need not match
