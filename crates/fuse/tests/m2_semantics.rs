@@ -116,7 +116,6 @@ fn mount_ready(proj: Arc<Projection>, mnt: &Path) -> BackgroundMount {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs full open-unlink retention (§17.4): getattr on a deleted-but-open inode must serve last-known attrs (currently returns ESTALE after inodes.unlink); tracked as a follow-up"]
 fn open_then_unlink_handle_survives_and_name_is_gone() {
     let fx = Fixture::seed(&[("keep.txt", b"v0\n"), ("doomed.txt", b"hello\n")]);
     let proj = fx.open_projection();
@@ -269,7 +268,6 @@ fn empty_untracked_dir_survives_unmount_remount() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs lazy copy-up or atomic_o_trunc (§38.7): without atomic O_TRUNC the kernel splits into open(no-trunc)→eager CoW-fetch + setattr(0), so the open hydrates; tracked as a follow-up"]
 fn otrunc_open_fetches_no_old_blob() {
     let fx = Fixture::seed(&[("big.txt", b"the original baseline body, never read\n")]);
     let proj = fx.open_projection();
@@ -317,7 +315,6 @@ fn otrunc_open_fetches_no_old_blob() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // unignore when §38.6 coalescing lands
 fn hundred_concurrent_reads_coalesce_to_one_retrieval() {
     let body: &[u8] = b"shared baseline blob read by a hundred threads at once\n";
     let fx = Fixture::seed(&[("shared.bin", body)]);
