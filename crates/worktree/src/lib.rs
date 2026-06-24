@@ -19,12 +19,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod journal;
 pub mod overlay;
 pub use overlay::{Overlay, OverlayEntry};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use glm_fs_common::{InodeTable, ROOT_INO};
@@ -124,10 +124,9 @@ pub struct Projection {
     /// git's lazy fetch; once the bounded fetch scheduler exists it must route
     /// through it so that "only the scheduler causes network" holds (§18–§20).
     metadata_fetch: bool,
-    // The object reader is the AdminRepo's GitStore; a Mutex guards the
-    // single-process cat-file reuse across concurrent FUSE callbacks (§18; a
-    // bounded pool is the later refinement).
-    lock: Mutex<()>,
+    // No global lock: the InodeTable, Overlay, and the content cache are each
+    // internally synchronized, so callbacks never serialize behind a coarse mutex
+    // held across a blocking `git` subprocess (§18/§19).
 }
 
 /// An open read handle backing a `read` callback. Content is served from a file
@@ -215,7 +214,6 @@ impl Projection {
             cache_dir,
             hydrations: AtomicU64::new(0),
             metadata_fetch: true,
-            lock: Mutex::new(()),
         })
     }
 
@@ -401,7 +399,6 @@ impl Projection {
     /// `lookup(parent, name)` — resolve a child by name (§16). Allocates a stable
     /// inode for the child path.
     pub fn lookup(&self, parent_ino: u64, name: &[u8]) -> Result<Option<Attr>> {
-        let _g = self.lock.lock().unwrap();
         let parent = self.path_of(parent_ino)?;
         let child = parent
             .join(name)
@@ -417,20 +414,20 @@ impl Projection {
 
     /// `getattr(ino)` (§16, §21). May fault an object in for its exact size.
     pub fn getattr(&self, ino: u64) -> Result<Attr> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         let r = self
             .resolve(&path)?
             .ok_or_else(|| Error::new(ErrorCode::Internal, format!("inode {ino} vanished")))?;
-        let (i, generation) = self.inodes.lookup(&path);
-        debug_assert_eq!(i, ino);
+        // Resolve the generation for the (already-known) inode. Never assert
+        // equality here: a live FUSE callback must not panic (a panic drops the
+        // reply and would wedge the mount).
+        let (_i, generation) = self.inodes.lookup(&path);
         self.attr_of(ino, generation, &r)
     }
 
     /// `readdir(ino)` — names + kind + inode only; reads **no** blob contents and
     /// resolves **no** sizes (§4.5, §38.2). Cost is O(direct children).
     pub fn readdir(&self, ino: u64) -> Result<Vec<DirEntry>> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         let Some(Resolved::Dir { baseline_tree }) = self.resolve(&path)? else {
             return Err(Error::new(ErrorCode::Internal, "not a directory"));
@@ -506,7 +503,6 @@ impl Projection {
     /// Faults the blob in on first access (a later refinement routes this through
     /// the bounded fetch scheduler so "only the scheduler causes network", §20).
     pub fn open_content(&self, ino: u64) -> Result<ContentHandle> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         match self
             .resolve(&path)?
@@ -572,7 +568,6 @@ impl Projection {
     /// `readlink(ino)` — the symlink's raw target bytes (§30.1). Targets are
     /// small, so the blob is read whole here (this is not a content stream).
     pub fn readlink(&self, ino: u64) -> Result<Vec<u8>> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         match self
             .resolve(&path)?
@@ -591,9 +586,23 @@ impl Projection {
     // ---- write path (§8, §17, §29) ---------------------------------------
 
     fn child_path(&self, parent_ino: u64, name: &[u8]) -> Result<RepoPath> {
-        self.path_of(parent_ino)?
+        let path = self
+            .path_of(parent_ino)?
             .join(name)
-            .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))
+            .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))?;
+        // The synthetic root `.git` is protected from creation/replacement/
+        // deletion/rename (§6); reads always resolve to the gitfile.
+        let protected = {
+            let mut comps = path.components();
+            comps.next() == Some(GITFILE_NAME) && comps.next().is_none()
+        };
+        if protected {
+            return Err(Error::new(
+                ErrorCode::Authentication,
+                "the .git entry is protected",
+            ));
+        }
+        Ok(path)
     }
 
     /// Create a new empty file under `parent_ino` (FUSE `create`) and return its
@@ -604,7 +613,6 @@ impl Projection {
         name: &[u8],
         executable: bool,
     ) -> Result<(Attr, std::fs::File)> {
-        let _g = self.lock.lock().unwrap();
         let path = self.child_path(parent_ino, name)?;
         let file = self.overlay.create_file(&path, executable, None)?;
         let (ino, generation) = self.inodes.lookup(&path);
@@ -623,7 +631,6 @@ impl Projection {
     /// the baseline up once (§17.2); `truncate` seeds an empty file with **no**
     /// baseline fetch.
     pub fn open_write(&self, ino: u64, truncate: bool) -> Result<std::fs::File> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             let f = self.overlay.open_content(&path)?;
@@ -652,7 +659,6 @@ impl Projection {
     /// Truncate/extend a file to `size` (FUSE `setattr` size); copies up if
     /// needed. `size == 0` never fetches the old blob (§38.7).
     pub fn truncate(&self, ino: u64, size: u64) -> Result<()> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         let f = if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             self.overlay.open_content(&path)?
@@ -680,20 +686,22 @@ impl Projection {
     /// Remove a file/symlink (FUSE `unlink`): tombstone a baseline path, else
     /// drop the overlay-only entry.
     pub fn unlink(&self, parent_ino: u64, name: &[u8]) -> Result<()> {
-        let _g = self.lock.lock().unwrap();
         let path = self.child_path(parent_ino, name)?;
         if self.baseline_resolve(&path)?.is_some() {
-            self.overlay.tombstone(&path)
+            self.overlay.tombstone(&path)?;
         } else if self.overlay.lookup(&path).is_some() {
-            self.overlay.clear(&path)
+            self.overlay.clear(&path)?;
         } else {
-            Err(Error::new(ErrorCode::NotFound, "no such file"))
+            return Err(Error::new(ErrorCode::NotFound, "no such file"));
         }
+        // Drop the name→inode mapping so a later recreate gets a fresh inode and
+        // the unlinked inode enters open-unlinked retention (§14, §17.4).
+        self.inodes.unlink(&path);
+        Ok(())
     }
 
     /// Create a directory (FUSE `mkdir`); persisted so empty dirs survive (§4.9).
     pub fn mkdir(&self, parent_ino: u64, name: &[u8]) -> Result<Attr> {
-        let _g = self.lock.lock().unwrap();
         let path = self.child_path(parent_ino, name)?;
         if self.resolve(&path)?.is_some() {
             return Err(Error::new(ErrorCode::AlreadyExists, "exists"));
@@ -710,18 +718,19 @@ impl Projection {
 
     /// Remove a directory if empty (FUSE `rmdir`).
     pub fn rmdir(&self, parent_ino: u64, name: &[u8]) -> Result<()> {
-        let _g = self.lock.lock().unwrap();
         let path = self.child_path(parent_ino, name)?;
         if !self.dir_is_empty(&path)? {
             return Err(Error::new(ErrorCode::DirtyWorkspaceConflict, "not empty"));
         }
         if self.baseline_tree_at(&path)?.is_some() {
-            self.overlay.tombstone(&path)
+            self.overlay.tombstone(&path)?;
         } else if self.overlay.lookup(&path).is_some() {
-            self.overlay.clear(&path)
+            self.overlay.clear(&path)?;
         } else {
-            Err(Error::new(ErrorCode::NotFound, "no such directory"))
+            return Err(Error::new(ErrorCode::NotFound, "no such directory"));
         }
+        self.inodes.unlink(&path);
+        Ok(())
     }
 
     fn dir_is_empty(&self, path: &RepoPath) -> Result<bool> {
@@ -745,7 +754,6 @@ impl Projection {
 
     /// Create a symlink (FUSE `symlink`).
     pub fn symlink(&self, parent_ino: u64, name: &[u8], target: &[u8]) -> Result<Attr> {
-        let _g = self.lock.lock().unwrap();
         let path = self.child_path(parent_ino, name)?;
         self.overlay.put_symlink(&path, target)?;
         let (ino, generation) = self.inodes.lookup(&path);
@@ -767,7 +775,6 @@ impl Projection {
         newparent_ino: u64,
         newname: &[u8],
     ) -> Result<()> {
-        let _g = self.lock.lock().unwrap();
         let src = self.child_path(parent_ino, name)?;
         let dst = self.child_path(newparent_ino, newname)?;
         if self.overlay.lookup(&src).is_some() {
@@ -811,7 +818,6 @@ impl Projection {
 
     /// Set/clear the executable bit (FUSE `setattr` mode), copying up if needed.
     pub fn set_executable(&self, ino: u64, exec: bool) -> Result<()> {
-        let _g = self.lock.lock().unwrap();
         let path = self.path_of(ino)?;
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             return self.overlay.set_executable(&path, exec);

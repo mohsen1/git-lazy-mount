@@ -152,13 +152,21 @@ impl Overlay {
 
     /// The overlay entry at `path`, if any.
     pub fn lookup(&self, path: &RepoPath) -> Option<OverlayEntry> {
-        self.index.lock().unwrap().entries.get(path).cloned()
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .get(path)
+            .cloned()
     }
 
     /// Direct children present in the overlay under `parent` (names + entries).
     /// O(direct children), independent of total dirty paths (§15).
     pub fn children(&self, parent: &RepoPath) -> Vec<(Vec<u8>, OverlayEntry)> {
-        let idx = self.index.lock().unwrap();
+        let idx = self
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match idx.children.get(parent) {
             None => Vec::new(),
             Some(names) => names
@@ -199,7 +207,10 @@ impl Overlay {
             executable,
         };
         self.persist(path, &entry)?;
-        self.index.lock().unwrap().insert(path.clone(), entry);
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.clone(), entry);
         Ok(file)
     }
 
@@ -234,7 +245,10 @@ impl Overlay {
             target: target.to_vec(),
         };
         self.persist(path, &entry)?;
-        self.index.lock().unwrap().insert(path.clone(), entry);
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.clone(), entry);
         Ok(())
     }
 
@@ -252,7 +266,10 @@ impl Overlay {
     pub fn put_base_ref(&self, path: &RepoPath, oid: ObjectId, mode: GitMode) -> Result<()> {
         let entry = OverlayEntry::BaseRef { oid, mode };
         self.persist(path, &entry)?;
-        self.index.lock().unwrap().insert(path.clone(), entry);
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.clone(), entry);
         Ok(())
     }
 
@@ -271,7 +288,10 @@ impl Overlay {
     pub fn clear(&self, path: &RepoPath) -> Result<()> {
         self.drop_content(path);
         let _ = std::fs::remove_file(self.sidecar_path(path));
-        self.index.lock().unwrap().remove(path);
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(path);
         Ok(())
     }
 
@@ -284,7 +304,10 @@ impl Overlay {
         };
         self.persist(dst, &entry)?;
         let _ = std::fs::remove_file(self.sidecar_path(src));
-        let mut idx = self.index.lock().unwrap();
+        let mut idx = self
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         idx.insert(dst.clone(), entry);
         idx.remove(src);
         Ok(())
@@ -300,7 +323,10 @@ impl Overlay {
             executable: exec,
         };
         self.persist(path, &entry)?;
-        self.index.lock().unwrap().insert(path.clone(), entry);
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(path.clone(), entry);
         Ok(())
     }
 
