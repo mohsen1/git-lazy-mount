@@ -70,10 +70,26 @@ fn errno(e: &Error) -> i32 {
     e.errno()
 }
 
-/// An open handle: a read stream, or a writable overlay FD (also readable).
+/// An open handle: a read stream, or a writable overlay FD (also readable). Each
+/// carries its inode so `getattr` can serve a deleted-but-open file from the live
+/// fd after `unlink` (§17.4).
 enum Handle {
-    Read(Arc<ContentHandle>),
-    Write(Arc<std::fs::File>),
+    Read {
+        ino: u64,
+        content: Arc<ContentHandle>,
+    },
+    Write {
+        ino: u64,
+        file: Arc<std::fs::File>,
+    },
+}
+
+impl Handle {
+    fn ino(&self) -> u64 {
+        match self {
+            Handle::Read { ino, .. } | Handle::Write { ino, .. } => *ino,
+        }
+    }
 }
 
 /// The transparent mount: the projection, a real handle table, the worker pool.
@@ -132,10 +148,26 @@ impl Filesystem for TransparentFs {
 
     fn getattr(&mut self, req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         let proj = Arc::clone(&self.proj);
+        let handles = Arc::clone(&self.handles);
         let (uid, gid) = (req.uid(), req.gid());
         self.pool.spawn(move || match proj.getattr(ino) {
             Ok(a) => reply.attr(&TTL, &fuse_attr(&a, uid, gid)),
-            Err(e) => reply.error(errno(&e)),
+            Err(e) => {
+                // Deleted-but-open fallback (§17.4): if the path is gone but an
+                // fd is still open on this inode, serve a regular-file attr sized
+                // from that fd so `seek(End)`/`fstat` keep working.
+                if let Some(size) = open_size(&handles, ino) {
+                    let a = Attr {
+                        ino,
+                        generation: 0,
+                        size,
+                        kind: Kind::File { executable: false },
+                    };
+                    reply.attr(&TTL, &fuse_attr(&a, uid, gid));
+                } else {
+                    reply.error(errno(&e));
+                }
+            }
         });
     }
 
@@ -196,10 +228,15 @@ impl Filesystem for TransparentFs {
         let truncate = flags & libc::O_TRUNC != 0;
         self.pool.spawn(move || {
             let h = if writable {
-                proj.open_write(ino, truncate)
-                    .map(|f| Handle::Write(Arc::new(f)))
+                proj.open_write(ino, truncate).map(|f| Handle::Write {
+                    ino,
+                    file: Arc::new(f),
+                })
             } else {
-                proj.open_content(ino).map(|c| Handle::Read(Arc::new(c)))
+                proj.open_content(ino).map(|c| Handle::Read {
+                    ino,
+                    content: Arc::new(c),
+                })
             };
             match h {
                 Ok(handle) => {
@@ -232,10 +269,13 @@ impl Filesystem for TransparentFs {
             .spawn(move || match proj.create(parent, &name, executable) {
                 Ok((a, file)) => {
                     let fh = next_fh.fetch_add(1, Ordering::Relaxed);
-                    handles
-                        .lock()
-                        .unwrap()
-                        .insert(fh, Handle::Write(Arc::new(file)));
+                    handles.lock().unwrap().insert(
+                        fh,
+                        Handle::Write {
+                            ino: a.ino,
+                            file: Arc::new(file),
+                        },
+                    );
                     reply.created(&TTL, &fuse_attr(&a, uid, gid), a.generation, fh, 0);
                 }
                 Err(e) => reply.error(errno(&e)),
@@ -257,13 +297,13 @@ impl Filesystem for TransparentFs {
         let off = offset.max(0) as u64;
         let len = size as usize;
         self.pool.spawn(move || match handle {
-            Some(Handle::Read(h)) => match h.read_at(off, len) {
+            Some(Handle::Read { content, .. }) => match content.read_at(off, len) {
                 Ok(bytes) => reply.data(&bytes),
                 Err(e) => reply.error(errno(&e)),
             },
-            Some(Handle::Write(f)) => {
+            Some(Handle::Write { file, .. }) => {
                 let mut buf = vec![0u8; len];
-                match f.read_at(&mut buf, off) {
+                match file.read_at(&mut buf, off) {
                     Ok(n) => {
                         buf.truncate(n);
                         reply.data(&buf);
@@ -291,11 +331,11 @@ impl Filesystem for TransparentFs {
         let off = offset.max(0) as u64;
         let data = data.to_vec();
         self.pool.spawn(move || match handle {
-            Some(Handle::Write(f)) => match f.write_at(&data, off) {
+            Some(Handle::Write { file, .. }) => match file.write_at(&data, off) {
                 Ok(n) => reply.written(n as u32),
                 Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
             },
-            Some(Handle::Read(_)) => reply.error(libc::EBADF),
+            Some(Handle::Read { .. }) => reply.error(libc::EBADF),
             None => reply.error(libc::EBADF),
         });
     }
@@ -315,11 +355,11 @@ impl Filesystem for TransparentFs {
     fn fsync(&mut self, _req: &Request<'_>, _ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         let handle = self.lookup_handle(fh);
         self.pool.spawn(move || match handle {
-            Some(Handle::Write(f)) => {
+            Some(Handle::Write { file, .. }) => {
                 let r = if datasync {
-                    f.sync_data()
+                    file.sync_data()
                 } else {
-                    f.sync_all()
+                    file.sync_all()
                 };
                 match r {
                     Ok(()) => reply.ok(),
@@ -498,10 +538,36 @@ impl Filesystem for TransparentFs {
 impl TransparentFs {
     fn lookup_handle(&self, fh: u64) -> Option<Handle> {
         self.handles.lock().unwrap().get(&fh).map(|h| match h {
-            Handle::Read(c) => Handle::Read(Arc::clone(c)),
-            Handle::Write(f) => Handle::Write(Arc::clone(f)),
+            Handle::Read { ino, content } => Handle::Read {
+                ino: *ino,
+                content: Arc::clone(content),
+            },
+            Handle::Write { ino, file } => Handle::Write {
+                ino: *ino,
+                file: Arc::clone(file),
+            },
         })
     }
+}
+
+/// Size of an open handle on `ino`, if any — used to serve `getattr` for a
+/// deleted-but-open inode after `unlink` (§17.4). Prefers a writable fd (its
+/// size reflects writes); falls back to a read handle's content size.
+fn open_size(handles: &Mutex<HashMap<u64, Handle>>, ino: u64) -> Option<u64> {
+    let handles = handles
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut size = None;
+    for h in handles.values() {
+        if h.ino() != ino {
+            continue;
+        }
+        match h {
+            Handle::Write { file, .. } => return file.metadata().ok().map(|m| m.len()),
+            Handle::Read { content, .. } => size = content.size().ok(),
+        }
+    }
+    size
 }
 
 /// Whether `user_allow_other` is set in `/etc/fuse.conf`.

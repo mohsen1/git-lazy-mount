@@ -9,7 +9,7 @@ that will be un-`#[ignore]`d when it lands.
 
 | # | Area | Status | Spec | Un-ignores |
 |---|------|--------|------|-----------|
-| R1 | **Open-unlink retention** — `getattr` on a deleted-but-open inode returns `ESTALE` after `inodes.unlink`; reads/writes through the held fd still work (Linux fd survival), but `seek(End)`/`fstat` need the retained attrs. | deferred | §17.4, §14 | `m2_semantics::open_then_unlink_handle_survives_and_name_is_gone` |
+| R1 | **Open-unlink retention** — `getattr` on a deleted-but-open inode now falls back to the live fd's size (the mount tracks each handle's inode), so `seek(End)`/`fstat` work after `unlink`; reads/writes go through the held fd (Linux fd survival). | ✅ fixed | §17.4, §14 | `m2_semantics::open_then_unlink_handle_survives_and_name_is_gone` (un-ignored) |
 | R2 | **`O_TRUNC` no-fetch** — enabled `FUSE_ATOMIC_O_TRUNC` so a truncating open is one `open(O_TRUNC)` (handled with an empty overlay, no CoW) instead of `open`(no-trunc)→CoW + `setattr(0)`. | ✅ fixed | §38.7, §17.2 | `m2_semantics::otrunc_open_fetches_no_old_blob` (un-ignored) |
 | R3 | **Fetch coalescing (single-flight)** — N concurrent first-opens of one missing blob currently each fetch; should coalesce to one retrieval. | deferred | §38.6, §20.1 | `m2_semantics::hundred_concurrent_reads_coalesce_to_one_retrieval` |
 | R4 | **Content-file retention** — overlay content is deleted eagerly on tombstone/clear; relies on Linux fd survival for open handles. Explicit retain-until-last-release is cleaner. | partial | §17.4 | — |

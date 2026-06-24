@@ -116,7 +116,6 @@ fn mount_ready(proj: Arc<Projection>, mnt: &Path) -> BackgroundMount {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs full open-unlink retention (§17.4): getattr on a deleted-but-open inode must serve last-known attrs (currently returns ESTALE after inodes.unlink); tracked as a follow-up"]
 fn open_then_unlink_handle_survives_and_name_is_gone() {
     let fx = Fixture::seed(&[("keep.txt", b"v0\n"), ("doomed.txt", b"hello\n")]);
     let proj = fx.open_projection();

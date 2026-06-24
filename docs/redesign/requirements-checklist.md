@@ -39,7 +39,7 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 19 `git rm --cached` preserves the working-tree file — *real mount (`git_more`)*
 - [x] 20 `git reset --mixed` changes index without changing projected bytes — *real mount (`git_more`)*
 - [x] 21 `git reset --hard` replaces projected working state — *real mount (`m4_m5`)*
-- [~] 22 open-unlink semantics — read survives; full retention (getattr on deleted-but-open inode) is a tracked refinement
+- [x] 22 open-unlink semantics — *real mount (`m2_semantics`)*: fd reads/writes survive unlink; getattr falls back to the live fd (§17.4)
 - [x] 23 empty untracked directories survive remount — *real mount (`m2_semantics`)*
 - [x] 24 partial writes don't rewrite the full file per callback — *real mount (`m2_semantics` 4 KiB)*
 - [~] 25 multi-GiB files don't require multi-GiB allocations — 4 MiB proven; multi-GiB pending
