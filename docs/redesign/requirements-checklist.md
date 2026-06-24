@@ -74,7 +74,7 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 - [x] mount (blob:none) fetches 0 working-file blobs to project the tree — *CI*
 - [x] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children) — *CI (small scale)*
-- [ ] clean `git status` (post-bootstrap): 0 blobs, 0 smudge, no full stat *(M3)*
+- [~] clean `git status`: **repeat** status fetches 0 blobs (measured, `status_hydration`); the *first* status is eager (12/12 files) until the §12.2 FSMonitor-valid bootstrap lands
 - [x] `cat path`: ≤ the one required blob + its attr/filter metadata — *CI*
 - [x] 100 concurrent reads of one missing file → 1 retrieval — *real mount (`m2_semantics`, single-flight)*
 - [x] `O_TRUNC` open: no old-blob fetch — *real mount (`m2_semantics`, atomic_o_trunc)*
