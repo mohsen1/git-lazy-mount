@@ -203,6 +203,18 @@ impl Overlay {
         Ok(file)
     }
 
+    /// The byte size of the overlay content file at `path`.
+    pub fn content_size(&self, path: &RepoPath) -> Result<u64> {
+        match self.lookup(path) {
+            Some(OverlayEntry::File { content, .. }) => {
+                std::fs::metadata(self.content_path(&content))
+                    .map(|m| m.len())
+                    .map_err(io("stat overlay content"))
+            }
+            _ => Err(Error::new(ErrorCode::Internal, "not an overlay file")),
+        }
+    }
+
     /// Open the existing overlay content file at `path` for read+write.
     pub fn open_content(&self, path: &RepoPath) -> Result<File> {
         let content = match self.lookup(path) {
@@ -260,6 +272,35 @@ impl Overlay {
         self.drop_content(path);
         let _ = std::fs::remove_file(self.sidecar_path(path));
         self.index.lock().unwrap().remove(path);
+        Ok(())
+    }
+
+    /// Re-key the overlay entry from `src` to `dst`, **keeping** the content file
+    /// (it is referenced by `dst` afterward). The caller decides how to mask any
+    /// baseline at `src` (e.g. a tombstone). No-op if `src` has no entry.
+    pub fn rename(&self, src: &RepoPath, dst: &RepoPath) -> Result<()> {
+        let Some(entry) = self.lookup(src) else {
+            return Ok(());
+        };
+        self.persist(dst, &entry)?;
+        let _ = std::fs::remove_file(self.sidecar_path(src));
+        let mut idx = self.index.lock().unwrap();
+        idx.insert(dst.clone(), entry);
+        idx.remove(src);
+        Ok(())
+    }
+
+    /// Set the executable bit of an existing overlay File entry (re-persist).
+    pub fn set_executable(&self, path: &RepoPath, exec: bool) -> Result<()> {
+        let Some(OverlayEntry::File { content, .. }) = self.lookup(path) else {
+            return Err(Error::new(ErrorCode::Internal, "not an overlay file"));
+        };
+        let entry = OverlayEntry::File {
+            content,
+            executable: exec,
+        };
+        self.persist(path, &entry)?;
+        self.index.lock().unwrap().insert(path.clone(), entry);
         Ok(())
     }
 
