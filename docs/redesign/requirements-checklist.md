@@ -10,7 +10,7 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [~] **B** zero-content readdir: `ls` fetches **0** blobs (hydration counter; 100k-file *scale* stress test pending)
 - [x] **C** transparent edit + status: edit then `git status --porcelain` correct, no wrapper — *real mount (`m3_git`)*
 - [x] **D** real staging: `git add` then `git diff --cached` uses the real index — *real mount (`m3_git`)*
-- [ ] **E** interactive staging: `git add -p` (real PTY) stages one hunk
+- [x] **E** interactive staging: `git add -p` stages one hunk — *real mount (`git_extra`, stdin-fed)*
 - [x] **F** real commit: `git commit` + `--amend`, no adoption step — *real mount (`m3_git`/`git_more`)*
 - [~] **G** checkout/switch: correct through the mount (`m4_m5`); eagerness over a 100k-file delta not yet *measured*
 - [ ] **H** FSMonitor bootstrap: first + subsequent clean status read 0 working blobs *(M3 optimization)*
@@ -27,14 +27,14 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 7 editor atomic save updates the overlay correctly — *real mount (`m2_semantics` rename-over)*
 - [x] 8 plain `git status` sees the edit — *real mount (`m3_git`)*
 - [x] 9 plain `git add` stages it in the real index — *real mount (`m3_git`)*
-- [ ] 10 plain `git add -p` stages selected hunks *(PTY test pending)*
+- [x] 10 plain `git add -p` stages selected hunks — *real mount (`git_extra`, stdin-fed)*
 - [x] 11 plain `git commit` advances a normal branch directly — *real mount (`m3_git`)*
 - [x] 12 plain `git commit --amend` — *real mount (`git_more`)*
 - [x] 13 plain `git push` to an ordinary remote — *real mount (`m4_m5`)*
-- [ ] 14 plain `git fetch` / `git pull` *(test pending)*
+- [x] 14 plain `git fetch` + merge — *real mount (`git_extra`; remote commit faults in over the promisor)*
 - [x] 15 plain `git switch` correct — *real mount (`m4_m5`)*; hydration not yet measured
-- [~] 16 merge: conflict-free merge proven (`m4_m5`); conflict-stage handling pending
-- [ ] 17 rebase abort + continue *(test pending)*
+- [x] 16 merge conflicts use the real index conflict stages — *real mount (`git_extra`: stages 1/2/3 + overlay markers, §25.3)*
+- [x] 17 rebase abort restores state — *real mount (`git_extra`)*; `--continue` flow not yet tested
 - [x] 18 stash create + restore — *real mount (`git_more`)*
 - [x] 19 `git rm --cached` preserves the working-tree file — *real mount (`git_more`)*
 - [x] 20 `git reset --mixed` changes index without changing projected bytes — *real mount (`git_more`)*

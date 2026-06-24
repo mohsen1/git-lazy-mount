@@ -269,7 +269,6 @@ fn empty_untracked_dir_survives_unmount_remount() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "needs lazy copy-up or atomic_o_trunc (§38.7): without atomic O_TRUNC the kernel splits into open(no-trunc)→eager CoW-fetch + setattr(0), so the open hydrates; tracked as a follow-up"]
 fn otrunc_open_fetches_no_old_blob() {
     let fx = Fixture::seed(&[("big.txt", b"the original baseline body, never read\n")]);
     let proj = fx.open_projection();

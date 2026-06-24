@@ -96,6 +96,19 @@ impl TransparentFs {
 }
 
 impl Filesystem for TransparentFs {
+    fn init(
+        &mut self,
+        _req: &Request<'_>,
+        config: &mut fuser::KernelConfig,
+    ) -> std::result::Result<(), libc::c_int> {
+        // Handle `O_TRUNC` atomically in `open` so a truncating open is delivered
+        // as one `open(O_TRUNC)` call instead of `open`(no-trunc)+`setattr(0)` —
+        // the latter would copy the old blob up before truncating it (§38.7).
+        // `FUSE_ATOMIC_O_TRUNC = 1 << 3`; fall back silently if unsupported.
+        let _ = config.add_capabilities(1 << 3);
+        Ok(())
+    }
+
     fn lookup(
         &mut self,
         req: &Request<'_>,
