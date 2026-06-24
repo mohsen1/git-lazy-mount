@@ -59,9 +59,14 @@ usable for unsandboxed harness testing.
 * One engine, two transports: Linux FUSE calls `FskitOps`/`FuseOps` in-process;
   macOS FSKit calls the daemon over IPC. The neutral engine and its tests are
   shared and unchanged.
-* New surface to test: the IPC operation set and its serialization (unit-testable
-  in Rust without a mount), plus a daemon-side handler that maps requests onto
-  `FskitOps`. The Swift extension stays a thin marshaller.
+* Implemented + unit-tested (no mount required): the per-inode operation set and
+  its serialization live in [`glm-ipc::fs`](../../crates/ipc/src/fs.rs)
+  (`FsRequest`/`FsResponse`, exact-byte names), and the daemon-side handler that
+  maps each request onto the engine is
+  [`FskitOps::serve_ipc`](../../crates/fs-fskit/src/ipc.rs), exercised over a
+  seeded workspace (lookup/read/enumerate/create/write + errno mapping). What
+  remains is the **socket transport** and the **Swift client** in the extension
+  (a thin marshaller), plus on-device validation.
 * This is **not yet exercised end-to-end**: third-party FSKit module
   *enablement* is currently broken on macOS 26.4.1 (reproduces on Apple's own
   sample), so no mount — and therefore no live IPC round-trip — has run on-device

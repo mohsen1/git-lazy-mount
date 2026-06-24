@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod fs;
+
 use glm_core::ErrorJson;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
