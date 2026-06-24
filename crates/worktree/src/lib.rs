@@ -36,6 +36,11 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The reserved name of the synthetic gitfile at the projection root (§6).
 pub const GITFILE_NAME: &[u8] = b".git";
 
+/// `RENAME_NOREPLACE` rename flag — fail if the destination exists (Linux value).
+pub const RENAME_NOREPLACE: u32 = 1;
+/// `RENAME_EXCHANGE` rename flag — atomic swap (Linux value); not supported (§29).
+pub const RENAME_EXCHANGE: u32 = 2;
+
 /// Projected entry kind (neutral; mapped to FUSE `d_type`/mode by the mount).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -767,16 +772,28 @@ impl Projection {
 
     /// Rename a file or symlink (FUSE `rename`). A clean baseline file moves as a
     /// metadata-only base-ref (no fetch, §29); an overlay file re-keys its
-    /// content. Directory/subtree rename is a later refinement.
+    /// content. `flags` honors `RENAME_NOREPLACE` (fail if the destination
+    /// exists) and rejects `RENAME_EXCHANGE` as unsupported (§29). Directory/
+    /// subtree rename is a later refinement.
     pub fn rename(
         &self,
         parent_ino: u64,
         name: &[u8],
         newparent_ino: u64,
         newname: &[u8],
+        flags: u32,
     ) -> Result<()> {
         let src = self.child_path(parent_ino, name)?;
         let dst = self.child_path(newparent_ino, newname)?;
+        if flags & RENAME_EXCHANGE != 0 {
+            return Err(Error::new(
+                ErrorCode::UnsupportedOperation,
+                "RENAME_EXCHANGE is not supported",
+            ));
+        }
+        if flags & RENAME_NOREPLACE != 0 && self.resolve(&dst)?.is_some() {
+            return Err(Error::new(ErrorCode::AlreadyExists, "destination exists"));
+        }
         if self.overlay.lookup(&src).is_some() {
             self.overlay.rename(&src, &dst)?;
             if self.baseline_resolve(&src)?.is_some() {
@@ -1056,7 +1073,7 @@ mod tests {
         assert_eq!(p.readlink(s.ino).unwrap(), b"orig.txt");
 
         let before = p.hydrations();
-        p.rename(p.root_ino(), b"orig.txt", p.root_ino(), b"renamed.txt")
+        p.rename(p.root_ino(), b"orig.txt", p.root_ino(), b"renamed.txt", 0)
             .unwrap();
         assert!(p.lookup(p.root_ino(), b"orig.txt").unwrap().is_none());
         let r = p.lookup(p.root_ino(), b"renamed.txt").unwrap().unwrap();

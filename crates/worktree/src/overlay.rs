@@ -357,6 +357,15 @@ fn atomic_write(dst: &Path, bytes: &[u8]) -> Result<()> {
         f.sync_all().map_err(io("fsync sidecar"))?;
     }
     std::fs::rename(&tmp, dst).map_err(io("publish sidecar"))?;
+    // fsync the parent dir so the rename itself is durable — otherwise a crash
+    // can lose an acknowledged create/rename even though the file was fsynced
+    // (redesign.md §32). Best-effort: a dir that can't be synced must not fail
+    // the write.
+    if let Some(parent) = dst.parent() {
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 

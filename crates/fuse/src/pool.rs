@@ -28,11 +28,17 @@ impl Pool {
                 // Hold the lock only across `recv`, then run the job unlocked so
                 // other workers can pull concurrently.
                 let job = {
-                    let guard = rx.lock().unwrap();
+                    let guard = rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     guard.recv()
                 };
                 match job {
-                    Ok(job) => job(),
+                    // Isolate panics per job: a panicking callback must never kill
+                    // the worker (which would shrink the pool toward a wedged
+                    // mount). At worst that one callback's FUSE reply is dropped;
+                    // it can never cascade (redesign.md §4.8/§19).
+                    Ok(job) => {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                    }
                     Err(_) => break, // all senders dropped → drain + exit
                 }
             }));

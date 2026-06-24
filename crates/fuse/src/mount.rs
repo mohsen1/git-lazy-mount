@@ -386,14 +386,14 @@ impl Filesystem for TransparentFs {
         name: &std::ffi::OsStr,
         newparent: u64,
         newname: &std::ffi::OsStr,
-        _flags: u32,
+        flags: u32,
         reply: ReplyEmpty,
     ) {
         let proj = Arc::clone(&self.proj);
         let name = name.as_bytes().to_vec();
         let newname = newname.as_bytes().to_vec();
         self.pool.spawn(
-            move || match proj.rename(parent, &name, newparent, &newname) {
+            move || match proj.rename(parent, &name, newparent, &newname, flags) {
                 Ok(()) => reply.ok(),
                 Err(e) => reply.error(errno(&e)),
             },
