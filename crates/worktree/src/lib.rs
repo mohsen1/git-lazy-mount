@@ -1166,4 +1166,88 @@ mod tests {
             "copy-up changed the content"
         );
     }
+
+    #[test]
+    fn property_overlay_matches_a_reference_model() {
+        // §40.4 model-based test: drive the projection with a deterministic
+        // pseudo-random sequence of write/delete/rename ops and assert it always
+        // agrees with a simple reference model of the working tree.
+        use std::collections::BTreeMap;
+        use std::io::Write as _;
+
+        let (_t, _r, p) = projection_of(&[("p0", b"base0\n"), ("p1", b"base1\n")]);
+        let root = p.root_ino();
+        let paths = ["p0", "p1", "p2", "p3", "p4"];
+        let mut model: BTreeMap<&str, Vec<u8>> = BTreeMap::new();
+        model.insert("p0", b"base0\n".to_vec());
+        model.insert("p1", b"base1\n".to_vec());
+
+        let mut s: u64 = 0x9e3779b97f4a7c15;
+        let mut rng = || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            s
+        };
+
+        let read_back = |p: &Projection, ino: u64| -> Vec<u8> {
+            p.open_content(ino).unwrap().read_at(0, 1 << 16).unwrap()
+        };
+
+        for step in 0..250u64 {
+            let r = rng();
+            let path = paths[(r % paths.len() as u64) as usize];
+            match (r >> 8) % 3 {
+                0 => {
+                    // write (create or truncate-overwrite)
+                    let content = format!("step{step}-{path}").into_bytes();
+                    let mut f = match p.lookup(root, path.as_bytes()).unwrap() {
+                        Some(a) => p.open_write(a.ino, true).unwrap(),
+                        None => p.create(root, path.as_bytes(), false).unwrap().1,
+                    };
+                    f.write_all(&content).unwrap();
+                    drop(f);
+                    model.insert(path, content);
+                }
+                1 => {
+                    // delete
+                    if p.lookup(root, path.as_bytes()).unwrap().is_some() {
+                        p.unlink(root, path.as_bytes()).unwrap();
+                    }
+                    model.remove(path);
+                }
+                _ => {
+                    // rename to a distinct path
+                    let to = paths[((r >> 16) % paths.len() as u64) as usize];
+                    if to != path && p.lookup(root, path.as_bytes()).unwrap().is_some() {
+                        p.rename(root, path.as_bytes(), root, to.as_bytes(), 0)
+                            .unwrap();
+                        if let Some(c) = model.remove(path) {
+                            model.insert(to, c);
+                        }
+                    }
+                }
+            }
+
+            // Invariant: the projection agrees with the model on every path.
+            for &q in &paths {
+                match (model.get(q), p.lookup(root, q.as_bytes()).unwrap()) {
+                    (Some(want), Some(a)) => {
+                        assert_eq!(
+                            a.kind,
+                            Kind::File { executable: false },
+                            "{q} kind @ {step}"
+                        );
+                        assert_eq!(&read_back(&p, a.ino), want, "{q} content @ step {step}");
+                    }
+                    (None, None) => {}
+                    (want, got) => panic!(
+                        "step {step}: {q} disagrees — model={:?} projection={:?}",
+                        want.map(|w| w.len()),
+                        got.map(|a| a.size)
+                    ),
+                }
+            }
+        }
+    }
 }
