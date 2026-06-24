@@ -19,16 +19,29 @@ sample and our `GitLazyMount` extension:
 | **Enable** (System Settings → File System Extensions) | ❌ | ❌ |
 | `mount -t …` | ❌ | ❌ |
 
-**Blocker:** the System Settings *enablement* toggle for File System Extensions
-is **inert for every third-party FSKit module on this 26.4.1 build** — clicking
-it produces *zero* system response (a 150 s `log stream` over
-`SystemSettings`/`sharedfilelistd`/`fskitd` captured nothing), so
-`/Library/Filesystems/<name>.fs` is never created and `mount` fails with
-`Module … is disabled!`. This reproduces on **Apple's own sample**, so it is an
-OS-level issue, not our code. No `fskitd`/`fskit_admin` CLI exists to enable it
-headlessly, and `pluginkit -e use` flips only pluginkit's flag, not FSKit's
-enablement. The expected remedy is a **reboot** (module registration is
-finalized at boot); unverified at the time of writing.
+**Blocker — a confirmed upstream Apple bug, not our code and not SIP.** The
+System Settings *enablement* toggle for File System Extensions is **inert for
+every third-party FSKit module on macOS 26** (clicking it produces *zero* system
+response), so `/Library/Filesystems/<name>.fs` is never created and `mount`
+fails with `Module … is disabled!`. This reproduces on **Apple's own
+`FSKitSample`**. The root cause is documented in
+[andrewgazelka/loaf#1](https://github.com/andrewgazelka/loaf/issues/1):
+`fskitd` rejects the client connection (`Hello FSClient! entitlement no` →
+`Failed to start instance … extensionKit Code=2 … RBSRequestErrorDomain Code=5`)
+on 26.1 / 26.2 (and our 26.4.1). Everything we did plus more — Developer ID
+signing, notarization, hardened runtime, FSKit entitlements, library-validation
+disabled, embedded dylib, manual plist enablement, **and an `fskitd` restart** —
+was tried by others and **all failed**; Apple DTS confirmed (Jul 2025) it awaits
+"more fixes."
+
+* **SIP is *not* the issue.** FSKit is a user-space app-extension model and is
+  *designed* to run with SIP enabled; no SIP change is ever required. The
+  `Operation not permitted while System Integrity Protection is engaged` we saw
+  was only from `launchctl kickstart` of a system daemon (always SIP-blocked);
+  the SIP-compatible restart is `sudo killall fskit` — which still does not fix
+  this bug.
+* **A reboot will not fix it either** (an `fskitd` restart was already tried and
+  reproduces on Apple's sample). Re-validate when Apple ships an FSKit fix.
 
 ## Signing runbook (the hard-won part)
 
