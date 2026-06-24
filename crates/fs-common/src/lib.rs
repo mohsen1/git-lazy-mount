@@ -1,7 +1,7 @@
 //! `glm-fs-common` — backend-independent filesystem support types.
 //!
 //! * [`InodeTable`] — stable inode/file identity with generations, rename
-//!   preservation, and open-unlink semantics (design.md §19).
+//!   preservation, and open-unlink semantics.
 //!
 //! Platform-specific FFI and `unsafe` live in the FUSE backend crate, not here.
 

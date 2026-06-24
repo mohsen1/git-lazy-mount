@@ -9,7 +9,7 @@ use crate::batch::BatchSession;
 use crate::proc::{run, run_checked};
 use crate::tree_parse;
 
-/// Options controlling a `fetch` (spec §7).
+/// Options controlling a `fetch`.
 #[derive(Clone, Debug, Default)]
 pub struct FetchOptions {
     /// Partial-clone filter spec, e.g. `blob:none` or `tree:0`.
@@ -63,7 +63,7 @@ impl GitStore {
         Ok(GitStore { git_dir, format })
     }
 
-    /// Initialize a new bare store (spec §15). No physical checkout is created.
+    /// Initialize a new bare store. No physical checkout is created.
     pub fn init_bare(
         git_dir: impl Into<PathBuf>,
         format: Option<ObjectFormat>,
@@ -183,7 +183,7 @@ impl GitStore {
         Ok(None)
     }
 
-    /// Lazily fetch specific objects into the local store (spec §16). This is
+    /// Lazily fetch specific objects into the local store. This is
     /// the only entry point allowed to fault objects in over the network.
     pub fn fetch_objects(&self, oids: &[ObjectId]) -> Result<()> {
         if oids.is_empty() {
@@ -300,7 +300,7 @@ impl GitStore {
 
     /// The raw object size in bytes, from the object header only (`cat-file -s`)
     /// — no content is read into memory. Used by `getattr` for an exact size
-    /// (design.md §21); under a `blob:none` clone this can fault the object in
+    ///; under a `blob:none` clone this can fault the object in
     /// when `allow_fetch` is set (metadata-triggered hydration).
     pub fn object_size(&self, oid: &ObjectId, allow_fetch: bool) -> Result<u64> {
         let mut cmd = self.git(!allow_fetch);
@@ -317,8 +317,8 @@ impl GitStore {
 
     /// Stream a blob's raw bytes directly to `dst` via `cat-file blob` — git
     /// writes the content to the file; it is **never** buffered in this process
-    /// (design.md §4.6, §17.1). Faults the object in when `allow_fetch` is set.
-    /// The spawned git inherits no FUSE session descriptor (CLOEXEC; §19).
+    ///. Faults the object in when `allow_fetch` is set.
+    /// The spawned git inherits no FUSE session descriptor (CLOEXEC).
     pub fn blob_to_file(&self, oid: &ObjectId, allow_fetch: bool, dst: &Path) -> Result<()> {
         use std::io::Read;
         use std::process::Stdio;
@@ -346,13 +346,13 @@ impl GitStore {
     }
 
     /// Apply the configured working-tree (smudge) filters for `path` to a blob,
-    /// returning the bytes a normal checkout would write (spec §25). Uses Git's
+    /// returning the bytes a normal checkout would write. Uses Git's
     /// own filter plumbing.
     ///
     /// `attr_source` is a tree-ish (e.g. the workspace base commit) from which
     /// `.gitattributes` are resolved. This is essential in a *bare* shared store
     /// whose `HEAD` need not match the workspace's base commit (verified
-    /// behavior — see docs/feasibility/git-object-fetching.md).
+    /// behavior).
     pub fn smudge_blob(
         &self,
         oid: &ObjectId,
@@ -383,10 +383,9 @@ impl GitStore {
         Ok(r.stdout)
     }
 
-    /// Hash bytes as a blob *with* clean filters for `path` (spec §23:
-    /// `git hash-object --path=<path> --stdin`). Pass `write = false` to compute
+    /// Hash bytes as a blob *with* clean filters for `path`. Pass `write = false` to compute
     /// the oid without writing the object — used by `status`, which must not
-    /// persist dirty blobs (spec §2.7). `attr_source` resolves `.gitattributes`
+    /// persist dirty blobs. `attr_source` resolves `.gitattributes`
     /// as in [`GitStore::smudge_blob`].
     pub fn hash_blob_clean(
         &self,
@@ -436,7 +435,7 @@ impl GitStore {
         self.parse_oid_line(&out)
     }
 
-    /// Create an ordinary Git commit object (spec §24).
+    /// Create an ordinary Git commit object.
     pub fn commit_tree(&self, params: &CommitParams) -> Result<ObjectId> {
         let mut cmd = self.git(true);
         cmd.arg("commit-tree").arg(params.tree.to_hex());
@@ -464,7 +463,7 @@ impl GitStore {
         self.parse_oid_line(&out)
     }
 
-    /// Compare-and-swap a ref (spec §12, §14). `expected_old = None` means
+    /// Compare-and-swap a ref. `expected_old = None` means
     /// "create" (old value is the null oid).
     pub fn update_ref_cas(
         &self,
@@ -487,7 +486,7 @@ impl GitStore {
     }
 
     /// Push a refspec to a remote, optionally with a `--force-with-lease`
-    /// compare-and-swap (spec §13 saga step). Returns a classified error on
+    /// compare-and-swap. Returns a classified error on
     /// rejection.
     pub fn push(
         &self,

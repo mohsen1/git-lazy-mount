@@ -1,4 +1,4 @@
-//! `git-lazy-mount-fsmonitor` — the `core.fsmonitor` v2 hook (design.md §12).
+//! `git-lazy-mount-fsmonitor` — the `core.fsmonitor` v2 hook.
 //!
 //! Git invokes it as `<hook> <version> <prev-token>`; it must print
 //! `<new-token>\0<path>\0…` to stdout (or `<token>\0/\0` for a full rescan). It

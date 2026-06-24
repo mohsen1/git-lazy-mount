@@ -1,5 +1,5 @@
 //! Repository-maintenance commands run by **stock git** through the transparent
-//! FUSE mount, against the real admin object store (design.md §6, §10.2).
+//! FUSE mount, against the real admin object store.
 //!
 //! Every command in this cluster operates on the admin gitdir's object store,
 //! NOT the projected working tree: `git fsck`, `git gc`, `git repack -ad`,

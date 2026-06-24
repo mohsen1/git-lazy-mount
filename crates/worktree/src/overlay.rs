@@ -1,17 +1,17 @@
-//! The durable writable overlay (design.md §8, §32). The overlay is the layer
+//! The durable writable overlay. The overlay is the layer
 //! that records local working-tree changes on top of the read-only baseline:
 //! created/modified files, symlinks, explicit (empty) directories, deletions
 //! (tombstones), and clean-rename base-refs.
 //!
-//! Storage (§32): file **content lives in native files** addressed by an opaque
-//! content id, served by FD — never buffered whole (§4.6); the **namespace** is
+//! Storage: file **content lives in native files** addressed by an opaque
+//! content id, served by FD — never buffered whole; the **namespace** is
 //! a parent-indexed map persisted as one atomic sidecar per entry, so dirty
-//! state survives unmount/remount and daemon restart (criterion 26). A later
+//! state survives unmount/remount and daemon restart. A later
 //! refinement moves the namespace to a single transactional log/DB and routes
-//! all writes through the daemon (§32.1); the per-entry-atomic shape already
+//! all writes through the daemon; the per-entry-atomic shape already
 //! gives single-entry durability.
 //!
-//! This module owns only working-tree **bytes** — never Git state (§8).
+//! This module owns only working-tree **bytes** — never Git state.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -38,16 +38,16 @@ pub enum OverlayEntry {
     },
     /// A symlink; its raw target bytes are stored inline.
     Symlink {
-        /// Raw target bytes (§30.1).
+        /// Raw target bytes.
         target: Vec<u8>,
     },
     /// An explicit directory (e.g. a created empty dir; persisted so it survives
-    /// remount — §4.9).
+    /// remount).
     Dir,
     /// A deletion of a baseline path (the path reads as absent).
     Tombstone,
     /// A clean-rename target: the bytes are an existing Git blob, recorded
-    /// without fetching or copying content (§29).
+    /// without fetching or copying content.
     BaseRef {
         /// The blob/tree object id.
         oid: ObjectId,
@@ -66,7 +66,7 @@ struct Sidecar {
 pub struct Overlay {
     meta_dir: PathBuf,
     content_dir: PathBuf,
-    // In-memory caches rebuilt from the sidecars on open (disposable; §7).
+    // In-memory caches rebuilt from the sidecars on open (disposable).
     index: Mutex<Index>,
 }
 
@@ -74,7 +74,7 @@ pub struct Overlay {
 struct Index {
     /// path -> entry
     entries: HashMap<RepoPath, OverlayEntry>,
-    /// parent path -> {child name -> ()} for O(direct children) listing (§15).
+    /// parent path -> {child name -> ()} for O(direct children) listing.
     children: HashMap<RepoPath, HashMap<Vec<u8>, ()>>,
 }
 
@@ -118,7 +118,7 @@ impl Overlay {
             let Ok(sc) = serde_json::from_slice::<Sidecar>(&bytes) else {
                 // Skip a corrupt sidecar rather than fail the whole mount; the
                 // path simply falls through to the baseline (recovery quarantines
-                // it in a later pass, §32.2).
+                // it in a later pass).
                 continue;
             };
             if let Ok(path) = RepoPath::from_bytes(sc.path) {
@@ -161,7 +161,7 @@ impl Overlay {
     }
 
     /// Direct children present in the overlay under `parent` (names + entries).
-    /// O(direct children), independent of total dirty paths (§15).
+    /// O(direct children), independent of total dirty paths.
     pub fn children(&self, parent: &RepoPath) -> Vec<(Vec<u8>, OverlayEntry)> {
         let idx = self
             .index
@@ -182,7 +182,7 @@ impl Overlay {
     /// Create or replace a regular file at `path` and return a writable FD
     /// positioned at 0. If `seed` is given, its bytes are copied in (copy-up for
     /// a partial overwrite); otherwise the file starts empty (`O_TRUNC`/create —
-    /// **no baseline fetch**, §17.2). Content streams through the FS; nothing is
+    /// **no baseline fetch**). Content streams through the FS; nothing is
     /// buffered whole here.
     pub fn create_file(
         &self,
@@ -276,7 +276,7 @@ impl Overlay {
         Ok(())
     }
 
-    /// Record a clean-rename base-ref (no content copy/fetch; §29).
+    /// Record a clean-rename base-ref (no content copy/fetch).
     pub fn put_base_ref(&self, path: &RepoPath, oid: ObjectId, mode: GitMode) -> Result<()> {
         let entry = OverlayEntry::BaseRef { oid, mode };
         self.persist(path, &entry)?;
@@ -373,7 +373,7 @@ fn atomic_write(dst: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::rename(&tmp, dst).map_err(io("publish sidecar"))?;
     // fsync the parent dir so the rename itself is durable — otherwise a crash
     // can lose an acknowledged create/rename even though the file was fsynced
-    // (design.md §32). Best-effort: a dir that can't be synced must not fail
+    //. Best-effort: a dir that can't be synced must not fail
     // the write.
     if let Some(parent) = dst.parent() {
         if let Ok(dir) = File::open(parent) {
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn dirty_state_survives_reopen() {
-        // criterion 26: dirty overlay state survives unmount/remount.
+        // dirty overlay state survives unmount/remount.
         let tmp = tempfile::tempdir().unwrap();
         {
             let ov = Overlay::open(tmp.path()).unwrap();

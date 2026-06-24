@@ -1,8 +1,8 @@
-//! Large-file bounded-memory (design.md §4.6, §17, Experiment I, criterion 25):
-//! reading a large baseline blob must **stream** — materialized by `cat-file`
-//! straight to the content cache (no in-process buffer) and served by `pread` in
-//! request-sized chunks — so the daemon's resident memory never grows by the file
-//! size, no matter how big the file is. Real `/dev/fuse` mount.
+//! Large-file bounded-memory: reading a large baseline blob must **stream** —
+//! materialized by `cat-file` straight to the content cache (no in-process
+//! buffer) and served by `pread` in request-sized chunks — so the daemon's
+//! resident memory never grows by the file size, no matter how big the file is.
+//! Real `/dev/fuse` mount.
 #![cfg(feature = "fuse")]
 
 use std::io::Read as _;

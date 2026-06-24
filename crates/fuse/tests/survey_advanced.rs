@@ -20,10 +20,9 @@
 //!     bytes a tool reads through the mount are LF / unexpanded `$Id$`, which
 //!     differ from a real checkout (CRLF / `$Id: <sha> $`). git's *content*
 //!     comparison stays clean because the clean filter is the inverse of the
-//!     smudge. This is a deliberate, documented limitation (§23/§24): applying
-//!     smudge at materialize would make `getattr` size depend on the filter
-//!     output, which conflicts with the lazy stat / clean-rename-without-fetch
-//!     guarantees. See `docs/design/limitations.md`.
+//!     smudge. This is a deliberate limitation: applying smudge at materialize
+//!     would make `getattr` size depend on the filter output, which conflicts
+//!     with the lazy stat / clean-rename-without-fetch guarantees.
 //!
 //! Real `/dev/fuse` mount — runs under `--features fuse`.
 #![cfg(feature = "fuse")]
@@ -182,7 +181,7 @@ fn worktree_add_links_a_native_checkout_outside_the_mount() {
 // Submodules (nested repos: gitlinks, `.gitmodules`, a recursive checkout into
 // the overlay, and the submodule's own gitdir under `<admin>/modules/`) are a
 // deep, multi-repo interaction that is not yet validated end-to-end through the
-// mount. Classified `partial` in the compatibility report until it is.
+// mount.
 #[test]
 #[ignore = "submodule support through the mount is not yet validated end-to-end"]
 fn submodule_add_status_update_through_the_mount() {
@@ -313,10 +312,10 @@ fn gitattributes_text_auto_normalizes_crlf_on_add() {
 #[test]
 fn gitattributes_eol_crlf_projects_raw_lf_but_content_diff_is_clean() {
     // `*.txt text eol=crlf`: a real checkout would write CRLF (smudge). The
-    // projection serves the RAW baseline blob (LF) — a documented limitation
-    // (§23/§24) — so the on-disk bytes differ from a checkout. But git's clean
-    // filter is the inverse of the smudge, so the CONTENT comparison stays clean
-    // and commits remain byte-correct.
+    // projection serves the RAW baseline blob (LF) — a deliberate limitation —
+    // so the on-disk bytes differ from a checkout. But git's clean filter is the
+    // inverse of the smudge, so the CONTENT comparison stays clean and commits
+    // remain byte-correct.
     let (m, _remote) = Mounted::new(&[
         (".gitattributes", b"*.txt text eol=crlf\n"),
         ("greet.txt", b"hello\nworld\n"),
@@ -346,7 +345,7 @@ fn gitattributes_eol_crlf_projects_raw_lf_but_content_diff_is_clean() {
 #[test]
 fn gitattributes_ident_projects_unexpanded_but_content_diff_is_clean() {
     // `ident`: a real checkout smudges `$Id$` -> `$Id: <sha> $`. The projection
-    // serves the raw blob (`$Id$` unexpanded) — a documented limitation. git's
+    // serves the raw blob (`$Id$` unexpanded) — a deliberate limitation. git's
     // own `cat-file --filters` DOES expand (the attribute is wired), and the
     // clean filter strips it back, so the content comparison is clean.
     let (m, _remote) = Mounted::new(&[

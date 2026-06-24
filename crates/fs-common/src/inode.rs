@@ -1,4 +1,4 @@
-//! Stable inode/file identity for the lifetime of a workspace (spec §19).
+//! Stable inode/file identity for the lifetime of a workspace.
 //!
 //! Guarantees enforced here:
 //! * repeated lookup of the same logical path returns the same identity;
@@ -27,7 +27,7 @@ struct InodeEntry {
     generation: u64,
 }
 
-/// Maps logical paths to stable inode numbers and back (spec §19).
+/// Maps logical paths to stable inode numbers and back.
 pub struct InodeTable {
     inner: Mutex<Inner>,
 }
@@ -128,7 +128,7 @@ impl InodeTable {
     }
 
     /// Rename: the same inode now answers to `new` (identity preserved; spec
-    /// §19, §22). Open handles remain valid.
+    ///). Open handles remain valid.
     pub fn rename(&self, old: &RepoPath, new: &RepoPath) {
         let mut inner = self
             .inner
@@ -166,7 +166,7 @@ impl InodeTable {
 
     /// Advance the generation counter (e.g. on a view switch). Subsequently
     /// allocated inodes carry the new generation; existing ones keep theirs so
-    /// open handles are unaffected (spec §35).
+    /// open handles are unaffected.
     pub fn bump_generation(&self) -> u64 {
         let mut inner = self
             .inner

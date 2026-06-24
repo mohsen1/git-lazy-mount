@@ -1,7 +1,7 @@
-//! Measure branch-change eagerness (design.md §27, P3): switching to a branch
-//! that differs in M of N files must touch O(M) blobs, NOT O(N). Quantifies the
-//! design-sanctioned M-stage eagerness rather than hiding it (we do not claim
-//! google3-style lazy branch switching). Real `/dev/fuse` mount.
+//! Measure branch-change eagerness: switching to a branch that differs in M of
+//! N files must touch O(M) blobs, NOT O(N). Quantifies the M-stage eagerness
+//! rather than hiding it (we do not claim google3-style lazy branch switching).
+//! Real `/dev/fuse` mount.
 #![cfg(feature = "fuse")]
 
 use std::path::Path;
@@ -105,8 +105,8 @@ fn switch_eagerness_is_bounded_by_the_delta_not_the_repo() {
         "an unchanged file must still hold its baseline content"
     );
 
-    // The headline (§27): eagerness is bounded by the delta. It must be well
-    // below the repo size — switching does NOT rewrite/stat every file.
+    // The headline: eagerness is bounded by the delta. It must be well below the
+    // repo size — switching does NOT rewrite/stat every file.
     assert!(
         faulted < N as u64,
         "switch faulted {faulted} blobs for a {M}-file delta in a {N}-file repo — \

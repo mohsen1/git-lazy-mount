@@ -1,16 +1,16 @@
-//! Durable change journal + FSMonitor v2 token (design.md §12).
+//! Durable change journal + FSMonitor v2 token.
 //!
 //! Git's FSMonitor v2 hook is given `(version, previous_token)` and must return a
 //! new token, a NUL, then the relative paths that changed since that token. The
 //! response must be **inclusive** — false positives are fine, false negatives
-//! are not (§12). When continuity cannot be proven, the answer is the single
+//! are not. When continuity cannot be proven, the answer is the single
 //! path `/` (full invalidation).
 //!
 //! The token identifies `workspace : epoch : seq : projection-generation`
-//! (§12.1). The journal is **durable** (an append log replayed on open) so the
+//!. The journal is **durable** (an append log replayed on open) so the
 //! daemon can answer queries across restarts; a process-local `Mutex<Vec<…>>` is
-//! explicitly *not* sufficient (§4.10). The in-memory state is a disposable
-//! cache rebuilt from the log (§7).
+//! explicitly *not* sufficient. The in-memory state is a disposable
+//! cache rebuilt from the log.
 //!
 //! NOTE: bumping `epoch` on a *detected* crash/discontinuity (so stale tokens get
 //! `/`) is a later refinement; this slice preserves the epoch across a clean
@@ -43,7 +43,7 @@ pub fn workspace_id(gitdir: &Path) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// A parsed FSMonitor token (§12.1).
+/// A parsed FSMonitor token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
     /// Opaque workspace id.
@@ -197,7 +197,7 @@ impl ChangeJournal {
     }
 
     /// Record that `path` changed (durably appended; fsynced). Inclusive — over-
-    /// reporting is safe (§12).
+    /// reporting is safe.
     pub fn record(&self, path: &[u8]) -> Result<()> {
         let mut st = self
             .state
@@ -210,7 +210,7 @@ impl ChangeJournal {
         Ok(())
     }
 
-    /// Answer an FSMonitor query for the opaque `prev` token (§12). Returns a
+    /// Answer an FSMonitor query for the opaque `prev` token. Returns a
     /// full invalidation for any token this journal cannot place: empty/malformed,
     /// a different workspace/epoch/generation, a future seq, or one compacted
     /// away.
@@ -222,11 +222,11 @@ impl ChangeJournal {
         let cur_seq = st.paths.len() as u64;
         let token = self.token_at(cur_seq);
 
-        // §12.2 bootstrap: an empty `prev` while the journal is still at seq 0 (no
+        // bootstrap: an empty `prev` while the journal is still at seq 0 (no
         // worktree write recorded) means "nothing changed since the index was
         // built from HEAD" — return an EMPTY change set so git trusts the freshly
         // `read-tree`'d index WITHOUT hashing/statting every file. This makes the
-        // *first* clean `git status` fault 0 blobs (§38.4). The moment any write
+        // *first* clean `git status` fault 0 blobs. The moment any write
         // advances seq, an empty/unknown prev falls back to full invalidation.
         if prev.is_empty() {
             return if cur_seq == 0 {
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn empty_prev_at_seq_zero_is_the_bootstrap_no_changes() {
-        // §12.2: a fresh journal (no writes recorded) answers an empty prev with
+        //: a fresh journal (no writes recorded) answers an empty prev with
         // an EMPTY change set, so git trusts the freshly read-tree'd index without
         // hashing — the first clean `git status` faults 0 blobs.
         let tmp = tempfile::tempdir().unwrap();
