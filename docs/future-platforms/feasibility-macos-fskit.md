@@ -1,7 +1,7 @@
 # Feasibility: macOS FSKit
 
 **Question.** Can the projection run on Apple FSKit (with macFUSE as a fallback
-for older systems), and what is required (spec §5.5, §41)?
+for older systems), and what is required?
 
 ## Status
 
@@ -11,8 +11,8 @@ the `FskitOps` `FSVolume` bridge, runtime capability detection + diagnostics,
 APFS case-/normalization collision handling, the macOS metadata commit policy,
 the NSFileCoordination cooperation model, the system-extension lifecycle, and the
 mount-recovery re-attach path — all unit-tested on every platform, with extra
-real-FS tests on macOS hosts. macOS is still explicitly **not** production-ready
-(spec §54): the signed FSKit system extension + Swift `FSVolume` adapter must be
+real-FS tests on macOS hosts. macOS is still explicitly **not** production-ready:
+the signed FSKit system extension + Swift `FSVolume` adapter must be
 validated on real Apple hardware via the manual CI job (issue #12) before macOS
 is labeled supported. See [`platform-macos.md`](macos.md) for the
 per-sub-issue status table.
@@ -43,6 +43,6 @@ detection, collision handling, metadata policy, coordination, lifecycle, and
 recovery), so the open questions above are resolved in software and covered by
 tests. The remaining gate is purely on-device: a signed FSKit extension + the
 Swift `FSVolume` adapter, validated on real Apple hardware with real filesystem
-tests (spec §54) via the manual CI job (issue #12). macOS is **not** labeled
+tests via the manual CI job (issue #12). macOS is **not** labeled
 supported until that run lands. Progress is tracked in
 `docs/platform-macos.md`.

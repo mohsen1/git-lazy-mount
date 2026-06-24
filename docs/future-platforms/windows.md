@@ -1,6 +1,6 @@
-# Platform: Windows (ProjFS) — spec §42
+# Platform: Windows (ProjFS)
 
-> **Status — SCAFFOLD ONLY. Not implemented, not production-ready (spec §54).**
+> **Status — SCAFFOLD ONLY. Not implemented, not production-ready.**
 > Windows support is **not** claimed to work. `glm-fs-projfs::backend_available()`
 > returns `false` and `mount()` returns
 > `ErrorCode::FilesystemBackendUnavailable`. This document tracks what would be
@@ -27,7 +27,7 @@ its reconciliation and metadata requirements are genuinely different.
 ### Placeholders and ContentID
 
 ProjFS placeholders carry a provider-defined **ContentID**. It must identify the
-**logical content AND the filter context** — not just the path (spec §42). The
+**logical content AND the filter context** — not just the path. The
 same path can project different bytes depending on the active filter/attribute
 context (see CRLF below), so a path alone is an insufficient identity; a stale
 ContentID after a context change must be detectable so ProjFS re-requests content.
@@ -144,4 +144,4 @@ under `%LOCALAPPDATA%\git-lazy-mount` (`cache`, `state`, `config`, `data`).
 ## Tracking
 
 Real ProjFS behavior must be validated **on Windows** before it is labeled
-supported (spec §54). Record findings and progress in this file.
+supported. Record findings and progress in this file.

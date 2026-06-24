@@ -14,15 +14,15 @@ space and network.
 
 Give the overlay a dedicated entry kind,
 [`OverlayKind::BaseRef { oid, mode }`](../../crates/overlay/src/lib.rs), that
-**references an existing Git blob without storing any bytes** (spec §22, §53.10).
+**references an existing Git blob without storing any bytes**.
 A clean-file (or clean-subtree) rename writes a base-ref at the destination path:
 no content is materialized and **no blob fetch occurs**. Reads of a base-ref
 resolve the referenced blob lazily through the object provider; `stat` size also
 comes from the object, so the rename touches no content path.
 
-This is distinct from the inode table preserving identity across a rename
-(ADR-adjacent, spec §19): the inode table keeps the *handle* valid, while the
-base-ref keeps the *content* fetch-free.
+This is distinct from the inode table preserving identity across a rename: the
+inode table keeps the *handle* valid, while the base-ref keeps the *content*
+fetch-free.
 
 ## Consequences
 

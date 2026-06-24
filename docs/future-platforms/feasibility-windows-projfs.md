@@ -1,13 +1,13 @@
 # Feasibility: Windows ProjFS
 
 **Question.** Can the projection run on Windows Projected File System, and what
-is required (spec §5.5, §42)?
+is required?
 
 ## Status
 
 **Not implemented**, and real ProjFS behavior is **not testable in this
 environment** (no Windows host with ProjFS). `glm-fs-projfs` is a documented
-scaffold. Windows is explicitly **not** production-ready (spec §54). ProjFS is a
+scaffold. Windows is explicitly **not** production-ready. ProjFS is a
 **distinct architecture** — not "FUSE with Windows callbacks" — and is treated
 as such.
 
@@ -39,6 +39,6 @@ backend-logic level even though no kernel projection is mounted.
 
 ## Decision
 
-Defer ProjFS until it can be validated on Windows with real filesystem tests
-(spec §54). The shared logic (and Git interop) is exercised on Windows CI today;
+Defer ProjFS until it can be validated on Windows with real filesystem tests.
+The shared logic (and Git interop) is exercised on Windows CI today;
 the ProjFS bridge is future work tracked in `docs/platform-windows.md`.

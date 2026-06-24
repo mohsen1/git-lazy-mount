@@ -1,8 +1,7 @@
 # Feasibility: missing-object fetching
 
 **Question.** Can we serve filesystem reads from a partial clone while
-guaranteeing that a read never triggers an *implicit* network fetch (spec §5.3,
-§3.13)?
+guaranteeing that a read never triggers an *implicit* network fetch?
 
 ## Experiment
 
@@ -35,7 +34,7 @@ A one-shot `git cat-file -e <oid>` with `NO_LAZY_FETCH=1` is **graceful**
 * Coalescing was verified: **100 concurrent reads of one missing blob ⇒ exactly
   one fetch** (`object-provider` integration test), with the other callers
   waiting on a condvar. Distinct objects batch into one fetch invocation.
-* Locks are released before any fetch/subprocess (spec §3.19).
+* Locks are released before any fetch/subprocess.
 
 ## Status
 
