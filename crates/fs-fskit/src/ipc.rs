@@ -1,10 +1,14 @@
-//! Daemon-side handler for the per-inode FS operations (ADR 0008).
+//! Daemon-side handler + framed transport for the per-inode FS operations
+//! (ADR 0008).
 //!
 //! The sandboxed macOS FSKit extension forwards each `FSVolume` callback to the
-//! unsandboxed daemon; this maps one [`glm_ipc::fs::FsRequest`] onto [`FskitOps`]
-//! and produces an [`glm_ipc::fs::FsResponse`]. It is the same logic whether
-//! invoked over the socket (production) or in-process (these tests) — keeping the
-//! transport an orthogonal concern.
+//! unsandboxed daemon over a local socket; [`FskitOps::serve_ipc`] maps one
+//! [`glm_ipc::fs::FsRequest`] onto the engine and produces an
+//! [`glm_ipc::fs::FsResponse`], and [`serve_fs_connection`] runs the framed
+//! request/response loop over any stream. The same logic serves a real socket
+//! (production) or an in-process pair (tests) — the transport is orthogonal.
+
+use std::io::{self, Read, Write};
 
 use glm_fs_common::FileAttr;
 use glm_ipc::fs::{FsAttr, FsEntry, FsKind, FsRequest, FsResponse};
@@ -126,6 +130,50 @@ impl FskitOps {
             }
         }
     }
+}
+
+/// Write a length-prefixed frame (`u32` little-endian length + body).
+fn write_frame<W: Write>(w: &mut W, body: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(body.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame exceeds u32"))?;
+    w.write_all(&len.to_le_bytes())?;
+    w.write_all(body)?;
+    w.flush()
+}
+
+/// Read one length-prefixed frame; `Ok(None)` on a clean end-of-stream.
+fn read_frame<R: Read>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
+    let mut len = [0u8; 4];
+    match r.read_exact(&mut len) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+    let mut body = vec![0u8; u32::from_le_bytes(len) as usize];
+    r.read_exact(&mut body)?;
+    Ok(Some(body))
+}
+
+/// Serve framed FS-op requests for one connection until end-of-stream (ADR
+/// 0008): one length-prefixed JSON [`FsRequest`] in, one [`FsResponse`] out, via
+/// [`FskitOps::serve_ipc`]. The daemon calls this with an accepted socket from
+/// the sandboxed extension. Engine errors are encoded in-band as
+/// [`FsResponse::Err`]; only transport I/O failures (or a malformed frame) are
+/// returned here.
+pub fn serve_fs_connection<R: Read, W: Write>(
+    ops: &FskitOps,
+    reader: &mut R,
+    writer: &mut W,
+) -> io::Result<()> {
+    while let Some(frame) = read_frame(reader)? {
+        let req: FsRequest = serde_json::from_slice(&frame)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let resp = ops.serve_ipc(&req);
+        let body =
+            serde_json::to_vec(&resp).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_frame(writer, &body)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,5 +298,68 @@ mod tests {
             FsResponse::Err { errno, .. } => assert_eq!(errno, 2),
             other => panic!("expected Err, got {other:?}"),
         }
+    }
+
+    // Exercise the full framed transport over a real socket pair: the daemon
+    // side runs `serve_fs_connection`; the client side (the extension's role)
+    // frames requests and parses responses. Proves the wire path end-to-end
+    // without a kernel mount.
+    #[cfg(unix)]
+    #[test]
+    fn fs_ops_round_trip_over_a_socket() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::thread;
+
+        let (_t, _r, ops) = ops_with(&[("a.txt", b"hello\n")]);
+        let (mut client, server) = UnixStream::pair().unwrap();
+
+        let handle = thread::spawn(move || {
+            let mut writer = server;
+            let mut reader = writer.try_clone().unwrap();
+            super::serve_fs_connection(&ops, &mut reader, &mut writer).unwrap();
+        });
+
+        fn call(stream: &mut UnixStream, req: &FsRequest) -> FsResponse {
+            let body = serde_json::to_vec(req).unwrap();
+            stream
+                .write_all(&(body.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+            let mut len = [0u8; 4];
+            stream.read_exact(&mut len).unwrap();
+            let mut buf = vec![0u8; u32::from_le_bytes(len) as usize];
+            stream.read_exact(&mut buf).unwrap();
+            serde_json::from_slice(&buf).unwrap()
+        }
+
+        let ino = match call(
+            &mut client,
+            &FsRequest::Lookup {
+                parent: ROOT,
+                name: b"a.txt".to_vec(),
+            },
+        ) {
+            FsResponse::Attr(a) => {
+                assert_eq!(a.size, 6);
+                a.ino
+            }
+            other => panic!("expected Attr, got {other:?}"),
+        };
+        match call(
+            &mut client,
+            &FsRequest::Read {
+                ino,
+                offset: 0,
+                size: 64,
+            },
+        ) {
+            FsResponse::Data(d) => assert_eq!(d, b"hello\n"),
+            other => panic!("expected Data, got {other:?}"),
+        }
+
+        drop(client); // EOF → serve loop returns Ok
+        handle.join().unwrap();
     }
 }
