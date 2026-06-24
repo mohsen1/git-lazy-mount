@@ -18,6 +18,7 @@ members = [
     "crates/projection",
     "crates/fs-common",
     "crates/fs-fuse",
+    "crates/fuse",
     "crates/fs-fskit",
     "crates/fskit-ffi",
     "crates/fs-projfs",
@@ -53,6 +54,7 @@ glm-ipc = { path = "crates/ipc" }
 glm-projection = { path = "crates/projection" }
 glm-fs-common = { path = "crates/fs-common" }
 glm-fs-fuse = { path = "crates/fs-fuse" }
+glm-fuse = { path = "crates/fuse" }
 glm-fs-fskit = { path = "crates/fs-fskit" }
 glm-daemon = { path = "crates/daemon" }
 glm-testkit = { path = "crates/testkit" }

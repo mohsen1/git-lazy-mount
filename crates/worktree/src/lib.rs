@@ -89,6 +89,9 @@ pub struct Projection {
     gitfile: Vec<u8>,
     /// Content-addressed cache directory for materialized blob bytes (§20.2).
     cache_dir: PathBuf,
+    /// Count of content hydrations (cache-miss blob materializations) — the
+    /// signal behind the §38.2/§38.5 budget assertions (`ls` = 0, `cat` ≥ 1).
+    hydrations: AtomicU64,
     /// Whether `getattr` may fault an object in to learn its exact size (§21:
     /// metadata-triggered hydration, never a faked size). INTERIM: this uses
     /// git's lazy fetch; once the bounded fetch scheduler exists it must route
@@ -167,9 +170,22 @@ impl Projection {
             baseline_tree,
             gitfile,
             cache_dir,
+            hydrations: AtomicU64::new(0),
             metadata_fetch: true,
             lock: Mutex::new(()),
         })
+    }
+
+    /// Number of content hydrations so far (cache-miss blob materializations).
+    pub fn hydrations(&self) -> u64 {
+        self.hydrations.load(Ordering::Relaxed)
+    }
+
+    /// Release `n` kernel lookup references on `ino` (redesign.md §14 forget).
+    pub fn forget(&self, ino: u64, n: u64) {
+        if ino != ROOT_INO {
+            self.inodes.forget(ino, n);
+        }
     }
 
     /// The reserved root inode.
@@ -388,6 +404,7 @@ impl Projection {
             // TODO(§38.6): coalesce concurrent faults of the same oid through the
             // fetch scheduler so 100 readers cause one retrieval. For now each
             // first-open may fetch; the rename keeps the published file correct.
+            self.hydrations.fetch_add(1, Ordering::Relaxed);
             self.repo.store().blob_to_file(oid, true, &tmp)?;
             if let Err(e) = std::fs::rename(&tmp, &final_path) {
                 let _ = std::fs::remove_file(&tmp);

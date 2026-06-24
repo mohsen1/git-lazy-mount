@@ -1,0 +1,31 @@
+[package]
+name = "glm-fuse"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux FUSE mount of the transparent read-only projection, with real file handles (redesign.md §14–§19). The redesign's fuse crate."
+
+[lints]
+workspace = true
+
+[features]
+# The real libfuse-backed kernel mount. Opt-in (NOT default, excluded from the
+# cross-platform `check` job) because `fuser` links libfuse3 at build time.
+# Exercised by the Linux mount CI job (`cargo test -p glm-fuse --features fuse`).
+fuse = ["dep:fuser", "dep:libc"]
+
+[dependencies]
+glm-core.workspace = true
+glm-worktree.workspace = true
+glm-git-repo.workspace = true
+glm-fs-common.workspace = true
+tracing.workspace = true
+fuser = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
+
+[dev-dependencies]
+glm-git-repo.workspace = true
+glm-testkit.workspace = true
+tempfile.workspace = true

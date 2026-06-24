@@ -351,6 +351,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "glm-fuse"
+version = "0.1.0"
+dependencies = [
+ "fuser",
+ "glm-core",
+ "glm-fs-common",
+ "glm-git-repo",
+ "glm-testkit",
+ "glm-worktree",
+ "libc",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "glm-git-repo"
 version = "0.1.0"
 dependencies = [
