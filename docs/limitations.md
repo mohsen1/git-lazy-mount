@@ -1,7 +1,8 @@
 # Known limitations & tracked refinements
 
-Honest status of the transparent rebuild (design.md §44: do not claim what is
-not proven). What **works today** is in [`requirements-checklist.md`](requirements-checklist.md);
+What doesn't work, what's deferred, and why — honestly (we don't claim anything
+we haven't proven). What **does** work is in the [requirements
+checklist](requirements-checklist.md);
 this lists what is deliberately deferred, with the spec reference and the test
 that will be un-`#[ignore]`d when it lands.
 

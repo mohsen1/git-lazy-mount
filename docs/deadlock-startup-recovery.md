@@ -1,6 +1,6 @@
 # Git/FUSE deadlock analysis + startup/recovery state machines
 
-Authoritative spec: [`design.md`](../../design.md) §19 (deadlock), §10
+This area of the [specification](design.md) covers §19 (deadlock), §10
 (startup), §32.2 (recovery), §4.1 (lifecycle). Companion docs:
 [`architecture.md`](architecture.md), [`requirements-checklist.md`](requirements-checklist.md).
 

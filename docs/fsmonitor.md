@@ -1,6 +1,6 @@
 # Durable FSMonitor v2 protocol + hook multiplexing
 
-Authoritative spec: [`design.md`](../../design.md) §12 (FSMonitor v2),
+This area of the [specification](design.md) covers §12 (FSMonitor v2),
 §13 (observe gitdir without replacing Git), with supporting context from §10.5
 (config), §25 (real index), §32 (durability), §22 (synthetic metadata). This is
 the M0/M3 design doc (§45.1 item 5: "the FSMonitor durability protocol").

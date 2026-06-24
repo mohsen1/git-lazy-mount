@@ -1,6 +1,6 @@
 # Virtual working-tree model: baseline + overlay
 
-Authoritative spec: [`design.md`](../../design.md), primarily **§8** (the
+This area of the [specification](design.md) covers, primarily **§8** (the
 custom state represents *only* the virtual working tree), **§29** (rename
 semantics), **§30** (symlinks / hard links / special files), **§31** (raw
 repository paths). Cross-references: §7 (Git is authoritative), §25 (stock-Git

@@ -1,6 +1,6 @@
-# Design requirements checklist (Linux MVP)
+# Requirements checklist (Linux MVP)
 
-Living tracker for [`design.md`](../../design.md). Updated as items pass
+Living tracker of what's built and proven (against the [spec](design.md)). Updated as items pass
 through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 `[x]` = done + tested. Nothing is checked until proven by a mounted test.
 

@@ -3,7 +3,7 @@
 This is the design of `git-lazy-mount` — the authoritative specification the
 implementation is built and tested against. It targets **Linux only** (FUSE);
 macOS (FSKit) and Windows (ProjFS) are out of scope but possible, with notes
-under [`docs/design/future-platforms/`](docs/design/future-platforms/).
+under [`future-platforms/`](future-platforms/).
 
 The design is deliberately a clean one, not an incremental refactor: it does not
 carry a custom stage, custom branch state, a commit-adoption bridge, or a

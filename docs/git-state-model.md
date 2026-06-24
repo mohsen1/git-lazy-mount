@@ -1,6 +1,6 @@
 # Git state model: what Git owns, what the daemon caches
 
-Authoritative spec: [`design.md`](../../design.md), primarily **§7**
+This area of the [specification](design.md) covers, primarily **§7**
 (Git is authoritative for repository state) and **§25** (stock Git index
 behavior), with §8 (baseline+overlay), §2/§4.2/§4.3 (no second
 stage/branch/commit model), §13 (observe gitdir without replacing Git).

@@ -1,6 +1,6 @@
 # Object provider, fetch scheduler, filters + LFS, metadata/size
 
-Authoritative spec: [`design.md`](../../design.md) §20 (object provider),
+This area of the [specification](design.md) covers §20 (object provider),
 §21/§22 (metadata & size), §23 (filters/attributes), §24 (LFS). Supporting:
 §18/§19 (bounded I/O, deadlock), §34 (alternates), §35 (auth/offline), §38
 (hydration budgets). This doc specifies the **daemon-internal** object/content

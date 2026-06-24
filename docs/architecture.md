@@ -1,7 +1,9 @@
-# Design architecture — transparent, stock-Git, lazily hydrated working tree
+# How it works — architecture overview
 
-Authoritative spec: [`design.md`](../../design.md). This is the concise
-overview (§45.1). Detailed per-area docs live beside it.
+A tour of how `git-lazy-mount` turns a partial clone into a transparent working
+tree that stock `git` (and your editor, and your build) drive directly. The
+per-area deep-dives are linked from here; the full specification is
+[`design.md`](design.md).
 
 ## The thesis: transparency
 

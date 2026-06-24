@@ -1,6 +1,6 @@
 # Index + scalability feasibility (Profiles A–D)
 
-Authoritative spec: [`design.md`](../../design.md) §11 (the scalability gate),
+This area of the [specification](design.md) covers §11 (the scalability gate),
 §27 (checkout/switch/rebase eagerness), §38 (hydration budgets). Companion
 overview: [`architecture.md`](./architecture.md). This doc is the Milestone-0
 deliverable "index strategy comparison" (§42 M0, §45 item 9) and the design that
