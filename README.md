@@ -1,153 +1,118 @@
 # git-lazy-mount
 
-A **transactional, Git-backed virtual working copy** in Rust. It exposes a Git
-repository as a lazily populated, writable working tree: you see the whole
-logical tree, content is fetched only when touched, you edit through normal
-filesystem APIs (or the CLI), and you create **ordinary Git commits** that push
-through **ordinary Git remotes**. No custom server is required.
+A **transparent, lazily hydrated Git working tree** in Rust. One command replaces
+the initial `git clone`:
 
-```text
-Git object database and refs
-  + transactional workspace state
-  + writable copy-on-write overlay
-  + virtual filesystem projection
-  + Git interoperability adapter
+```bash
+git lazy-mount https://github.com/example/huge-repo ~/huge-repo
 ```
 
-> **Project status — honest summary.** An ambitious system (comparable to
-> Microsoft VFSForGit/Scalar and Meta EdenFS). Proven against real Git today: the
-> entire backend-independent engine and the native Git workflow, driven through a
-> working CLI and exercised **in CI against huge real repositories across many
-> Linux distros** (see [Proven results](#proven-results-in-ci-against-real-repositories)).
->
-> Kernel filesystem projection:
-> * **Linux FUSE — a real kernel mount.** Built behind the `fuse` feature and
->   validated in CI by an actual loopback mount: lazy hydration, enumeration,
->   writes, rename, and delete through the kernel.
-> * **macOS FSKit — fully built, Apple-blocked.** A signed Swift `FSVolume`
->   extension over the shared engine (via a Rust C-ABI bridge) that builds, signs,
->   installs, and **registers** on macOS 26 — but the on-device *mount* is blocked
->   by a confirmed **Apple OS bug** that breaks all third-party FSKit on macOS 26
->   (reproduces on Apple's own sample; [issue #19](../../issues/19)). Per spec
->   §54, macOS is **not** "supported" until a real FSKit mount succeeds.
-> * **Windows ProjFS** — still scaffold.
->
-> See [docs/limitations.md](docs/limitations.md) and the
-> [compatibility matrix](docs/git-compatibility.md). We do **not** claim platform
-> support that hasn't been demonstrated.
+After it returns, **your ordinary `git` and tools just work** — no wrapper, no
+aliases, no environment, no `git lazy-mount` workflow verbs:
 
-## What works today (verified by the test suite)
+```bash
+cd ~/huge-repo
+ls; cat README.md; $EDITOR src/main.rs
+git status; git add -p; git commit; git switch -c feature; git merge; git push
+cargo build; rg pattern
+```
 
-* **Lazy clone** with partial-clone filters (`blob:none`) — trees come down,
-  blobs do not (`git-store` integration tests).
-* **List & read** the tree from Git objects; reading one file fetches exactly
-  that object (CLI e2e + provider tests).
-* **Request coalescing**: 100 concurrent reads of one missing blob ⇒ **one**
-  fetch (object-provider test).
-* **Copy-on-write writes**: truncate-without-fetch, partial overwrite preserving
-  untouched bytes, clean-file rename **without fetching the blob**.
-* **Three-tree status** that is `O(changed paths)` and never writes objects or
-  fetches blobs.
-* **Stage → commit** producing an ordinary Git commit (unchanged subtrees
-  reused), **push** to a normal bare remote, with **compare-and-swap** that
-  detects a concurrently moved branch instead of clobbering it.
-* **Faithful filtering** (CRLF/`eol`) via Git's own plumbing with the correct
-  attribute source; symlinks; executable bit.
-* **Crash-safe operation log** with deterministic crash injection at every
-  persistence boundary.
+You see the whole logical tree; blob content is fetched only when a file is
+actually read. There is **one** stage — the real `$GIT_DIR/index` — and Git owns
+all of HEAD, refs, reflogs, commits, merges, and rebases. The result is
+**byte-for-byte identical to a normal checkout** (verified by a differential
+test). This is a ground-up rebuild specified in [`redesign.md`](redesign.md).
 
-## Proven results (in CI, against real repositories)
+## How it works
 
-* **A commit on an 80k-file repo in ~60 ms, fetching zero blobs.** On
-  microsoft/TypeScript (**81,369** files): lazy clone (`blob:none`, no checkout)
-  in **~1 s**, then edit → stage → commit in **~63 ms** with **0** objects
-  fetched. VCS operations cost O(what you touched), not O(repo size).
-  ([`lazy-mount-demo.yml`](.github/workflows/lazy-mount-demo.yml))
-* **End-to-end across a distro × repo × filter matrix.** A 27-scenario suite
-  (clone → read → edit → stage → commit → modify → delete → rename → branch →
-  diff → restore → reset → hydrate → fsck → doctor) runs in CI on **7 Linux
-  distro images** — Ubuntu, Fedora (40 & 41), Rocky, **Alpine (musl)**, Arch,
-  openSUSE — against **TypeScript, golang/go, nodejs/node,
-  kubernetes/kubernetes**, under `blob:none` and `blob:limit` filters.
-  ([`e2e-matrix.yml`](.github/workflows/e2e-matrix.yml),
-  [`e2e-lazy-mount.sh`](scripts/e2e-lazy-mount.sh))
-* **A real Linux FUSE kernel mount.** `cargo test -p glm-fs-fuse --features fuse`
-  performs an actual loopback mount and drives it with plain `std::fs` — lazy
-  hydration, `readdir`, writes, rename, delete — green in the `linux-mount` CI
-  job.
+```text
+git lazy-mount <url> <path>
+  ├─ partial clone (--filter=blob:none --no-checkout --separate-git-dir)
+  │    → a native admin gitdir outside the mount
+  ├─ a FUSE mount at <path> projecting:
+  │    • a synthetic, protected `.git` gitfile → the admin gitdir
+  │    • the HEAD tree (baseline), lazily hydrated, + a durable writable overlay
+  └─ core.worktree = <path>, so stock git discovers and operates on the mount
+```
+
+Stock `git` reads `<path>/.git`, follows it to the admin gitdir, and treats
+`<path>` as its working tree — using its normal index, locks, hooks, and refs.
+
+## Status — honest summary
+
+Built and **proven through real `/dev/fuse` mounts in CI** (the `redesign linux
+mount` job), Linux-first. ~28 of the 30 Linux-MVP criteria (`redesign.md` §43)
+and Experiments A/C/D/E/F are validated by mounted tests; every real-mount test
+is green with zero ignores. Full status: [`docs/redesign/requirements-checklist.md`](docs/redesign/requirements-checklist.md),
+[`docs/redesign/compatibility.md`](docs/redesign/compatibility.md),
+[`docs/redesign/limitations.md`](docs/redesign/limitations.md).
+
+**Proven (real mount):**
+
+- `git lazy-mount <url> <path>` clones, mounts, validates, and returns; the
+  synthetic `.git` makes `git rev-parse --show-toplevel` resolve to the mount.
+- `status` / `diff` / `add` / `add -p` / `commit` / `commit --amend`,
+  `switch` / `merge` (with real index conflict stages) / `rebase` (+ `--abort`),
+  `fetch` / `push`, `stash`, `rm --cached`, `reset --mixed`/`--hard` — all stock
+  git, all correct, **identical to a normal checkout** (`§40.1` differential test).
+- Hydration budgets: `ls` fetches 0 blobs; one `cat` fetches one blob; 100
+  concurrent reads of one missing blob ⇒ one fetch (single-flight); `O_TRUNC`
+  fetches no old blob; a repeat clean `status` fetches 0 blobs.
+- Filesystem semantics: real file handles, copy-on-write, open-then-unlink,
+  rename-while-open, editor atomic save, empty-dir survives remount, durable
+  overlay (dirty state survives unmount/remount). Pathological/invalid-UTF-8
+  paths round-trip.
+
+**Not yet (tracked in `limitations.md`):** the FSMonitor first-status bootstrap
+(repeat status is already 0-blob; the *first* status is eager), crash-injection /
+multi-GiB / 100k-file scale stress, and **macOS / Windows** (separate projects on
+the transparent stack, after Linux — `redesign.md` §42 M8). We do **not** claim
+platform support that hasn't been demonstrated by a real mount.
 
 ## Install / build
 
 ```bash
-cargo build --release          # MSRV 1.85; uses the system `git` (>= 2.36)
-# the executable is named `git-lazy-mount`, so Git exposes it as `git lazy-mount`
+# Linux (real mount): needs libfuse3 + the system git (>= 2.36).
+cargo build --release -p glm-cli --features fuse   # produces `git-lazy-mount`
 ```
+
+Without `--features fuse` the binary builds cross-platform but reports that mount
+support was not compiled in. MSRV 1.85.
 
 ## Usage
 
 ```bash
-git lazy-mount clone https://github.com/example/huge-repo ~/work/huge-repo --branch main
-cd ~/work/huge-repo
+git lazy-mount https://host/huge-repo ~/huge-repo   # clone + mount + return
+cd ~/huge-repo                                       # then: plain git, no wrapper
 
-git lazy-mount ls                       # list the root from Git trees
-git lazy-mount ls src/compiler          # list a nested directory
-git lazy-mount cat src/compiler/checker.rs   # fetch + read one file
-
-# edit through the projected filesystem (FUSE backend), or headlessly:
-echo 'fix' | git lazy-mount debug write src/compiler/checker.rs
-
-git lazy-mount status
-git lazy-mount add src/compiler/checker.rs
-git lazy-mount commit -m "Fix checker"
-git lazy-mount push
+git lazy-mount unmount ~/huge-repo                   # lifecycle
+git lazy-mount doctor  ~/huge-repo [--json]          # diagnostics
 ```
 
-All inspection commands accept `--json` / `--json-lines` (stable envelopes with
-`schema_version`, `workspace_id`, `operation_id`, `warnings`).
+There is deliberately **no** `git lazy-mount add/commit/switch/push/git --` —
+their presence would mean transparency had failed (`redesign.md` §1).
 
 ## Workspace layout
 
-```
-crates/
-  core/            types: object ids, RepoPath, modes, state model, errors
-  platform/        per-OS data roots; credential-free repo identity
-  git-store/       authoritative `git` CLI adapter (fetch, cat-file, refs, CAS)
-  object-provider/ residency authority: coalescing, batching, policy, metrics
-  metadata/        tree cache + exact/manifest stat policy
-  overlay/         copy-on-write store with tombstones + base-refs
-  stage/           persistent staged delta (third tree)
-  oplog/           append-only operation log + transactions + recovery
-  filters/         filter modes, trust model, cache keys
-  workspace/       transactional engine: status, commit, leases, switch
-  fs-common/       stable inode map + neutral attributes
-  fs-fuse/         Linux FUSE backend: a real kernel mount via libfuse behind the
-                   `fuse` feature, over the shared FuseOps (CI-validated)
-  fs-fskit/        macOS FSKit backend (FskitOps) + a signed Swift FSVolume
-                   extension under extension/ that builds/signs/registers
-                   on-device (mount blocked by an Apple OS bug, #19)
-  fskit-ffi/       C-ABI bridge that the Swift FSKit extension links
-  fs-projfs/       Windows ProjFS backend scaffold
-  fsmonitor/       changed-path journal + sync barrier
-  ipc/             versioned daemon control protocol
-  projection/      projection trait + in-memory test backend
-  daemon/          mount registry + controller
-  testkit/         real ephemeral Git remotes for tests
-  cli/             the `git-lazy-mount` executable
-docs/              architecture, state model, feasibility, ADRs, limitations
+Per mount, a native admin directory lives outside the mount:
+
+```text
+~/.local/share/git-lazy-mount/workspaces/<id>/
+  git/        real partial-clone admin dir (NOT inside FUSE)
+  cache/      content-addressed materialized blobs
+  overlay/    durable writable working-tree changes
 ```
 
-## Documentation
+## Repository
 
-Start with [docs/architecture.md](docs/architecture.md). Key reading:
-[state-model](docs/state-model.md), [operation-log](docs/operation-log.md),
-[git-object-fetching](docs/git-object-fetching.md),
-[metadata-limitations](docs/metadata-limitations.md),
-[git-compatibility](docs/git-compatibility.md),
-[filters-and-lfs](docs/filters-and-lfs.md), [security](docs/security.md),
-[failure-recovery](docs/failure-recovery.md), [performance](docs/performance.md),
-the platform notes, and [limitations](docs/limitations.md). Phase-0 findings are
-in [docs/feasibility/](docs/feasibility/); decisions in [docs/adr/](docs/adr/).
+A focused Rust workspace; the transparent stack is `git-repo` (admin clone +
+index), `worktree` (baseline + overlay projection), `fuse` (the kernel mount),
+and `cli` (the `git-lazy-mount` binary), over `core` / `git-store` /
+`object-provider` / `fs-common`. Design docs: [`docs/redesign/`](docs/redesign/).
 
-## License
-
-Dual-licensed under MIT or Apache-2.0.
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --workspace                       # backend-independent suite
+cargo test -p glm-fuse -p glm-cli --features fuse   # real mount (Linux + libfuse3)
+```

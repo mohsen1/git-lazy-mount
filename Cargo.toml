@@ -19,10 +19,7 @@ members = [
     "crates/fs-common",
     "crates/fs-fuse",
     "crates/fuse",
-    "crates/fs-fskit",
-    "crates/fskit-ffi",
     "crates/fs-projfs",
-    "crates/daemon",
     "crates/testkit",
     "crates/cli",
 ]
@@ -55,8 +52,6 @@ glm-projection = { path = "crates/projection" }
 glm-fs-common = { path = "crates/fs-common" }
 glm-fs-fuse = { path = "crates/fs-fuse" }
 glm-fuse = { path = "crates/fuse" }
-glm-fs-fskit = { path = "crates/fs-fskit" }
-glm-daemon = { path = "crates/daemon" }
 glm-testkit = { path = "crates/testkit" }
 
 # Third-party

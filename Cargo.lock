@@ -221,14 +221,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "glm-core",
- "glm-daemon",
- "glm-filters",
- "glm-fs-fskit",
- "glm-git-store",
- "glm-object-provider",
- "glm-platform",
+ "glm-fuse",
+ "glm-git-repo",
  "glm-testkit",
- "glm-workspace",
+ "glm-worktree",
  "serde",
  "serde_json",
  "tempfile",
@@ -244,24 +240,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "glm-daemon"
-version = "0.1.0"
-dependencies = [
- "glm-core",
- "glm-git-store",
- "glm-object-provider",
- "glm-platform",
- "glm-testkit",
- "glm-workspace",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -282,23 +260,6 @@ version = "0.1.0"
 dependencies = [
  "glm-core",
  "glm-workspace",
-]
-
-[[package]]
-name = "glm-fs-fskit"
-version = "0.1.0"
-dependencies = [
- "glm-core",
- "glm-fs-common",
- "glm-git-store",
- "glm-ipc",
- "glm-object-provider",
- "glm-platform",
- "glm-testkit",
- "glm-workspace",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -323,24 +284,6 @@ dependencies = [
  "glm-core",
  "glm-fs-common",
  "glm-workspace",
-]
-
-[[package]]
-name = "glm-fskit-ffi"
-version = "0.1.0"
-dependencies = [
- "glm-core",
- "glm-daemon",
- "glm-fs-common",
- "glm-fs-fskit",
- "glm-git-store",
- "glm-object-provider",
- "glm-platform",
- "glm-testkit",
- "glm-workspace",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
