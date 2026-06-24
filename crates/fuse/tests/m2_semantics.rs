@@ -11,7 +11,7 @@
 //! the crate's PUBLIC API only: `glm_fuse::{spawn_mount, BackgroundMount}` plus
 //! the `glm_worktree::Projection` / `glm_git_repo::AdminRepo` it is built from.
 //!
-//! Coverage (redesign.md):
+//! Coverage (design.md):
 //! * §17.4 open-then-unlink — handle survives namespace removal
 //! * §17.5 / §28 rename-while-open — atomic editor save, fd identity preserved
 //! * §4.9 empty untracked dir survives unmount → remount (same overlay/cache)

@@ -1,4 +1,4 @@
-//! The transparent `git-lazy-mount` executable (redesign.md §1, §10, §43).
+//! The transparent `git-lazy-mount` executable (design.md §1, §10, §43).
 //!
 //! The primary form replaces the initial `git clone`:
 //!
@@ -108,7 +108,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Deterministic per-mountpoint workspace layout (redesign.md §6). Both the
+/// Deterministic per-mountpoint workspace layout (design.md §6). Both the
 /// parent (clone) and the detached serve child derive the same paths.
 fn workspace_paths(mountpoint: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let abs = std::fs::canonicalize(mountpoint).unwrap_or_else(|_| mountpoint.to_path_buf());

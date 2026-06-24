@@ -1,5 +1,5 @@
 //! More stock-git workflows through the transparent mount, focused on the
-//! index-only-vs-working-tree separation the redesign insists on (§8.1/§25.1):
+//! index-only-vs-working-tree separation the design insists on (§8.1/§25.1):
 //! `git rm --cached` and `git reset --mixed` change the index but must NOT
 //! change the projected working-tree bytes. Plus amend (criterion 12) and stash
 //! (criterion 18). Real `/dev/fuse` mount — runs under `--features fuse`.

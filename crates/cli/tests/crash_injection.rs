@@ -1,4 +1,4 @@
-//! Crash-injection durability (redesign.md §40.5, criterion 27): SIGKILL the
+//! Crash-injection durability (design.md §40.5, criterion 27): SIGKILL the
 //! serving process mid-session and prove no acknowledged user write is lost — the
 //! durable overlay (atomic sidecars + content files) survives an ungraceful
 //! daemon death. Real `/dev/fuse` mount; runs under `--features fuse`.
