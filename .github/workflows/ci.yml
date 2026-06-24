@@ -38,6 +38,8 @@ jobs:
   linux-mount:
     name: linux mount (/dev/fuse)
     runs-on: ubuntu-latest
+    # A wedged mount must fail fast, not stall the runner for hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,11 +54,15 @@ jobs:
         run: |
           cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
           cargo clippy -p glm-cli --all-targets --features fuse -- -D warnings
+      # Real-mount tests run SERIALLY (--test-threads=1): each spawns its own FUSE
+      # mount + git subprocesses, and the CLI tests detach / SIGKILL serve daemons.
+      # Those contend for /dev/fuse and do not isolate cleanly under the runner's
+      # parallel test scheduling (a mount/unmount can wedge), so we serialize them.
       - name: real /dev/fuse mount + transparent git stack + one-command CLI
         run: |
           cargo test -p glm-worktree -p glm-git-repo
-          cargo test -p glm-fuse --features fuse
-          cargo test -p glm-cli --features fuse
+          cargo test -p glm-fuse --features fuse -- --test-threads=1
+          cargo test -p glm-cli --features fuse -- --test-threads=1
 
   msrv:
     name: msrv build
