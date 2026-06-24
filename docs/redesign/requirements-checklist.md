@@ -76,11 +76,11 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children) — *CI (small scale)*
 - [ ] clean `git status` (post-bootstrap): 0 blobs, 0 smudge, no full stat *(M3)*
 - [x] `cat path`: ≤ the one required blob + its attr/filter metadata — *CI*
-- [ ] 100 concurrent reads of one missing file → 1 retrieval
-- [ ] `O_TRUNC` open: no old-blob fetch
-- [ ] 4 KiB writes to a 1 GiB file: no full read/rewrite, no GiB allocation
-- [ ] clean rename of unmaterialized file: 0 blob fetches
-- [ ] `git log`/`branch`/`tag`/`status`: no working-blob hydration
+- [x] 100 concurrent reads of one missing file → 1 retrieval — *real mount (`m2_semantics`, single-flight)*
+- [x] `O_TRUNC` open: no old-blob fetch — *real mount (`m2_semantics`, atomic_o_trunc)*
+- [~] 4 KiB writes to a large file: no full rewrite (4 MiB proven `m2_semantics`); 1 GiB no-GiB-alloc pending
+- [x] clean rename of unmaterialized file: 0 blob fetches — *real mount (`m4_m5`/unit)*
+- [x] `git log`/`branch`/`tag`/`status`: no working-blob hydration — *real mount (inspection)*
 
 ## Process (this goal)
 

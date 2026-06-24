@@ -23,8 +23,10 @@ pub mod journal;
 pub mod overlay;
 pub use overlay::{Overlay, OverlayEntry};
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use glm_fs_common::{InodeTable, ROOT_INO};
@@ -129,6 +131,10 @@ pub struct Projection {
     /// git's lazy fetch; once the bounded fetch scheduler exists it must route
     /// through it so that "only the scheduler causes network" holds (§18–§20).
     metadata_fetch: bool,
+    /// Single-flight locks per object id so N concurrent faults of one missing
+    /// blob cause exactly one retrieval (§38.6/§20.1) — the first holder fetches,
+    /// the rest wait and reuse the published cache file.
+    inflight: Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>,
     // No global lock: the InodeTable, Overlay, and the content cache are each
     // internally synchronized, so callbacks never serialize behind a coarse mutex
     // held across a blocking `git` subprocess (§18/§19).
@@ -219,6 +225,7 @@ impl Projection {
             cache_dir,
             hydrations: AtomicU64::new(0),
             metadata_fetch: true,
+            inflight: Mutex::new(HashMap::new()),
         })
     }
 
@@ -546,25 +553,32 @@ impl Projection {
     /// path (used to seed a copy-up; §17.2).
     fn materialize_path(&self, oid: &ObjectId) -> Result<PathBuf> {
         let final_path = self.cache_dir.join(oid.to_hex());
-        if !final_path.exists() {
-            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-            let tmp = self
-                .cache_dir
-                .join(format!(".{}.{}.tmp", oid.to_hex(), seq));
-            // TODO(§38.6): coalesce concurrent faults of the same oid through the
-            // fetch scheduler so 100 readers cause one retrieval. For now each
-            // first-open may fetch; the rename keeps the published file correct.
-            self.hydrations.fetch_add(1, Ordering::Relaxed);
-            self.repo.store().blob_to_file(oid, true, &tmp)?;
-            if let Err(e) = std::fs::rename(&tmp, &final_path) {
-                let _ = std::fs::remove_file(&tmp);
-                // A racing open may have published it already.
-                if !final_path.exists() {
-                    return Err(Error::new(
-                        ErrorCode::Internal,
-                        format!("publish cache file: {e}"),
-                    ));
-                }
+        if final_path.exists() {
+            return Ok(final_path); // fast path: already published
+        }
+        // Single-flight per oid (§38.6/§20.1): the first caller fetches under the
+        // per-oid lock; concurrent callers block, then find the published file.
+        let lock = {
+            let mut map = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(map.entry(oid.clone()).or_default())
+        };
+        let _g = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if final_path.exists() {
+            return Ok(final_path); // another caller published it while we waited
+        }
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .cache_dir
+            .join(format!(".{}.{}.tmp", oid.to_hex(), seq));
+        self.hydrations.fetch_add(1, Ordering::Relaxed);
+        self.repo.store().blob_to_file(oid, true, &tmp)?;
+        if let Err(e) = std::fs::rename(&tmp, &final_path) {
+            let _ = std::fs::remove_file(&tmp);
+            if !final_path.exists() {
+                return Err(Error::new(
+                    ErrorCode::Internal,
+                    format!("publish cache file: {e}"),
+                ));
             }
         }
         Ok(final_path)

@@ -315,7 +315,6 @@ fn otrunc_open_fetches_no_old_blob() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore] // unignore when §38.6 coalescing lands
 fn hundred_concurrent_reads_coalesce_to_one_retrieval() {
     let body: &[u8] = b"shared baseline blob read by a hundred threads at once\n";
     let fx = Fixture::seed(&[("shared.bin", body)]);
