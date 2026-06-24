@@ -15,7 +15,7 @@ measured it says so.
 | `rev-parse --show-toplevel` | correct | fully lazy | `m3_git`/mount |
 | `ls` / readdir | correct | fully lazy (0 blobs) | `experiment_a_b_c` |
 | `cat` / read | correct | bounded (1 blob, coalesced) | `experiment_a_b_c`, `m2_semantics` |
-| `status` | correct | **potentially eager** (no FSMonitor yet; reads each file) | `m3_git` |
+| `status` | correct | first eager (reads each file), **repeat 0-blob** (git index refresh) | `m3_git`, `status_hydration` |
 | `diff` / `diff --cached` | correct | bounded | `m3_git`, `git_extra` |
 | `add` / `add -A` / `add -u` | correct | bounded | `m3_git` |
 | `add -p` | correct | bounded | `git_extra` |

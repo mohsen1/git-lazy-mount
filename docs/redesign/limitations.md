@@ -20,7 +20,7 @@ that will be un-`#[ignore]`d when it lands.
 
 | # | Area | Status | Spec |
 |---|------|--------|------|
-| P1 | **FSMonitor v2 wiring** — the durable token + change journal (`glm-worktree::journal`) and the FSMonitor-valid index bootstrap are not yet wired to `core.fsmonitor` + a hook, so clean `git status` is *correct but eager* (reads each file) rather than 0-blob. | journal done; hook/serve/feed/bootstrap pending | §12, §38.4 |
+| P1 | **FSMonitor v2 wiring** — the durable token + change journal (`glm-worktree::journal`) and the FSMonitor-valid index bootstrap are not yet wired to `core.fsmonitor`. **Measured:** a *repeat* clean `git status` already faults 0 blobs (git's index refresh), so FSMonitor's remaining value is making the *first* status lazy (§12.2 bootstrap) and avoiding the full stat scan on huge repos. | journal done; wiring = optimization | §12, §38.4 |
 | P2 | **Bounded executor split** — one bounded pool today; §18 wants separate fast-metadata vs object-IO pools. | deferred | §18 |
 | P3 | **Switch/rebase eagerness measurement** — branch transitions work but write every changed file into the overlay; the eagerness is not yet *measured/reported*. | deferred | §27 |
 
