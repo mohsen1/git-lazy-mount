@@ -14,17 +14,27 @@ Git object database and refs
   + Git interoperability adapter
 ```
 
-> **Project status — honest summary.** This is an ambitious system (comparable
-> to Microsoft VFSForGit/Scalar and Meta EdenFS). What is implemented and
-> **proven by tests against real Git** today: the entire backend-independent
-> engine (Milestone 1) and most of the native Git workflow (Milestone 4),
-> driven through a working CLI. The kernel filesystem projection (FUSE/FSKit/
-> ProjFS) is **backend logic + scaffold**: the callback logic is implemented and
-> tested, but the libfuse/FSKit/ProjFS FFI adapters that perform a real kernel
-> mount are not built in this environment (no libfuse) and are the next step.
+> **Project status — honest summary.** An ambitious system (comparable to
+> Microsoft VFSForGit/Scalar and Meta EdenFS). Proven against real Git today: the
+> entire backend-independent engine and the native Git workflow, driven through a
+> working CLI and exercised **in CI against huge real repositories across many
+> Linux distros** (see [Proven results](#proven-results-in-ci-against-real-repositories)).
+>
+> Kernel filesystem projection:
+> * **Linux FUSE — a real kernel mount.** Built behind the `fuse` feature and
+>   validated in CI by an actual loopback mount: lazy hydration, enumeration,
+>   writes, rename, and delete through the kernel.
+> * **macOS FSKit — fully built, Apple-blocked.** A signed Swift `FSVolume`
+>   extension over the shared engine (via a Rust C-ABI bridge) that builds, signs,
+>   installs, and **registers** on macOS 26 — but the on-device *mount* is blocked
+>   by a confirmed **Apple OS bug** that breaks all third-party FSKit on macOS 26
+>   (reproduces on Apple's own sample; [issue #19](../../issues/19)). Per spec
+>   §54, macOS is **not** "supported" until a real FSKit mount succeeds.
+> * **Windows ProjFS** — still scaffold.
+>
 > See [docs/limitations.md](docs/limitations.md) and the
-> [compatibility matrix](docs/git-compatibility.md). We do **not** claim
-> transparency or platform support that has not been demonstrated.
+> [compatibility matrix](docs/git-compatibility.md). We do **not** claim platform
+> support that hasn't been demonstrated.
 
 ## What works today (verified by the test suite)
 
@@ -45,6 +55,26 @@ Git object database and refs
   attribute source; symlinks; executable bit.
 * **Crash-safe operation log** with deterministic crash injection at every
   persistence boundary.
+
+## Proven results (in CI, against real repositories)
+
+* **A commit on an 80k-file repo in ~60 ms, fetching zero blobs.** On
+  microsoft/TypeScript (**81,369** files): lazy clone (`blob:none`, no checkout)
+  in **~1 s**, then edit → stage → commit in **~63 ms** with **0** objects
+  fetched. VCS operations cost O(what you touched), not O(repo size).
+  ([`lazy-mount-demo.yml`](.github/workflows/lazy-mount-demo.yml))
+* **End-to-end across a distro × repo × filter matrix.** A 27-scenario suite
+  (clone → read → edit → stage → commit → modify → delete → rename → branch →
+  diff → restore → reset → hydrate → fsck → doctor) runs in CI on **7 Linux
+  distro images** — Ubuntu, Fedora (40 & 41), Rocky, **Alpine (musl)**, Arch,
+  openSUSE — against **TypeScript, golang/go, nodejs/node,
+  kubernetes/kubernetes**, under `blob:none` and `blob:limit` filters.
+  ([`e2e-matrix.yml`](.github/workflows/e2e-matrix.yml),
+  [`e2e-lazy-mount.sh`](scripts/e2e-lazy-mount.sh))
+* **A real Linux FUSE kernel mount.** `cargo test -p glm-fs-fuse --features fuse`
+  performs an actual loopback mount and drives it with plain `std::fs` — lazy
+  hydration, `readdir`, writes, rename, delete — green in the `linux-mount` CI
+  job.
 
 ## Install / build
 
@@ -90,10 +120,12 @@ crates/
   filters/         filter modes, trust model, cache keys
   workspace/       transactional engine: status, commit, leases, switch
   fs-common/       stable inode map + neutral attributes
-  fs-fuse/         Linux FUSE backend logic (FuseOps)
-  fs-fskit/        macOS FSKit backend: bridge, capability detection, APFS
-                   collisions, metadata policy, coordination, recovery (FSVolume
-                   adapter is on-device, see docs/platform-macos.md)
+  fs-fuse/         Linux FUSE backend: a real kernel mount via libfuse behind the
+                   `fuse` feature, over the shared FuseOps (CI-validated)
+  fs-fskit/        macOS FSKit backend (FskitOps) + a signed Swift FSVolume
+                   extension under extension/ that builds/signs/registers
+                   on-device (mount blocked by an Apple OS bug, #19)
+  fskit-ffi/       C-ABI bridge that the Swift FSKit extension links
   fs-projfs/       Windows ProjFS backend scaffold
   fsmonitor/       changed-path journal + sync barrier
   ipc/             versioned daemon control protocol
