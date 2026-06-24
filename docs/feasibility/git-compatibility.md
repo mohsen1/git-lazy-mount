@@ -1,7 +1,7 @@
 # Feasibility: stock-Git compatibility
 
 **Question.** What stock-Git behavior can we rely on, and which commands are
-safe against a virtual workspace (spec §5.4)?
+safe against a virtual workspace?
 
 ## Findings
 
@@ -26,7 +26,7 @@ safe against a virtual workspace (spec §5.4)?
 
 ## Command classification (initial)
 
-Based on these findings and spec §37, commands are classified as:
+Based on these findings, commands are classified as:
 
 * **native-safe / read-only-safe today:** the lazy-mount `status/diff/add/
   unstage/restore/commit/push/branch-lease` plus read-only `log/show/rev-parse/

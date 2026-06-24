@@ -1,7 +1,7 @@
 # Feasibility: file metadata and the exact-size problem
 
 **Question.** Can `getattr`/`stat` return a correct size without fetching
-content (spec §5.1)?
+content?
 
 ## Finding
 
@@ -46,7 +46,7 @@ matches a checkout. Tests pin `core.autocrlf=false` for determinism.
   input. *Designed, not implemented.*
 * Clean unmaterialized entries use stable **synthetic** metadata
   (`glm-fs-common::FileAttr`); a synthetic timestamp mismatch never marks a file
-  dirty (spec §28).
+  dirty.
 
 ## Status
 

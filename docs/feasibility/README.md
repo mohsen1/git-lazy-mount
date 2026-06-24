@@ -1,6 +1,6 @@
 # Phase 0 — feasibility experiments
 
-This directory records the mandatory Phase-0 findings (spec §5). Each report
+This directory records the mandatory Phase-0 findings. Each report
 states the question, what was tested, the measured result, and the design
 decision it drove. These are **results**, not plans — the experiments were run
 against real `git` (2.43 locally, 2.54 on CI) and the findings are reflected in
@@ -16,5 +16,5 @@ the implementation and its tests.
 | [macos-fskit.md](../future-platforms/feasibility-macos-fskit.md) | FSKit viability? | Not testable in this environment; scaffold + requirements recorded. |
 | [windows-projfs.md](../future-platforms/feasibility-windows-projfs.md) | ProjFS viability? | Distinct architecture; not testable here; `autocrlf=true` system default already surfaced via CI. |
 
-The object-fetching and metadata findings are **release gates** (spec §5.1/§5.3)
+The object-fetching and metadata findings are **release gates**
 and are enforced by the test suite.

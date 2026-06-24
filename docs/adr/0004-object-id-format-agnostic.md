@@ -7,7 +7,7 @@
 Git is migrating from SHA-1 to SHA-256, and the on-disk/wire object name length
 differs (40 vs. 64 hex chars; 20 vs. 32 raw bytes). Code that assumes "an object
 id is 40 hex characters" silently breaks on a SHA-256 repository and cannot
-accommodate any future format (spec §3.16).
+accommodate any future format.
 
 ## Decision
 

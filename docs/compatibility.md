@@ -51,7 +51,7 @@ measured it says so.
 
 In-place edits of the **same byte size** are detected correctly: overlay files
 report their real on-disk mtime, so git's racy-clean logic re-checks content
-(§22) — a constant mtime would have hidden such edits.
+— a constant mtime would have hidden such edits.
 
 ## Not yet classified
 
@@ -59,12 +59,12 @@ report their real on-disk mtime, so git's racy-clean logic re-checks content
 **LFS** (an external `filter=lfs` driver), and full **submodule** workflows are
 not yet exercised by a mounted test.
 
-## The eagerness headline (§27)
+## The eagerness headline
 
 Branch-changing commands (`switch`/`checkout`/`reset --hard`/`merge`/`rebase`)
 are **correct but potentially eager**: unmodified Git materializes and writes
 every changed path through the FUSE write path. This is the design-sanctioned
-M-stage behavior (§27) — we do **not** claim google3-style lazy branch switching.
+M-stage behavior — we do **not** claim google3-style lazy branch switching.
 The switch eagerness is now *measured* — it is bounded by the delta, not the
 repo (`switch_eagerness`, P3).
 

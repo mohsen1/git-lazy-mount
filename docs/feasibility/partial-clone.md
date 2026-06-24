@@ -2,7 +2,7 @@
 
 **Question.** Can partial clone serve as our object substrate — trees available
 for instant listing, blobs fetched on demand — and how does it behave over the
-transports we test (spec §5.2)?
+transports we test?
 
 ## Experiment
 
