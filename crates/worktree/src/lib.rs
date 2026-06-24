@@ -1085,4 +1085,71 @@ mod tests {
             b"hi\n"
         );
     }
+
+    #[test]
+    fn ancestor_tombstone_masks_an_untombstoned_child() {
+        // A tombstoned ancestor directory masks everything beneath it, even a
+        // child that has no tombstone of its own (§8 resolution step 3).
+        let (_t, _r, p) = projection_of(&[("d/sub/deep.txt", b"deep\n"), ("keep.txt", b"k\n")]);
+        let d = p.lookup(p.root_ino(), b"d").unwrap().unwrap();
+        let sub = p.lookup(d.ino, b"sub").unwrap().unwrap();
+        let _deep = p.lookup(sub.ino, b"deep.txt").unwrap().unwrap();
+        // Tombstone the ANCESTOR `d` directly (a non-empty dir tombstone isn't
+        // reachable via rmdir, so drive the overlay directly).
+        let d_path = RepoPath::from_bytes(b"d".to_vec()).unwrap();
+        p.overlay.tombstone(&d_path).unwrap();
+        assert!(p.lookup(p.root_ino(), b"d").unwrap().is_none());
+        assert!(
+            p.lookup(sub.ino, b"deep.txt").unwrap().is_none(),
+            "ancestor tombstone did not mask the un-tombstoned child"
+        );
+        assert!(p.lookup(p.root_ino(), b"keep.txt").unwrap().is_some());
+    }
+
+    #[test]
+    fn rename_rekeys_overlay_content_and_preserves_inode_identity() {
+        use std::io::Write;
+        let (_t, _r, p) = projection_of(&[("base.txt", b"base\n")]);
+        let (a, mut f) = p.create(p.root_ino(), b"src.txt", false).unwrap();
+        f.write_all(b"payload-v1").unwrap();
+        drop(f);
+        let before = p.lookup(p.root_ino(), b"src.txt").unwrap().unwrap();
+        assert_eq!(before.ino, a.ino, "create + lookup agree on the inode");
+        let hyd = p.hydrations();
+        p.rename(p.root_ino(), b"src.txt", p.root_ino(), b"dst.txt", 0)
+            .unwrap();
+        assert_eq!(p.hydrations(), hyd, "overlay re-key must fetch nothing");
+        assert!(p.lookup(p.root_ino(), b"src.txt").unwrap().is_none());
+        let after = p.lookup(p.root_ino(), b"dst.txt").unwrap().unwrap();
+        assert_eq!(after.ino, before.ino, "rename did not preserve inode");
+        assert_eq!(
+            p.open_content(after.ino).unwrap().read_at(0, 100).unwrap(),
+            b"payload-v1"
+        );
+    }
+
+    #[test]
+    fn set_executable_on_baseline_file_copies_up() {
+        let (_t, _r, p) = projection_of(&[("run.sh", b"#!/bin/sh\necho hi\n")]);
+        let a = p.lookup(p.root_ino(), b"run.sh").unwrap().unwrap();
+        assert_eq!(a.kind, Kind::File { executable: false });
+        let body = p.open_content(a.ino).unwrap().read_at(0, 4096).unwrap();
+        p.set_executable(a.ino, true).unwrap();
+        let path = RepoPath::from_bytes(b"run.sh".to_vec()).unwrap();
+        assert!(matches!(
+            p.overlay.lookup(&path),
+            Some(OverlayEntry::File {
+                executable: true,
+                ..
+            })
+        ));
+        let a2 = p.getattr(a.ino).unwrap();
+        assert_eq!(a2.kind, Kind::File { executable: true });
+        assert_eq!(a2.ino, a.ino, "copy-up preserved the inode");
+        assert_eq!(
+            p.open_content(a.ino).unwrap().read_at(0, 4096).unwrap(),
+            body,
+            "copy-up changed the content"
+        );
+    }
 }
