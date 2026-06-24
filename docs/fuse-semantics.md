@@ -294,7 +294,7 @@ handle table.
 | `destroy` | Drain executor, flush dirty handles, checkpoint namespace WAL. |
 | `lookup` | Resolve via the resolution order; allocate inode; +1 lookup ref; return attr+generation. |
 | `forget` / `batch_forget` | Drop kernel refs; may free inode (FS-INO-5). |
-| `getattr` | Exact size; generation from inode table. |
+| `getattr` | Exact size; generation from inode table. The exact size of an unmaterialized clean blob requires fetching it (no server-side size manifest under `blob:none`), so `getattr` faults that blob once — this is fundamental to a `blob:none` clone, not a TODO. It is also why the FIRST clean `git status` faults each tracked blob once (git must populate the index stat size to skip the content check); only SUBSEQUENT clean statuses are zero-blob. |
 | `setattr` | size→`truncate` handle/inode op; mode→exec bit only (Git tracks no other bits); time/uid/gid accepted+ignored. |
 | `open` | Allocate a real handle; choose source state. |
 | `create` | Create overlay file + handle in one step; `O_EXCL` honored. |

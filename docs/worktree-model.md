@@ -293,21 +293,24 @@ embedded `NUL`, absolute (`/`-leading), `.`/`..` traversal, empty components
 safely), not in `from_bytes` (the bytes themselves are legal Git path
 bytes).
 
-### 6.1 The non-UTF-8 filter gap (must-fix in design)
+### 6.1 The non-UTF-8 filter case
 
 `GitStore::smudge_blob` / `hash_blob_clean` (`crates/git-store/src/store.rs`)
 pass `--path=<utf8>` to `git cat-file --filters` and **error** on non-UTF-8
 paths. The raw-path contract forbids "stopping attribute lookup at the first
-non-UTF-8 component". Resolution:
+non-UTF-8 component". Handling:
 
-- For paths where `.gitattributes` selects **no** filter (the common case),
-  serve the **raw blob** directly (no plumbing path argument needed) — correct
-  and byte-exact.
-- For paths needing a filter *and* containing non-UTF-8 bytes, drive the filter
-  via a mechanism that accepts raw path bytes (a long-running
+- The projection serves the **raw baseline blob** directly (no plumbing path
+  argument needed) — correct and byte-exact. A smudge-filtered file (eol=crlf,
+  ident, an LFS pointer) therefore reads as its stored bytes, not the smudged
+  bytes; commits stay byte-correct because the clean filter is the inverse.
+  This is by design (not closeable without filter-aware lazy sizing), and it is
+  what lets non-UTF-8 paths read unfiltered without `--path=`.
+- Driving a filter for a path that *both* needs one *and* contains non-UTF-8
+  bytes would require a mechanism that accepts raw path bytes (a long-running
   `git filter-process` protocol-v2 session, which is NUL/length-framed), not
-  `--path=`. Until that exists, such a read returns a bounded, *escaped*-path
-  error rather than a silent wrong answer.
+  `--path=`; absent that, such a read returns a bounded, *escaped*-path error
+  rather than a silent wrong answer.
 
 **Testable invariant (W-PATH-1):** a tracked file whose path contains invalid
 UTF-8, a newline, a tab, a leading dash, a backslash, and quotes is listed, read
@@ -350,14 +353,13 @@ working (rename with open source and destination handles).
 
 ### 7.2 Clean subtree rename = no descendant reads
 
-The current code returns *unsupported* for directory rename
-(`crates/workspace/src/lib.rs` ~532). The design **must** implement it as a
-metadata operation: re-parent the subtree in the namespace DB
-(`rename subtree`) so the baseline tree at `from/...` is logically relocated
+A whole-directory rename is implemented as a metadata-only operation
+(overlay re-key + baseline base-refs): re-parent the subtree in the namespace
+DB (`rename subtree`) so the baseline tree at `from/...` is logically relocated
 to `to/...` **without reading any descendant blob** ("A clean subtree rename
-should not read descendant blobs").
+should not read descendant blobs"). No blob is fetched.
 
-Representation options (choose by measurement):
+Representation options:
 
 - **(a) Subtree-mapping record** — a single namespace entry "`to` ⇒ baseline
   subtree `oid_of(from)` at generation `g`"; resolution of `to/x/y` walks the

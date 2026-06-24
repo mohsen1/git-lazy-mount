@@ -140,7 +140,14 @@ Per-entry flags the daemon extracts (the load-bearing ones):
 - `assume-valid` / `skip-worktree` / `intent-to-add` (`flags` + v3
   `xflags`).
 - `FSMONITOR_VALID` per-entry bit (paired with the `FSMN` extension's token
-  + bitmap). This is how a clean status fetches zero blobs.
+  + bitmap). This is how a *subsequent* clean status skips the redundant
+  full-tree stat scan. Note that the fsmonitor-valid bit does **not** let an
+  entry with empty stat data skip the content check: git still requires the
+  index stat (including the file size) to mark an entry clean, and under a
+  `blob:none` clone the size requires faulting the blob. So the *first* clean
+  status after a `read-tree` faults each tracked blob once to populate its
+  size; only later clean statuses are zero-blob. A zero-blob *first* status is
+  not achievable with stock Git over a `blob:none` clone.
 - `extended` bit (selects v3 16-bit `xflags`).
 
 **v4 path compression** (`index.version=4`) is decoded by carrying
@@ -239,7 +246,10 @@ trigger a continuity decision.
 
 - **status fast path**: combine stage-0 entries + `skip-worktree` /
   `fsmonitor-valid` bits with the FSMonitor journal to answer "what
-  changed" without statting every file or fetching blobs.
+  changed" without re-statting every file. The first clean status after a
+  `read-tree` still faults each tracked blob once to populate the index entry
+  sizes git needs to mark entries clean (a `blob:none` consequence, see the
+  `FSMONITOR_VALID` note above); every clean status after that is zero-blob.
 - **conflict projection**: the `unmerged` map tells the projection
   which paths are conflicted so the overlay's conflict-marker files line up
   with the real stages 1/2/3. The index is the *source of truth*; any
@@ -431,10 +441,12 @@ Reusable as-is: [`GitStore`](../../crates/git-store/src/store.rs) and its
 `BatchSession` (long-lived `cat-file --batch`), the core types
 (`ObjectId`/`GitMode`/`RepoPath`/`ObjectFormat`/`TreeEntry`), and the
 `MergeStage`/`MergeConflict` shapes (now sourced from the parsed index, not
-`merge-tree`). The existing `glm-fsmonitor`
-([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) is an
-in-memory `Mutex<Vec<_>>` and must become durable — covered
-in `fsmonitor.md`.
+`merge-tree`). The original in-memory `Mutex<Vec<_>>` `glm-fsmonitor`
+([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) has been
+replaced by a durable change journal that the daemon writes synchronously and
+the `git-lazy-mount-fsmonitor` hook reads — wired to `core.fsmonitor` and
+covered in `fsmonitor.md`. It delivers correct change detection (no false
+negatives) and lets a subsequent clean status skip the full-tree stat scan.
 
 ---
 

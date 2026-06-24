@@ -8,8 +8,7 @@ potentially eager).
 This matrix is generated from the real-mount tests (Docker + the CI `design
 linux mount` job). "Correct" means the command's exit status, refs, index,
 working-tree bytes, and resulting commits match a normal checkout for the cases
-exercised. Laziness is the *measured* fetch behavior; where it is not yet
-measured it says so.
+exercised. Laziness is the *measured* fetch behavior.
 
 | Command | Compatibility | Laziness | Proven by |
 |---------|---------------|----------|-----------|
@@ -53,11 +52,14 @@ In-place edits of the **same byte size** are detected correctly: overlay files
 report their real on-disk mtime, so git's racy-clean logic re-checks content
 — a constant mtime would have hidden such edits.
 
-## Not yet classified
+## Newly classified
 
-`cherry` (range), `am`/`apply` of mailbox patches, `notes`, `replace`, deep
-**LFS** (an external `filter=lfs` driver), and full **submodule** workflows are
-not yet exercised by a mounted test.
+`cherry` (range), `am`/`apply` of mailbox patches, `notes`, `replace`,
+`cherry-pick` ranges, `tag`/`describe`/`archive`, and `bisect` are all now
+**correct** through real mounts. The remaining gaps are genuinely deferred:
+deep **LFS** end-to-end (an external `filter=lfs` driver, bounded by R7 — needs
+a separate git-lfs/server integration) and full **submodule** workflows
+(partial, test `#[ignore]`'d).
 
 ## The eagerness headline
 
