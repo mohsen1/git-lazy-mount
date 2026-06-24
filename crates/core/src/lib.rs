@@ -10,10 +10,8 @@
 //!   [`MountGeneration`] — distinct identifier newtypes.
 //! * [`FetchPolicy`] / [`FetchPriority`] — object-fetch authorization.
 //! * [`Source`], [`SemanticStatus`], [`Residency`], [`Durability`] — the
-//!   *orthogonal* per-path state model (spec §12).
-//! * [`Error`] / [`ErrorCode`] — the typed error model (spec §47).
-//!
-//! See `docs/state-model.md` for how these compose.
+//!   *orthogonal* per-path state model.
+//! * [`Error`] / [`ErrorCode`] — the typed error model.
 
 #![forbid(unsafe_code)]
 

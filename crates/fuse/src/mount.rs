@@ -1,5 +1,5 @@
 //! The transparent `fuser::Filesystem` over [`glm_worktree::Projection`], with
-//! real file handles, a bounded worker pool, and the writable overlay (M2).
+//! real file handles, a bounded worker pool, and the writable overlay.
 
 use std::collections::HashMap;
 use std::os::unix::ffi::OsStrExt;
@@ -23,7 +23,7 @@ use crate::pool::Pool;
 const TTL: Duration = Duration::from_secs(1);
 /// Worker threads for blocking callbacks (object IO). Bounded — see crate docs.
 const POOL_THREADS: usize = 16;
-/// Threads for the fast, non-faulting metadata pool (`readdir`/`statfs`, §18).
+/// Threads for the fast, non-faulting metadata pool (`readdir`/`statfs`).
 const META_THREADS: usize = 4;
 
 fn file_type(kind: Kind) -> FileType {
@@ -36,8 +36,8 @@ fn file_type(kind: Kind) -> FileType {
 
 /// Map neutral projection attributes to `fuser::FileAttr` with writable perms
 /// (the overlay backs writes; the synthetic `.git` is protected by the
-/// projection, which rejects mutations regardless of perms — §6). Times are
-/// stable synthetic values (design.md §22).
+/// projection, which rejects mutations regardless of perms). Times are
+/// stable synthetic values.
 fn fuse_attr(a: &Attr, uid: u32, gid: u32) -> FuseFileAttr {
     let (kind, perm) = match a.kind {
         Kind::Dir => (FileType::Directory, 0o755),
@@ -74,7 +74,7 @@ fn errno(e: &Error) -> i32 {
 
 /// An open handle: a read stream, or a writable overlay FD (also readable). Each
 /// carries its inode so `getattr` can serve a deleted-but-open file from the live
-/// fd after `unlink` (§17.4).
+/// fd after `unlink`.
 enum Handle {
     Read {
         ino: u64,
@@ -95,7 +95,7 @@ impl Handle {
 }
 
 /// The transparent mount: the projection, a real handle table, and **two**
-/// bounded worker pools (§18). `pool` runs object-IO callbacks that may block on
+/// bounded worker pools. `pool` runs object-IO callbacks that may block on
 /// `git`/the network (read, open, write, lookup, getattr, …); `meta_pool` runs
 /// the non-faulting structural callbacks (`readdir`, `statfs`) so a directory
 /// listing stays responsive even when every object-IO thread is busy hydrating a
@@ -128,7 +128,7 @@ impl Filesystem for TransparentFs {
     ) -> std::result::Result<(), libc::c_int> {
         // Handle `O_TRUNC` atomically in `open` so a truncating open is delivered
         // as one `open(O_TRUNC)` call instead of `open`(no-trunc)+`setattr(0)` —
-        // the latter would copy the old blob up before truncating it (§38.7).
+        // the latter would copy the old blob up before truncating it.
         // `FUSE_ATOMIC_O_TRUNC = 1 << 3`; fall back silently if unsupported.
         let _ = config.add_capabilities(1 << 3);
         Ok(())
@@ -162,7 +162,7 @@ impl Filesystem for TransparentFs {
         self.pool.spawn(move || match proj.getattr(ino) {
             Ok(a) => reply.attr(&TTL, &fuse_attr(&a, uid, gid)),
             Err(e) => {
-                // Deleted-but-open fallback (§17.4): if the path is gone but an
+                // Deleted-but-open fallback: if the path is gone but an
                 // fd is still open on this inode, serve a regular-file attr sized
                 // from that fd so `seek(End)`/`fstat` keep working.
                 if let Some(size) = open_size(&handles, ino) {
@@ -508,7 +508,7 @@ impl Filesystem for TransparentFs {
         let proj = Arc::clone(&self.proj);
         // readdir reads only tree objects (present under blob:none) + the overlay
         // — it never faults a blob — so it runs on the fast metadata pool and
-        // stays responsive even when every object-IO thread is hydrating (§18).
+        // stays responsive even when every object-IO thread is hydrating.
         self.meta_pool.spawn(move || {
             let entries = match proj.readdir(ino) {
                 Ok(e) => e,
@@ -564,7 +564,7 @@ impl TransparentFs {
 }
 
 /// Size of an open handle on `ino`, if any — used to serve `getattr` for a
-/// deleted-but-open inode after `unlink` (§17.4). Prefers a writable fd (its
+/// deleted-but-open inode after `unlink`. Prefers a writable fd (its
 /// size reflects writes); falls back to a read handle's content size.
 fn open_size(handles: &Mutex<HashMap<u64, Handle>>, ino: u64) -> Option<u64> {
     let handles = handles
@@ -687,7 +687,7 @@ mod tests {
         assert!(wait_until(|| mnt.join(".git").exists()), "mount not ready");
         let mnt_s = mnt.to_str().unwrap();
 
-        // Experiment A: stock git resolves the repo through the synthetic .git.
+        // stock git resolves the repo through the synthetic .git.
         let (ok, top) = git(&["-C", mnt_s, "rev-parse", "--show-toplevel"]);
         assert!(ok);
         assert_eq!(
@@ -697,7 +697,7 @@ mod tests {
         let gitfile = std::fs::read_to_string(mnt.join(".git")).unwrap();
         assert_eq!(gitfile.trim(), format!("gitdir: {}", gitdir.display()));
 
-        // Experiment B: ls hydrates zero blobs; one read hydrates one.
+        // ls hydrates zero blobs; one read hydrates one.
         let before = proj.hydrations();
         let mut names: Vec<String> = std::fs::read_dir(&mnt)
             .unwrap()
@@ -712,7 +712,7 @@ mod tests {
             "hello world\n"
         );
 
-        // Experiment C: writes through the mount land in the overlay.
+        // writes through the mount land in the overlay.
         // (1) create a new file
         std::fs::write(mnt.join("new.txt"), b"created\n").unwrap();
         assert_eq!(
@@ -753,7 +753,7 @@ mod tests {
         std::fs::remove_file(mnt.join("src/main.rs")).unwrap();
         assert!(!mnt.join("src/main.rs").exists());
 
-        // the synthetic .git is protected from deletion/replacement (§6)
+        // the synthetic .git is protected from deletion/replacement
         assert!(std::fs::remove_file(mnt.join(".git")).is_err());
 
         mount.unmount();

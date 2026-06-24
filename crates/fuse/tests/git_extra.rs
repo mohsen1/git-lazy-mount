@@ -1,19 +1,18 @@
-//! The remaining §43 git-workflow criteria exercised by **stock git** through
-//! the transparent FUSE mount, against the real index/refs/overlay:
+//! Further git workflows exercised by **stock git** through the transparent
+//! FUSE mount, against the real index/refs/overlay:
 //!
-//! * criterion 16 — a *conflicting* merge: the real index gains the
-//!   base/ours/theirs conflict stages (§25.3) and the overlay surfaces the
-//!   conflict-marker file git writes through FUSE; then a normal
-//!   resolve + `add` + `commit` clears it.
-//! * criterion 17 — `git rebase`: a conflict-free rebase onto an advanced
-//!   `main` yields linear history; a *conflicting* rebase followed by
-//!   `git rebase --abort` returns the tree to its pre-rebase state.
-//! * criterion 14 — `git fetch` + merge: a NEW commit pushed to the remote
-//!   from a separate plain checkout advances the remote-tracking ref through
-//!   the mount, and a merge brings the new file into the working tree (the
-//!   lazily-cloned blob faults in over the `file://` promisor).
-//! * criterion 10 — `git add -p`: stage exactly ONE of two hunks by feeding
-//!   the interactive decisions on stdin (no PTY needed on this platform).
+//! * a *conflicting* merge: the real index gains the base/ours/theirs conflict
+//!   stages and the overlay surfaces the conflict-marker file git writes
+//!   through FUSE; then a normal resolve + `add` + `commit` clears it.
+//! * `git rebase`: a conflict-free rebase onto an advanced `main` yields linear
+//!   history; a *conflicting* rebase followed by `git rebase --abort` returns
+//!   the tree to its pre-rebase state.
+//! * `git fetch` + merge: a NEW commit pushed to the remote from a separate
+//!   plain checkout advances the remote-tracking ref through the mount, and a
+//!   merge brings the new file into the working tree (the lazily-cloned blob
+//!   faults in over the `file://` promisor).
+//! * `git add -p`: stage exactly ONE of two hunks by feeding the interactive
+//!   decisions on stdin (no PTY needed on this platform).
 //!
 //! Real `/dev/fuse` mount — runs under `--features fuse`.
 #![cfg(feature = "fuse")]
@@ -110,7 +109,7 @@ impl Drop for Mounted {
 
 #[test]
 fn conflicting_merge_stages_conflict_and_resolves() {
-    // criterion 16 (+ §25.3): two branches edit the SAME README line differently.
+    // Two branches edit the SAME README line differently.
     let (m, _remote) = Mounted::new(&[("README.md", b"line one\nshared line\nline three\n")]);
 
     let (ok_sw, _, e) = git(&m.mnt, &["switch", "-c", "feature"]);
@@ -142,7 +141,7 @@ fn conflicting_merge_stages_conflict_and_resolves() {
         "unmerged path: {st:?}"
     );
 
-    // The real index carries the three conflict stages (§25.3).
+    // The real index carries the three conflict stages.
     let (_, stages, _) = git(&m.mnt, &["ls-files", "-u", "README.md"]);
     for stage in ["1\t", "2\t", "3\t"] {
         assert!(
@@ -176,7 +175,6 @@ fn conflicting_merge_stages_conflict_and_resolves() {
 
 #[test]
 fn rebase_linearizes_then_abort_restores() {
-    // criterion 17.
     let (m, _remote) = Mounted::new(&[("README.md", b"line one\nshared\nline three\n")]);
 
     // Part A: conflict-free rebase onto an advanced main.
@@ -241,8 +239,8 @@ fn rebase_linearizes_then_abort_restores() {
 
 #[test]
 fn fetch_then_merge_brings_remote_commit_into_worktree() {
-    // criterion 14: a NEW commit pushed to the remote from a separate plain
-    // checkout must be observable through the mount.
+    // A NEW commit pushed to the remote from a separate plain checkout must be
+    // observable through the mount.
     let (m, mut remote) = Mounted::new(&[("README.md", b"base\n")]);
     let (_, before, _) = git(&m.mnt, &["rev-parse", "origin/main"]);
 
@@ -281,7 +279,7 @@ fn fetch_then_merge_brings_remote_commit_into_worktree() {
 
 #[test]
 fn add_patch_stages_one_of_two_hunks() {
-    // criterion 10: `git add -p` stages exactly ONE of two hunks via stdin.
+    // `git add -p` stages exactly ONE of two hunks via stdin.
     let (m, _remote) = Mounted::new(&[("f.txt", b"l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n")]);
     std::fs::write(
         m.mnt.join("f.txt"),

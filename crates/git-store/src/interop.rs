@@ -1,7 +1,6 @@
 //! Git-interop bridge: run **stock** `git` against the shared lazy store so
 //! native commands like `git status`, `git log`, `git diff`, and `git commit`
-//! work without a kernel mount (spec §38; "Level B" read-only inspection and
-//! "Level C" commit).
+//! work without a kernel mount.
 //!
 //! The bridge stands up a throwaway *operational gitdir* whose object I/O is
 //! routed into the shared store via `GIT_OBJECT_DIRECTORY`, pins a **detached
@@ -17,8 +16,7 @@
 //! in the shared store; the caller reads back the bridge HEAD to adopt that
 //! commit into the workspace.
 //!
-//! This mechanism is validated end-to-end against real `git`; see
-//! `docs/git-compatibility.md` and the crate tests.
+//! This mechanism is validated end-to-end against real `git` by the crate tests.
 
 use std::ffi::OsString;
 use std::path::Path;

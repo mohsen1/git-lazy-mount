@@ -1,7 +1,7 @@
-//! Crash-injection durability (design.md §40.5, criterion 27): SIGKILL the
-//! serving process mid-session and prove no acknowledged user write is lost — the
-//! durable overlay (atomic sidecars + content files) survives an ungraceful
-//! daemon death. Real `/dev/fuse` mount; runs under `--features fuse`.
+//! Crash-injection durability: SIGKILL the serving process mid-session and prove
+//! no acknowledged user write is lost — the durable overlay (atomic sidecars +
+//! content files) survives an ungraceful daemon death. Real `/dev/fuse` mount;
+//! runs under `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;

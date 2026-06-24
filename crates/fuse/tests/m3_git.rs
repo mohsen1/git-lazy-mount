@@ -1,6 +1,6 @@
-//! M3 correctness: stock `git status` / `add` / `commit` through the transparent
-//! mount, operating the REAL `.git/index` (design.md §43 criteria 8/9/11,
-//! Experiments C/D/F). Real `/dev/fuse` mount — runs under `--features fuse`.
+//! Stock `git status` / `add` / `commit` through the transparent mount,
+//! operating the REAL `.git/index`. Real `/dev/fuse` mount — runs under
+//! `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;
@@ -54,7 +54,7 @@ fn git_status_add_commit_through_the_transparent_mount() {
     let proj = Arc::new(
         Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap(),
     );
-    // M3: build the real index from the baseline (the single stage).
+    // Build the real index from the baseline (the single stage).
     proj.repo().build_index().unwrap();
 
     let mount = spawn_mount(Arc::clone(&proj), &mnt).unwrap();
@@ -64,8 +64,7 @@ fn git_status_add_commit_through_the_transparent_mount() {
     git(&mnt, &["config", "user.email", "t@example.com"]);
     git(&mnt, &["config", "user.name", "Test"]);
 
-    // A clean tree (possibly eager — git may read each file to verify; that's the
-    // §27 'correct but eager' status the FSMonitor work will make lazy).
+    // A clean tree: git may read each file to verify it against the index.
     let (ok, clean, err) = git(&mnt, &["status", "--porcelain"]);
     assert!(ok, "status failed: {err}");
     assert_eq!(
@@ -73,7 +72,7 @@ fn git_status_add_commit_through_the_transparent_mount() {
         "freshly-mounted tree should be clean, got: {clean:?}"
     );
 
-    // Experiment C: a transparent edit is seen by stock `git status`.
+    // A transparent edit is seen by stock `git status`.
     std::fs::write(mnt.join("README.md"), b"edited via the mount\n").unwrap();
     let (_, st, _) = git(&mnt, &["status", "--porcelain"]);
     assert!(
@@ -82,13 +81,13 @@ fn git_status_add_commit_through_the_transparent_mount() {
         "edit not reported as modified: {st:?}"
     );
 
-    // Experiment D: `git add` stages it in the real index.
+    // `git add` stages it in the real index.
     let (ok_add, _, e) = git(&mnt, &["add", "README.md"]);
     assert!(ok_add, "add failed: {e}");
     let (_, cached, _) = git(&mnt, &["diff", "--cached", "--name-only"]);
     assert!(cached.contains("README.md"), "not staged: {cached:?}");
 
-    // Experiment F: `git commit` advances the branch directly (no adoption).
+    // `git commit` advances the branch directly (no adoption).
     let (ok_commit, _, ce) = git(&mnt, &["commit", "-m", "edit through the mount"]);
     assert!(ok_commit, "commit failed: {ce}");
     let (_, log, _) = git(&mnt, &["log", "--oneline", "-1"]);

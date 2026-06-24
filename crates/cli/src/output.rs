@@ -1,4 +1,4 @@
-//! Structured output envelopes (spec §6).
+//! Structured output envelopes.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -17,7 +17,7 @@ pub enum Format {
     JsonLines,
 }
 
-/// A response envelope carrying stable metadata (spec §6).
+/// A response envelope carrying stable metadata.
 #[derive(Serialize)]
 pub struct Envelope {
     /// Output schema version.

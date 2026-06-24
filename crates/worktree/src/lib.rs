@@ -1,9 +1,9 @@
-//! Virtual working-tree projection (design.md §8, §14–§17, §29).
+//! Virtual working-tree projection.
 //!
 //! The projected working tree is the durable [`overlay`] layered over the HEAD
 //! commit's tree (the *baseline*), plus a protected synthetic `.git` gitfile at
-//! the root. Path resolution order (§8):
-//! 1. synthetic `.git` (root) — shadows any entry, fails-safe (§6)
+//! the root. Path resolution order:
+//! 1. synthetic `.git` (root) — shadows any entry, fails-safe
 //! 2. overlay file / symlink / dir / clean-rename base-ref
 //! 3. overlay tombstone (incl. a tombstoned ancestor) → absent
 //! 4. baseline Git tree entry
@@ -11,10 +11,10 @@
 //!
 //! Invariants enforced here (each covered by a test):
 //! * `readdir` returns names + kind only — it **never** reads blob contents or
-//!   resolves exact sizes (§4.5, §38.2); it merges baseline + overlay children.
-//! * a repo `.git` tree entry never shadows the synthetic one (§6).
-//! * writes copy up once then write in place (no full rewrite, §17.2/§38.8);
-//!   `O_TRUNC`/create and clean renames fetch **no** blob (§29).
+//!   resolves exact sizes; it merges baseline + overlay children.
+//! * a repo `.git` tree entry never shadows the synthetic one.
+//! * writes copy up once then write in place (no full rewrite);
+//!   `O_TRUNC`/create and clean renames fetch **no** blob.
 //! * resolution + listing cost is O(direct children), independent of repo size.
 
 #![forbid(unsafe_code)]
@@ -33,15 +33,15 @@ use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use glm_fs_common::{InodeTable, ROOT_INO};
 use glm_git_repo::AdminRepo;
 
-/// Uniquifier for temporary cache files during atomic publish (§17.1, §20.2).
+/// Uniquifier for temporary cache files during atomic publish.
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// The reserved name of the synthetic gitfile at the projection root (§6).
+/// The reserved name of the synthetic gitfile at the projection root.
 pub const GITFILE_NAME: &[u8] = b".git";
 
 /// `RENAME_NOREPLACE` rename flag — fail if the destination exists (Linux value).
 pub const RENAME_NOREPLACE: u32 = 1;
-/// `RENAME_EXCHANGE` rename flag — atomic swap (Linux value); not supported (§29).
+/// `RENAME_EXCHANGE` rename flag — atomic swap (Linux value); not supported.
 pub const RENAME_EXCHANGE: u32 = 2;
 
 /// Projected entry kind (neutral; mapped to FUSE `d_type`/mode by the mount).
@@ -58,7 +58,7 @@ pub enum Kind {
     Symlink,
 }
 
-/// Neutral, stable attributes for a projected entry (design.md §22).
+/// Neutral, stable attributes for a projected entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attr {
     /// Inode number.
@@ -69,13 +69,13 @@ pub struct Attr {
     pub size: u64,
     /// Last-modified time. Overlay files report their real on-disk mtime so git's
     /// stat cache / racy-clean logic detects in-place edits (including *same-size*
-    /// edits, §22); baseline entries and directories report a stable epoch.
+    /// edits); baseline entries and directories report a stable epoch.
     pub mtime: SystemTime,
     /// Entry kind.
     pub kind: Kind,
 }
 
-/// One directory listing entry — name + kind + inode only (no size; §4.5).
+/// One directory listing entry — name + kind + inode only (no size).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     /// Exact recorded name bytes.
@@ -86,7 +86,7 @@ pub struct DirEntry {
     pub ino: u64,
 }
 
-/// What a path resolves to after layering the overlay over the baseline (§8).
+/// What a path resolves to after layering the overlay over the baseline.
 enum Resolved {
     /// A directory; `baseline_tree` is the underlying Git tree (if any) whose
     /// children merge with the overlay's.
@@ -124,35 +124,34 @@ pub struct Projection {
     inodes: InodeTable,
     baseline_tree: ObjectId,
     gitfile: Vec<u8>,
-    /// The durable writable overlay layered over the baseline (§8).
+    /// The durable writable overlay layered over the baseline.
     overlay: Overlay,
-    /// Content-addressed cache directory for materialized blob bytes (§20.2).
+    /// Content-addressed cache directory for materialized blob bytes.
     cache_dir: PathBuf,
     /// Count of content hydrations (cache-miss blob materializations) — the
-    /// signal behind the §38.2/§38.5 budget assertions (`ls` = 0, `cat` ≥ 1).
+    /// signal behind the budget assertions (`ls` = 0, `cat` ≥ 1).
     hydrations: AtomicU64,
-    /// Whether `getattr` may fault an object in to learn its exact size (§21:
-    /// metadata-triggered hydration, never a faked size). INTERIM: this uses
+    /// Whether `getattr` may fault an object in to learn its exact size. INTERIM: this uses
     /// git's lazy fetch; once the bounded fetch scheduler exists it must route
-    /// through it so that "only the scheduler causes network" holds (§18–§20).
+    /// through it so that "only the scheduler causes network" holds.
     metadata_fetch: bool,
     /// Single-flight locks per object id so N concurrent faults of one missing
-    /// blob cause exactly one retrieval (§38.6/§20.1) — the first holder fetches,
+    /// blob cause exactly one retrieval — the first holder fetches,
     /// the rest wait and reuse the published cache file.
     inflight: Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>,
-    /// Optional FSMonitor change journal (§12). When present, every worktree
+    /// Optional FSMonitor change journal. When present, every worktree
     /// mutation is recorded **synchronously** (before the FUSE reply) so the
     /// `git-lazy-mount-fsmonitor` hook, reading the same durable log, always sees
     /// every acknowledged change — no false negatives.
     journal: Option<journal::ChangeJournal>,
     // No global lock: the InodeTable, Overlay, and the content cache are each
     // internally synchronized, so callbacks never serialize behind a coarse mutex
-    // held across a blocking `git` subprocess (§18/§19).
+    // held across a blocking `git` subprocess.
 }
 
 /// An open read handle backing a `read` callback. Content is served from a file
 /// descriptor (a cache file) or, for the tiny synthetic `.git`, from memory —
-/// **never** by allocating the whole blob (design.md §4.6, §17).
+/// **never** by allocating the whole blob.
 pub struct ContentHandle {
     inner: ContentInner,
 }
@@ -177,7 +176,7 @@ impl ContentHandle {
     }
 
     /// Read up to `len` bytes at `offset` — bounded by `len` (the FUSE request
-    /// size), never proportional to the file size (§4.6, §38.8).
+    /// size), never proportional to the file size.
     pub fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         match &self.inner {
             ContentInner::Bytes(b) => {
@@ -232,14 +231,14 @@ impl Projection {
     }
 
     /// Attach an FSMonitor change journal so worktree mutations are recorded for
-    /// the `core.fsmonitor` hook (§12). Call before wrapping in an `Arc`/mounting.
+    /// the `core.fsmonitor` hook. Call before wrapping in an `Arc`/mounting.
     pub fn with_journal(mut self, journal: journal::ChangeJournal) -> Projection {
         self.journal = Some(journal);
         self
     }
 
     /// Record a worktree mutation in the journal (if attached): the path plus its
-    /// parent directory (§12.3 untracked-cache invalidation). Inclusive — an extra
+    /// parent directory. Inclusive — an extra
     /// path only costs git an `lstat`; a missing one would corrupt `status`.
     fn record_change(&self, path: &RepoPath) {
         if let Some(j) = &self.journal {
@@ -257,7 +256,7 @@ impl Projection {
         self.hydrations.load(Ordering::Relaxed)
     }
 
-    /// Release `n` kernel lookup references on `ino` (design.md §14 forget).
+    /// Release `n` kernel lookup references on `ino`.
     pub fn forget(&self, ino: u64, n: u64) {
         if ino != ROOT_INO {
             self.inodes.forget(ino, n);
@@ -289,9 +288,9 @@ impl Projection {
     }
 
     /// Resolve a repo-relative path by layering the overlay over the baseline
-    /// (§8): synthetic `.git` → overlay entry → overlay tombstone (incl. an
+    ///: synthetic `.git` → overlay entry → overlay tombstone (incl. an
     /// ancestor) → baseline tree → absent. Reads only trees, never blob contents
-    /// (§4.5).
+    ///.
     fn resolve(&self, path: &RepoPath) -> Result<Option<Resolved>> {
         if path.is_root() {
             return Ok(Some(Resolved::Dir {
@@ -299,7 +298,7 @@ impl Projection {
             }));
         }
         let comps: Vec<&[u8]> = path.components().collect();
-        // The synthetic root `.git` shadows any entry of the same name (§6).
+        // The synthetic root `.git` shadows any entry of the same name.
         if comps.len() == 1 && comps[0] == GITFILE_NAME {
             return Ok(Some(Resolved::Gitfile));
         }
@@ -443,7 +442,7 @@ impl Projection {
         })
     }
 
-    /// `lookup(parent, name)` — resolve a child by name (§16). Allocates a stable
+    /// `lookup(parent, name)` — resolve a child by name. Allocates a stable
     /// inode for the child path.
     pub fn lookup(&self, parent_ino: u64, name: &[u8]) -> Result<Option<Attr>> {
         let parent = self.path_of(parent_ino)?;
@@ -459,7 +458,7 @@ impl Projection {
         }
     }
 
-    /// `getattr(ino)` (§16, §21). May fault an object in for its exact size.
+    /// `getattr(ino)`. May fault an object in for its exact size.
     pub fn getattr(&self, ino: u64) -> Result<Attr> {
         let path = self.path_of(ino)?;
         let r = self
@@ -473,7 +472,7 @@ impl Projection {
     }
 
     /// `readdir(ino)` — names + kind + inode only; reads **no** blob contents and
-    /// resolves **no** sizes (§4.5, §38.2). Cost is O(direct children).
+    /// resolves **no** sizes. Cost is O(direct children).
     pub fn readdir(&self, ino: u64) -> Result<Vec<DirEntry>> {
         let path = self.path_of(ino)?;
         let Some(Resolved::Dir { baseline_tree }) = self.resolve(&path)? else {
@@ -495,7 +494,7 @@ impl Projection {
         };
 
         // Baseline children, except those an overlay entry overrides/hides and
-        // the root `.git` (shadowed by the synthetic one, §6).
+        // the root `.git` (shadowed by the synthetic one).
         if let Some(tree) = baseline_tree {
             for e in self.repo.store().read_tree(&tree, false)?.entries {
                 if at_root && e.name == GITFILE_NAME {
@@ -544,11 +543,11 @@ impl Projection {
         Ok(out)
     }
 
-    /// Open content for reading (§17.1). A clean tracked blob is materialized
+    /// Open content for reading. A clean tracked blob is materialized
     /// once into a content-addressed cache file (atomic publish) and then served
     /// by `pread` from its FD; the synthetic `.git` is served from memory.
     /// Faults the blob in on first access (a later refinement routes this through
-    /// the bounded fetch scheduler so "only the scheduler causes network", §20).
+    /// the bounded fetch scheduler so "only the scheduler causes network").
     pub fn open_content(&self, ino: u64) -> Result<ContentHandle> {
         let path = self.path_of(ino)?;
         match self
@@ -585,13 +584,13 @@ impl Projection {
     }
 
     /// Ensure the blob is present in the content-addressed cache and return its
-    /// path (used to seed a copy-up; §17.2). The cache is keyed by oid (§20.2).
+    /// path (used to seed a copy-up). The cache is keyed by oid.
     fn materialize_path(&self, oid: &ObjectId) -> Result<PathBuf> {
         let final_path = self.cache_dir.join(oid.to_hex());
         if final_path.exists() {
             return Ok(final_path); // fast path: already published
         }
-        // Single-flight per oid (§38.6/§20.1): the first caller fetches under the
+        // Single-flight per oid: the first caller fetches under the
         // per-oid lock; concurrent callers block, then find the published file.
         let lock = {
             let mut map = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
@@ -619,7 +618,7 @@ impl Projection {
         Ok(final_path)
     }
 
-    /// `readlink(ino)` — the symlink's raw target bytes (§30.1). Targets are
+    /// `readlink(ino)` — the symlink's raw target bytes. Targets are
     /// small, so the blob is read whole here (this is not a content stream).
     pub fn readlink(&self, ino: u64) -> Result<Vec<u8>> {
         let path = self.path_of(ino)?;
@@ -637,7 +636,7 @@ impl Projection {
         }
     }
 
-    // ---- write path (§8, §17, §29) ---------------------------------------
+    // ---- write path ---------------------------------------
 
     fn child_path(&self, parent_ino: u64, name: &[u8]) -> Result<RepoPath> {
         let path = self
@@ -645,7 +644,7 @@ impl Projection {
             .join(name)
             .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))?;
         // The synthetic root `.git` is protected from creation/replacement/
-        // deletion/rename (§6); reads always resolve to the gitfile.
+        // deletion/rename; reads always resolve to the gitfile.
         let protected = {
             let mut comps = path.components();
             comps.next() == Some(GITFILE_NAME) && comps.next().is_none()
@@ -684,11 +683,11 @@ impl Projection {
     }
 
     /// Open an existing file for writing (FUSE `open` with write intent). Copies
-    /// the baseline up once (§17.2); `truncate` seeds an empty file with **no**
+    /// the baseline up once; `truncate` seeds an empty file with **no**
     /// baseline fetch.
     pub fn open_write(&self, ino: u64, truncate: bool) -> Result<std::fs::File> {
         let path = self.path_of(ino)?;
-        self.record_change(&path); // write intent — inclusive (§12)
+        self.record_change(&path); // write intent — inclusive
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             let f = self.overlay.open_content(&path)?;
             if truncate {
@@ -714,7 +713,7 @@ impl Projection {
     }
 
     /// Truncate/extend a file to `size` (FUSE `setattr` size); copies up if
-    /// needed. `size == 0` never fetches the old blob (§38.7).
+    /// needed. `size == 0` never fetches the old blob.
     pub fn truncate(&self, ino: u64, size: u64) -> Result<()> {
         let path = self.path_of(ino)?;
         let f = if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
@@ -755,12 +754,12 @@ impl Projection {
         }
         self.record_change(&path);
         // Drop the name→inode mapping so a later recreate gets a fresh inode and
-        // the unlinked inode enters open-unlinked retention (§14, §17.4).
+        // the unlinked inode enters open-unlinked retention.
         self.inodes.unlink(&path);
         Ok(())
     }
 
-    /// Create a directory (FUSE `mkdir`); persisted so empty dirs survive (§4.9).
+    /// Create a directory (FUSE `mkdir`); persisted so empty dirs survive.
     pub fn mkdir(&self, parent_ino: u64, name: &[u8]) -> Result<Attr> {
         let path = self.child_path(parent_ino, name)?;
         if self.resolve(&path)?.is_some() {
@@ -831,12 +830,12 @@ impl Projection {
     }
 
     /// Rename a file, symlink, or directory (FUSE `rename`). A clean baseline file
-    /// moves as a metadata-only base-ref (no fetch, §29); an overlay file re-keys
+    /// moves as a metadata-only base-ref (no fetch); an overlay file re-keys
     /// its content; a directory moves its whole subtree (overlay descendants
     /// re-keyed, baseline descendants re-pointed as base-refs, the source subtree
     /// tombstoned) — all metadata-only, no blob fetch. `flags` honors
     /// `RENAME_NOREPLACE` (fail if the destination exists) and rejects
-    /// `RENAME_EXCHANGE` as unsupported (§29).
+    /// `RENAME_EXCHANGE` as unsupported.
     pub fn rename(
         &self,
         parent_ino: u64,
@@ -898,7 +897,7 @@ impl Projection {
     /// Move a directory `src` to `dst`, recursively (helper for [`rename`]).
     /// Overlay descendants re-key (content moves with them); baseline descendants
     /// become base-refs at the destination (no blob fetch); the source subtree is
-    /// then tombstoned so the baseline beneath it is hidden. Metadata-only (§29).
+    /// then tombstoned so the baseline beneath it is hidden. Metadata-only.
     fn rename_dir(&self, src: &RepoPath, dst: &RepoPath) -> Result<()> {
         self.overlay.put_dir(dst)?;
         for (name, resolved) in self.effective_children(src)? {
@@ -1007,7 +1006,7 @@ impl Projection {
     }
 }
 
-/// A clean-rename base-ref resolves to a baseline blob at a new path (§29).
+/// A clean-rename base-ref resolves to a baseline blob at a new path.
 fn baseref_resolved(oid: ObjectId, mode: GitMode) -> Resolved {
     match mode {
         GitMode::Symlink => Resolved::Symlink {
@@ -1067,7 +1066,7 @@ mod tests {
     #[test]
     fn synthetic_git_is_a_single_protected_regular_file_at_root() {
         // The root `.git` is the synthetic gitfile (a regular file → our gitdir),
-        // listed exactly once (design.md §6). The malicious case — a repo tree
+        // listed exactly once. The malicious case — a repo tree
         // that itself contains a `.git` entry shadowed by the synthetic one — is
         // covered by the mount integration tests (it requires a plumbing-built
         // tree, since `git add .git` is impossible in a normal working tree).
@@ -1093,7 +1092,7 @@ mod tests {
         assert_eq!(src.kind, Kind::Dir);
         let main = p.lookup(src.ino, b"main.rs").unwrap().unwrap();
         assert_eq!(main.kind, Kind::File { executable: false });
-        assert_eq!(main.size, 13); // exact size, not faked (§21)
+        assert_eq!(main.size, 13); // exact size, not faked
                                    // getattr returns the same stable identity.
         let again = p.getattr(main.ino).unwrap();
         assert_eq!(again.ino, main.ino);
@@ -1233,7 +1232,7 @@ mod tests {
         assert!(p.lookup(p.root_ino(), b"orig.txt").unwrap().is_none());
         let r = p.lookup(p.root_ino(), b"renamed.txt").unwrap().unwrap();
         assert_eq!(r.kind, Kind::File { executable: false });
-        assert_eq!(p.hydrations(), before, "clean rename fetched no blob (§29)");
+        assert_eq!(p.hydrations(), before, "clean rename fetched no blob");
         // content still readable through the renamed path
         assert_eq!(
             p.open_content(r.ino).unwrap().read_at(0, 100).unwrap(),
@@ -1244,7 +1243,7 @@ mod tests {
     #[test]
     fn ancestor_tombstone_masks_an_untombstoned_child() {
         // A tombstoned ancestor directory masks everything beneath it, even a
-        // child that has no tombstone of its own (§8 resolution step 3).
+        // child that has no tombstone of its own.
         let (_t, _r, p) = projection_of(&[("d/sub/deep.txt", b"deep\n"), ("keep.txt", b"k\n")]);
         let d = p.lookup(p.root_ino(), b"d").unwrap().unwrap();
         let sub = p.lookup(d.ino, b"sub").unwrap().unwrap();
@@ -1310,7 +1309,7 @@ mod tests {
 
     #[test]
     fn property_overlay_matches_a_reference_model() {
-        // §40.4 model-based test: drive the projection with a deterministic
+        // model-based test: drive the projection with a deterministic
         // pseudo-random sequence of write/delete/rename ops and assert it always
         // agrees with a simple reference model of the working tree.
         use std::collections::BTreeMap;
@@ -1394,7 +1393,7 @@ mod tests {
 
     #[test]
     fn pathological_names_roundtrip() {
-        // §31/§40.7: paths are raw bytes — newlines, tabs, leading dashes, quotes,
+        //: paths are raw bytes — newlines, tabs, leading dashes, quotes,
         // and invalid UTF-8 must create, resolve, read back, and list correctly.
         use std::io::Write as _;
         let (_t, _r, p) = projection_of(&[("normal.txt", b"n\n")]);
@@ -1439,7 +1438,7 @@ mod tests {
 
     #[test]
     fn large_directory_readdir_fetches_zero_blobs() {
-        // Experiment B (§39, moderate scale): listing a directory with many
+        // listing a directory with many
         // entries reads only the tree object — zero blobs, O(direct children).
         let files: Vec<(String, Vec<u8>)> = (0..1000)
             .map(|i| {
@@ -1468,7 +1467,7 @@ mod tests {
 
     #[test]
     fn directory_rename_moves_subtree_without_fetch() {
-        // §29: renaming a directory moves its whole subtree (baseline + overlay,
+        //: renaming a directory moves its whole subtree (baseline + overlay,
         // nested) with no blob fetch — metadata-only.
         use std::io::Write as _;
         let (_t, _r, p) = projection_of(&[

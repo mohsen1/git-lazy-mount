@@ -2,7 +2,7 @@
 //!
 //! Git remains the source of truth for the network protocol, credentials, the
 //! configured object format, ref transactions, working-tree filters, push, and
-//! fetch (spec §9). This crate wraps those operations behind a typed API:
+//! fetch. This crate wraps those operations behind a typed API:
 //!
 //! * [`GitStore`] — bare store init/open, fetch (with partial-clone filters),
 //!   ref compare-and-swap, push, tree/blob reads, filter plumbing, commit and
@@ -11,7 +11,7 @@
 //!   serves local objects and reports missing ones *without* fetching.
 //!
 //! Every subprocess runs non-interactively (`GIT_TERMINAL_PROMPT=0`) and uses
-//! NUL/unambiguous delimiters where paths are involved (spec §3.18).
+//! NUL/unambiguous delimiters where paths are involved.
 
 // `deny` (not `forbid`) so the single audited `pre_exec` fd-hardening in
 // `proc.rs` can opt in via `#[allow(unsafe_code)]`; everything else stays safe.

@@ -1,4 +1,4 @@
-//! Orthogonal per-path state (spec §2.6, §12).
+//! Orthogonal per-path state.
 //!
 //! The spec is emphatic: do **not** collapse these dimensions into one
 //! `hydrated` boolean. A path's *source*, its *repository semantics*, its
@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Where a path's working-tree content currently comes from (spec §11 ordering).
+/// Where a path's working-tree content currently comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     /// Backed by the committed base tree.
@@ -24,7 +24,7 @@ pub enum Source {
     NativeRedirect,
 }
 
-/// The semantic status of a path relative to HEAD/stage (spec §12, §11).
+/// The semantic status of a path relative to HEAD/stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticStatus {
     /// Identical to its committed form.
@@ -47,7 +47,7 @@ pub enum SemanticStatus {
     Conflicted,
 }
 
-/// How much of a path is locally present (spec §12 "Residency").
+/// How much of a path is locally present.
 ///
 /// Every axis is independent. Crucially, "not resident" never implies a size of
 /// zero and never implies "clean" or "modified".
@@ -94,11 +94,11 @@ impl Residency {
     }
 }
 
-/// Durability level reached by a mutation (spec §12 "Durability", ordered).
+/// Durability level reached by a mutation.
 ///
 /// Ordering matters: a higher level implies all lower guarantees. The current
 /// view pointer is only advanced once the relevant records reach
-/// [`Durability::MetadataCommitted`] (spec §13).
+/// [`Durability::MetadataCommitted`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Durability {
     /// Exists only in process memory.

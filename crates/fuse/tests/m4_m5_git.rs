@@ -1,9 +1,8 @@
-//! M4/M5: branch-changing + remote workflows through the transparent mount,
-//! using stock git against the real index/refs (design.md §43 criteria
-//! 13/15/16/17/18, Experiment G). These happy-path flows let git do the work
-//! (writing changed files into the overlay, §27 "correct but possibly eager");
-//! conflict-stage and hydration-budget measurement are tracked separately.
-//! Real `/dev/fuse` mount — runs under `--features fuse`.
+//! Branch-changing + remote workflows through the transparent mount, using
+//! stock git against the real index/refs. These happy-path flows let git do the
+//! work (writing changed files into the overlay); conflict-stage and
+//! hydration-budget measurement are tracked separately. Real `/dev/fuse` mount —
+//! runs under `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;
@@ -61,7 +60,7 @@ fn branch_switch_commit_merge_and_push_through_the_mount() {
     git(&mnt, &["config", "user.email", "t@example.com"]);
     git(&mnt, &["config", "user.name", "Test"]);
 
-    // M4 — create a branch, commit a new file on it (Experiment G, criterion 15).
+    // Create a branch, commit a new file on it.
     let (ok_sw, _, e) = git(&mnt, &["switch", "-c", "feature"]);
     assert!(ok_sw, "switch -c failed: {e}");
     std::fs::write(mnt.join("feature.txt"), b"from feature\n").unwrap();
@@ -81,7 +80,7 @@ fn branch_switch_commit_merge_and_push_through_the_mount() {
     let (_, st, _) = git(&mnt, &["status", "--porcelain"]);
     assert_eq!(st, "", "main should be clean after switch, got {st:?}");
 
-    // criterion 16-ish — a conflict-free merge brings the file back.
+    // A conflict-free merge brings the file back.
     let (ok_m, _, me) = git(&mnt, &["merge", "--no-edit", "feature"]);
     assert!(ok_m, "merge failed: {me}");
     assert_eq!(
@@ -90,7 +89,7 @@ fn branch_switch_commit_merge_and_push_through_the_mount() {
         "merged file content"
     );
 
-    // criterion 20/21 — reset --hard discards an uncommitted edit.
+    // reset --hard discards an uncommitted edit.
     std::fs::write(mnt.join("README.md"), b"dirty\n").unwrap();
     let (ok_r, _, re) = git(&mnt, &["reset", "--hard", "HEAD"]);
     assert!(ok_r, "reset --hard failed: {re}");
@@ -100,7 +99,7 @@ fn branch_switch_commit_merge_and_push_through_the_mount() {
         "reset --hard restored the baseline content"
     );
 
-    // M5 — push the merge commit to the ordinary remote (criterion 13).
+    // Push the merge commit to the ordinary remote.
     let (ok_p, _, pe) = git(&mnt, &["push", "origin", "HEAD:main"]);
     assert!(ok_p, "push failed: {pe}");
     // the remote now has the merge commit at its tip

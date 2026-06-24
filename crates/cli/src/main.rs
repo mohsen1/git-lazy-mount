@@ -1,4 +1,4 @@
-//! The transparent `git-lazy-mount` executable (design.md §1, §10, §43).
+//! The transparent `git-lazy-mount` executable.
 //!
 //! The primary form replaces the initial `git clone`:
 //!
@@ -11,7 +11,7 @@
 //! with no wrapper, no aliases, no `git lazy-mount` workflow verbs. The only
 //! `git lazy-mount` subcommands are lifecycle/diagnostics (`unmount`, `doctor`).
 //! There is deliberately **no** `add`/`commit`/`switch`/`push`/`git --` (their
-//! presence would mean transparency failed, §1).
+//! presence would mean transparency failed).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -108,7 +108,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Deterministic per-mountpoint workspace layout (design.md §6). Both the
+/// Deterministic per-mountpoint workspace layout. Both the
 /// parent (clone) and the detached serve child derive the same paths.
 fn workspace_paths(mountpoint: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let abs = std::fs::canonicalize(mountpoint).unwrap_or_else(|_| mountpoint.to_path_buf());
@@ -135,7 +135,7 @@ fn data_dir() -> PathBuf {
 }
 
 fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
-    // Preflight (§10.1): the mountpoint must exist (or be creatable) and empty.
+    // Preflight: the mountpoint must exist (or be creatable) and empty.
     std::fs::create_dir_all(path).map_err(|e| format!("create mountpoint: {e}"))?;
     if std::fs::read_dir(path)
         .map_err(|e| format!("read mountpoint: {e}"))?
@@ -161,7 +161,7 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
     repo.build_index()
         .map_err(|e| format!("build index: {e}"))?;
     // Configure the FSMonitor hook so git learns what changed without statting the
-    // whole tree — the first clean `git status` faults 0 blobs (§12). Best-effort:
+    // whole tree — the first clean `git status` faults 0 blobs. Best-effort:
     // if the hook binary isn't found, git status still works (just eager).
     configure_fsmonitor(&gitdir);
     drop(repo);
@@ -194,7 +194,7 @@ fn configure_fsmonitor(gitdir: &Path) {
 #[cfg(feature = "fuse")]
 fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &Path) -> R {
     // Spawn a detached serve child that holds the kernel mount. When this command
-    // returns, the child is reparented to init and keeps serving (§9). We do NOT
+    // returns, the child is reparented to init and keeps serving. We do NOT
     // wait on it.
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     Command::new(exe)
@@ -227,7 +227,7 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
         return Err("mount did not become ready".into());
     }
 
-    // Health checks (§10.6): stock git must discover the repo.
+    // Health checks: stock git must discover the repo.
     let top = git_stdout(mountpoint, &["rev-parse", "--show-toplevel"])?;
     let want = std::fs::canonicalize(mountpoint).unwrap_or_else(|_| mountpoint.to_path_buf());
     if Path::new(&top).canonicalize().ok() != Some(want) {
@@ -255,7 +255,7 @@ fn mount_and_validate(_gitdir: &Path, _mountpoint: &Path, _cache: &Path, _overla
 fn cmd_serve(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &Path) -> R {
     let repo =
         glm_git_repo::AdminRepo::open(gitdir, mountpoint).map_err(|e| format!("open: {e}"))?;
-    // The FSMonitor change journal (§12): every worktree mutation is recorded so
+    // The FSMonitor change journal: every worktree mutation is recorded so
     // the hook answers `git status` without statting the whole tree.
     let journal = glm_worktree::journal::ChangeJournal::open(
         glm_worktree::journal::journal_dir(gitdir),

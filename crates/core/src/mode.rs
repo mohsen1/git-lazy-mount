@@ -1,11 +1,11 @@
-//! Git tree-entry modes (spec §10, §28).
+//! Git tree-entry modes.
 
 use serde::{Deserialize, Serialize};
 
 /// The kinds of entry Git records in a tree.
 ///
 /// Git tracks exactly these; it does *not* track owner/group/most permission
-/// bits/mtime/xattrs/ACLs (spec §28).
+/// bits/mtime/xattrs/ACLs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GitMode {
     /// `100644` — a normal file.
