@@ -6,9 +6,9 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 ## A. Vertical-slice experiments (§39) — gate before broad work
 
-- [ ] **A** real mounted `.git`: `git -C <mnt> rev-parse --show-toplevel` → `<mnt>`
-- [ ] **B** zero-content readdir: `ls` of a 100k-file dir fetches **0** blobs
-- [ ] **C** transparent edit + status: edit then `git status --porcelain=v2` correct, no wrapper
+- [x] **A** real mounted `.git`: `git -C <mnt> rev-parse --show-toplevel` → `<mnt>` — *CI `redesign linux mount`*
+- [~] **B** zero-content readdir: `ls` fetches **0** blobs (proven via hydration counter; 100k-file *scale* stress test pending)
+- [ ] **C** transparent edit + status: edit then `git status --porcelain=v2` correct, no wrapper *(needs M2 overlay + M3 index)*
 - [ ] **D** real staging: `git add` then `git diff --cached` uses the real index
 - [ ] **E** interactive staging: `git add -p` (real PTY) stages one hunk
 - [ ] **F** real commit: `git commit` / `--amend`, no adoption step
@@ -18,12 +18,12 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 ## B. Linux MVP release criteria (§43) — all via a real mount
 
-- [ ] 1 `git lazy-mount <url> <path>` clones + mounts + validates (no subcommand)
-- [ ] 2 no required shell env changes afterward
-- [ ] 3 `git rev-parse --show-toplevel` → mountpoint
-- [ ] 4 normal `.git` gitfile → native admin dir
-- [ ] 5 plain `ls` fetches no file blobs
-- [ ] 6 reading one missing file fetches no unrelated blobs
+- [~] 1 `git lazy-mount <url> <path>` clones + mounts + validates (mount proven; the one-command CLI lifecycle is the next M1 step)
+- [x] 2 no required shell env changes afterward — stock `git` used directly in CI
+- [x] 3 `git rev-parse --show-toplevel` → mountpoint — *CI*
+- [x] 4 normal `.git` gitfile → native admin dir — *CI*
+- [x] 5 plain `ls` fetches no file blobs — *CI (hydration counter == 0)*
+- [x] 6 reading one missing file fetches no unrelated blobs — *CI (cat hydrates exactly 1)*
 - [ ] 7 editor atomic save updates the overlay correctly
 - [ ] 8 plain `git status` sees the edit
 - [ ] 9 plain `git add` stages it in the real index
@@ -72,10 +72,10 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 ## D. Hydration budgets (§38) — automated assertions
 
-- [ ] mount (blob:none) fetches 0 working-file blobs to project the tree
-- [ ] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children)
-- [ ] clean `git status` (post-bootstrap): 0 blobs, 0 smudge, no full stat
-- [ ] `cat path`: ≤ the one required blob + its attr/filter metadata
+- [x] mount (blob:none) fetches 0 working-file blobs to project the tree — *CI*
+- [x] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children) — *CI (small scale)*
+- [ ] clean `git status` (post-bootstrap): 0 blobs, 0 smudge, no full stat *(M3)*
+- [x] `cat path`: ≤ the one required blob + its attr/filter metadata — *CI*
 - [ ] 100 concurrent reads of one missing file → 1 retrieval
 - [ ] `O_TRUNC` open: no old-blob fetch
 - [ ] 4 KiB writes to a 1 GiB file: no full read/rewrite, no GiB allocation
