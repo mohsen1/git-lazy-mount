@@ -35,11 +35,14 @@ pub(crate) fn harden_fds(cmd: &mut Command) {
     let _ = cmd;
 }
 
-#[cfg(all(unix, target_os = "linux"))]
+// Fast path on glibc Linux: `CLOSE_RANGE_CLOEXEC` marks every descriptor in the
+// range close-on-exec in one syscall (Linux 5.11+). `libc` only exposes
+// `close_range`/`CLOSE_RANGE_CLOEXEC` for glibc, so musl Linux falls through to
+// the portable `fcntl` loop below (it builds + runs the same way — Alpine etc.).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[allow(unsafe_code)]
 fn set_cloexec_from_3() {
-    // CLOSE_RANGE_CLOEXEC marks every descriptor in the range close-on-exec in one
-    // syscall (Linux 5.11+). Best-effort: ignore the result.
+    // Best-effort: ignore the result.
     unsafe {
         libc::close_range(
             3,
@@ -49,11 +52,12 @@ fn set_cloexec_from_3() {
     }
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
 #[allow(unsafe_code)]
 fn set_cloexec_from_3() {
-    // Portable fallback: set FD_CLOEXEC over a bounded descriptor range (reading
-    // the real limit isn't async-signal-safe, so cap conservatively).
+    // Portable fallback (musl Linux, macOS, other unix): set FD_CLOEXEC over a
+    // bounded descriptor range (reading the real limit isn't async-signal-safe,
+    // so cap conservatively).
     let mut fd: libc::c_int = 3;
     while fd < 4096 {
         unsafe {
