@@ -32,12 +32,31 @@ measured it says so.
 | `fetch` + `merge` | correct | bounded (faults changed blobs) | `git_extra` |
 | `push` | correct | n/a | `m4_m5` |
 | `log` / `show` / `ls-files` | correct | fully lazy (no working blobs) | `m3_git` |
+| `cherry-pick` / `revert` | correct | bounded (touched blobs fault in) | `survey_history` |
+| `rebase --continue` | correct | bounded | `survey_history` |
+| `pull --rebase` | correct | bounded (faults the fetched tip) | `survey_history` |
+| `grep` (worktree / `<rev>`) | correct | potentially eager (reads searched files) | `survey_inspect` |
+| `blame` | correct | bounded | `survey_inspect` |
+| `bisect` (start/run/reset) | correct | per-commit checkout eager | `survey_inspect` |
+| `log -p` | correct | potentially eager (diffs touched blobs) | `survey_inspect` |
+| `clean -fd` | correct | fully lazy (unlink/rmdir overlay) | `survey_worktree_ops` |
+| `restore` / `checkout -- <path>` | correct | bounded (one blob fault) | `survey_worktree_ops` |
+| `mv <file>` / `mv <dir>` (rename) | correct | fully lazy (base-refs + subtree, no fetch) | `survey_worktree_ops` |
+| `fsck` / `gc` / `repack` / `maintenance` / `prune` | correct | fully lazy (object store only) | `survey_maintenance` |
+| `worktree add` (linked) | correct | potentially eager (the linked checkout hydrates) | `survey_advanced` |
+| `.gitattributes` clean filter (`text=auto`) | correct | bounded | `survey_advanced` |
+| `.gitattributes` smudge (eol/ident/custom) | partial — raw bytes served; **commits stay correct** (clean filter is the inverse). See limitations R7. | n/a | `survey_advanced` |
+| `submodule` add/status/update | partial — not yet validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
+
+In-place edits of the **same byte size** are detected correctly: overlay files
+report their real on-disk mtime, so git's racy-clean logic re-checks content
+(§22) — a constant mtime would have hidden such edits.
 
 ## Not yet classified
 
-`pull --rebase`, `cherry-pick`, `revert`, `bisect`, `blame`, `grep`, `clean`,
-`worktree`, `submodule`, LFS/filter paths, and the maintenance commands
-(`fsck`/`gc`/`repack`/`maintenance`) are not yet exercised by a mounted test.
+`cherry` (range), `am`/`apply` of mailbox patches, `notes`, `replace`, deep
+**LFS** (an external `filter=lfs` driver), and full **submodule** workflows are
+not yet exercised by a mounted test.
 
 ## The eagerness headline (§27)
 

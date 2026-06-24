@@ -23,10 +23,11 @@ pub mod journal;
 pub mod overlay;
 pub use overlay::{Overlay, OverlayEntry};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use glm_fs_common::{InodeTable, ROOT_INO};
@@ -66,6 +67,10 @@ pub struct Attr {
     pub generation: u64,
     /// Exact byte size (0 for directories).
     pub size: u64,
+    /// Last-modified time. Overlay files report their real on-disk mtime so git's
+    /// stat cache / racy-clean logic detects in-place edits (including *same-size*
+    /// edits, §22); baseline entries and directories report a stable epoch.
+    pub mtime: SystemTime,
     /// Entry kind.
     pub kind: Kind,
 }
@@ -364,21 +369,32 @@ impl Projection {
     }
 
     fn attr_of(&self, ino: u64, generation: u64, r: &Resolved) -> Result<Attr> {
-        let (kind, size) = match r {
-            Resolved::Dir { .. } => (Kind::Dir, 0),
-            Resolved::Gitfile => (Kind::File { executable: false }, self.gitfile.len() as u64),
+        let (kind, size, mtime) = match r {
+            Resolved::Dir { .. } => (Kind::Dir, 0, UNIX_EPOCH),
+            Resolved::Gitfile => (
+                Kind::File { executable: false },
+                self.gitfile.len() as u64,
+                UNIX_EPOCH,
+            ),
             Resolved::File { source, executable } => {
-                let size = match source {
-                    FileSource::Overlay(p) => self.overlay.content_size(p)?,
-                    FileSource::Baseline(oid) => {
-                        self.repo.store().object_size(oid, self.metadata_fetch)?
-                    }
+                let (size, mtime) = match source {
+                    // Overlay files carry their real mtime so git detects in-place
+                    // edits — including same-size ones — via its racy-clean logic.
+                    FileSource::Overlay(p) => (
+                        self.overlay.content_size(p)?,
+                        self.overlay.content_mtime(p)?,
+                    ),
+                    FileSource::Baseline(oid) => (
+                        self.repo.store().object_size(oid, self.metadata_fetch)?,
+                        UNIX_EPOCH,
+                    ),
                 };
                 (
                     Kind::File {
                         executable: *executable,
                     },
                     size,
+                    mtime,
                 )
             }
             Resolved::Symlink { source } => {
@@ -388,13 +404,14 @@ impl Projection {
                         self.repo.store().object_size(oid, self.metadata_fetch)?
                     }
                 };
-                (Kind::Symlink, size)
+                (Kind::Symlink, size, UNIX_EPOCH)
             }
         };
         Ok(Attr {
             ino,
             generation,
             size,
+            mtime,
             kind,
         })
     }
@@ -535,13 +552,13 @@ impl Projection {
     /// and return an open read FD. Streams via `cat-file` (no in-process buffer)
     /// and publishes atomically (temp + rename) so a partial file is never used.
     fn materialize(&self, oid: &ObjectId) -> Result<std::fs::File> {
-        let path = self.materialize_path(oid)?;
-        std::fs::File::open(&path)
+        let cached = self.materialize_path(oid)?;
+        std::fs::File::open(&cached)
             .map_err(|e| Error::new(ErrorCode::Internal, format!("open cache file: {e}")))
     }
 
     /// Ensure the blob is present in the content-addressed cache and return its
-    /// path (used to seed a copy-up; §17.2).
+    /// path (used to seed a copy-up; §17.2). The cache is keyed by oid (§20.2).
     fn materialize_path(&self, oid: &ObjectId) -> Result<PathBuf> {
         let final_path = self.cache_dir.join(oid.to_hex());
         if final_path.exists() {
@@ -631,6 +648,7 @@ impl Projection {
                 ino,
                 generation,
                 size: 0,
+                mtime: self.overlay.content_mtime(&path).unwrap_or(UNIX_EPOCH),
                 kind: Kind::File { executable },
             },
             file,
@@ -722,6 +740,7 @@ impl Projection {
             ino,
             generation,
             size: 0,
+            mtime: UNIX_EPOCH,
             kind: Kind::Dir,
         })
     }
@@ -771,15 +790,18 @@ impl Projection {
             ino,
             generation,
             size: target.len() as u64,
+            mtime: UNIX_EPOCH,
             kind: Kind::Symlink,
         })
     }
 
-    /// Rename a file or symlink (FUSE `rename`). A clean baseline file moves as a
-    /// metadata-only base-ref (no fetch, §29); an overlay file re-keys its
-    /// content. `flags` honors `RENAME_NOREPLACE` (fail if the destination
-    /// exists) and rejects `RENAME_EXCHANGE` as unsupported (§29). Directory/
-    /// subtree rename is a later refinement.
+    /// Rename a file, symlink, or directory (FUSE `rename`). A clean baseline file
+    /// moves as a metadata-only base-ref (no fetch, §29); an overlay file re-keys
+    /// its content; a directory moves its whole subtree (overlay descendants
+    /// re-keyed, baseline descendants re-pointed as base-refs, the source subtree
+    /// tombstoned) — all metadata-only, no blob fetch. `flags` honors
+    /// `RENAME_NOREPLACE` (fail if the destination exists) and rejects
+    /// `RENAME_EXCHANGE` as unsupported (§29).
     pub fn rename(
         &self,
         parent_ino: u64,
@@ -798,6 +820,10 @@ impl Projection {
         }
         if flags & RENAME_NOREPLACE != 0 && self.resolve(&dst)?.is_some() {
             return Err(Error::new(ErrorCode::AlreadyExists, "destination exists"));
+        }
+        // A directory moves its whole subtree.
+        if matches!(self.resolve(&src)?, Some(Resolved::Dir { .. })) {
+            return self.rename_dir(&src, &dst);
         }
         if self.overlay.lookup(&src).is_some() {
             self.overlay.rename(&src, &dst)?;
@@ -826,16 +852,102 @@ impl Projection {
                 self.overlay.put_base_ref(&dst, oid, GitMode::Symlink)?;
                 self.overlay.tombstone(&src)?;
             }
-            Some(Resolved::Dir { .. }) => {
-                return Err(Error::new(
-                    ErrorCode::UnsupportedOperation,
-                    "directory rename not yet supported",
-                ));
-            }
             _ => return Err(Error::new(ErrorCode::NotFound, "no such file")),
         }
         self.inodes.rename(&src, &dst);
         Ok(())
+    }
+
+    /// Move a directory `src` to `dst`, recursively (helper for [`rename`]).
+    /// Overlay descendants re-key (content moves with them); baseline descendants
+    /// become base-refs at the destination (no blob fetch); the source subtree is
+    /// then tombstoned so the baseline beneath it is hidden. Metadata-only (§29).
+    fn rename_dir(&self, src: &RepoPath, dst: &RepoPath) -> Result<()> {
+        self.overlay.put_dir(dst)?;
+        for (name, resolved) in self.effective_children(src)? {
+            let cs = self.join(src, &name)?;
+            let cd = self.join(dst, &name)?;
+            match resolved {
+                Resolved::Dir { .. } => {
+                    self.rename_dir(&cs, &cd)?;
+                    continue; // recursion re-keys inodes + tombstones `cs`
+                }
+                Resolved::File {
+                    source: FileSource::Overlay(_),
+                    ..
+                }
+                | Resolved::Symlink {
+                    source: SymSource::Overlay(_),
+                } => {
+                    self.overlay.rename(&cs, &cd)?;
+                }
+                Resolved::File {
+                    source: FileSource::Baseline(oid),
+                    executable,
+                } => {
+                    let mode = if executable {
+                        GitMode::Executable
+                    } else {
+                        GitMode::Regular
+                    };
+                    self.overlay.put_base_ref(&cd, oid, mode)?;
+                }
+                Resolved::Symlink {
+                    source: SymSource::Baseline(oid),
+                } => {
+                    self.overlay.put_base_ref(&cd, oid, GitMode::Symlink)?;
+                }
+                Resolved::Gitfile => continue, // cannot occur below the root
+            }
+            self.inodes.rename(&cs, &cd);
+        }
+        self.overlay.tombstone(src)?;
+        self.inodes.rename(src, dst);
+        Ok(())
+    }
+
+    /// The effective (overlay-over-baseline) children of a directory path, each
+    /// with its resolved source. Mirrors [`readdir`](Self::readdir) but returns
+    /// [`Resolved`] for recursive subtree walks.
+    fn effective_children(&self, dir: &RepoPath) -> Result<Vec<(Vec<u8>, Resolved)>> {
+        let Some(Resolved::Dir { baseline_tree }) = self.resolve(dir)? else {
+            return Err(Error::new(ErrorCode::Internal, "not a directory"));
+        };
+        let mut names: Vec<Vec<u8>> = Vec::new();
+        let mut seen: HashSet<Vec<u8>> = HashSet::new();
+        if let Some(tree) = baseline_tree {
+            for e in self.repo.store().read_tree(&tree, false)?.entries {
+                let child = self.join(dir, &e.name)?;
+                if self.overlay.lookup(&child).is_some() {
+                    continue; // an overlay entry decides this name below
+                }
+                if seen.insert(e.name.clone()) {
+                    names.push(e.name);
+                }
+            }
+        }
+        for (name, entry) in self.overlay.children(dir) {
+            if matches!(entry, OverlayEntry::Tombstone) {
+                continue;
+            }
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            let child = self.join(dir, &name)?;
+            if let Some(r) = self.resolve(&child)? {
+                out.push((name, r));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Join a child name onto a directory path, mapping a path error uniformly.
+    fn join(&self, dir: &RepoPath, name: &[u8]) -> Result<RepoPath> {
+        dir.join(name)
+            .map_err(|e| Error::new(ErrorCode::InvalidRepositoryPath, format!("{e}")))
     }
 
     /// Set/clear the executable bit (FUSE `setattr` mode), copying up if needed.
@@ -1314,5 +1426,51 @@ mod tests {
             before,
             "readdir of 1000 files fetched a blob"
         );
+    }
+
+    #[test]
+    fn directory_rename_moves_subtree_without_fetch() {
+        // §29: renaming a directory moves its whole subtree (baseline + overlay,
+        // nested) with no blob fetch — metadata-only.
+        use std::io::Write as _;
+        let (_t, _r, p) = projection_of(&[
+            ("dir/a.txt", b"alpha\n"),
+            ("dir/sub/b.txt", b"beta\n"),
+            ("keep.txt", b"k\n"),
+        ]);
+        let root = p.root_ino();
+        let dir_ino = p.lookup(root, b"dir").unwrap().unwrap().ino;
+        {
+            let (_a, mut f) = p.create(dir_ino, b"c.txt", false).unwrap();
+            f.write_all(b"gamma\n").unwrap();
+        }
+
+        let before = p.hydrations();
+        p.rename(root, b"dir", root, b"dir2", 0).unwrap();
+        assert_eq!(p.hydrations(), before, "directory rename fetched a blob");
+
+        assert!(
+            p.lookup(root, b"dir").unwrap().is_none(),
+            "source directory should be gone"
+        );
+        let read = |parent: u64, name: &[u8]| -> Vec<u8> {
+            let a = p.lookup(parent, name).unwrap().unwrap();
+            p.open_content(a.ino).unwrap().read_at(0, 4096).unwrap()
+        };
+        let dir2 = p.lookup(root, b"dir2").unwrap().expect("dir2 exists");
+        assert_eq!(dir2.kind, Kind::Dir);
+        assert_eq!(read(dir2.ino, b"a.txt"), b"alpha\n", "baseline file moved");
+        assert_eq!(read(dir2.ino, b"c.txt"), b"gamma\n", "overlay file moved");
+        let sub = p
+            .lookup(dir2.ino, b"sub")
+            .unwrap()
+            .expect("nested dir moved");
+        assert_eq!(sub.kind, Kind::Dir);
+        assert_eq!(
+            read(sub.ino, b"b.txt"),
+            b"beta\n",
+            "nested baseline file moved"
+        );
+        assert_eq!(read(root, b"keep.txt"), b"k\n", "sibling untouched");
     }
 }

@@ -47,9 +47,9 @@ fn fuse_attr(a: &Attr, uid: u32, gid: u32) -> FuseFileAttr {
         ino: a.ino,
         size: a.size,
         blocks: a.size.div_ceil(512),
-        atime: UNIX_EPOCH,
-        mtime: UNIX_EPOCH,
-        ctime: UNIX_EPOCH,
+        atime: a.mtime,
+        mtime: a.mtime,
+        ctime: a.mtime,
         crtime: UNIX_EPOCH,
         kind,
         perm,
@@ -161,6 +161,7 @@ impl Filesystem for TransparentFs {
                         ino,
                         generation: 0,
                         size,
+                        mtime: UNIX_EPOCH,
                         kind: Kind::File { executable: false },
                     };
                     reply.attr(&TTL, &fuse_attr(&a, uid, gid));
