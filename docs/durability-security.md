@@ -405,8 +405,8 @@ index timestamp; it then re-hashes the file to decide clean-vs-dirty. Two
 hazards:
 
 1. If our synthetic mtime equals the index write time, Git re-hashes the file on
-   the next status → a clean file triggers content hydration (violating the
-   "clean status fetches zero blobs" guarantee).
+   the next status → a clean file triggers content hydration on every status,
+   not just the first.
 2. If we ever move a synthetic mtime *forward* on a passive read, Git flags a
    clean file modified (we must not mark a path modified merely because a
    synthetic timestamp differs).
@@ -415,9 +415,18 @@ Mitigation:
 
 - **RACY-1**: synthetic mtimes are set to the **projection epoch**, which is
   strictly **earlier** than any index Git writes after mount, so clean
-  unmaterialized files are never racy. The FSMonitor bootstrap marks
-  initial entries FSMonitor-valid so status skips the mtime check entirely on the
-  clean path.
+  unmaterialized files are never racy. FSMonitor is wired through
+  `core.fsmonitor` (the `git-lazy-mount-fsmonitor` hook reading the daemon's
+  durable change journal): it lets a **subsequent** clean status skip the
+  redundant full-tree stat scan. It does **not** make the *first* clean status
+  zero-blob — under a `blob:none` clone Git marks each read-tree'd entry clean
+  from the hook's empty reply, then immediately marks it fsmonitor_invalid
+  because the entry has no stat data; Git must populate the index stat
+  (including the file size) to skip the content check, and the exact size of an
+  unmaterialized blob requires fetching it. The fsmonitor-valid bit does
+  not override an empty-stat entry. So the **first** clean status faults each
+  tracked blob once for its size; only **subsequent** clean statuses are
+  zero-blob.
 - **RACY-2**: when a file *is* materialized (overlay content), its mtime is the
   real native file mtime (the overlay file's `stat`, like `content_len`,
   overlay/src/lib.rs:215) — honest, and FSMonitor reports the change so Git
@@ -428,8 +437,9 @@ Mitigation:
   timestamp guess.
 
 Tested against a real `git status --porcelain=v2` differential vs. a normal
-checkout at the same commit: clean status fetches zero blobs, and an edit is
-reported exactly once.
+checkout at the same commit: the first clean status faults each tracked blob
+once for its size, every subsequent clean status fetches zero blobs, and
+an edit is reported exactly once.
 
 ---
 
@@ -663,8 +673,9 @@ Synthetic metadata / racy-clean:
 - **STBL-1** `getattr` is byte-stable across reads within a generation.
 - **STBL-2** directory mtime/`dir_generation` changes on direct-child change only.
 - **STBL-3** size is never fabricated; `readdir` never requests it.
-- **RACY-1** clean unmaterialized files are never racy → clean status fetches zero
-  blobs.
+- **RACY-1** clean unmaterialized files are never racy; the first clean status
+  faults each tracked blob once for its size, every subsequent clean status
+  fetches zero blobs.
 
 Auth / offline:
 - **AUTH-1** read with expired creds returns a bounded errno, never hangs.

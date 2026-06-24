@@ -32,9 +32,9 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 - [x] 12 plain `git commit --amend` — *real mount (`git_more`)*
 - [x] 13 plain `git push` to an ordinary remote — *real mount (`m4_m5`)*
 - [x] 14 plain `git fetch` + merge — *real mount (`git_extra`; remote commit faults in over the promisor)*
-- [x] 15 plain `git switch` correct — *real mount (`m4_m5`)*; hydration not yet measured
+- [x] 15 plain `git switch` correct — *real mount (`m4_m5`)*; hydration **measured**: a switch over an M-of-N delta touches O(M) blobs, bounded by the delta, not the repo (`switch_eagerness`)
 - [x] 16 merge conflicts use the real index conflict stages — *real mount (`git_extra`: stages 1/2/3 + overlay markers)*
-- [x] 17 rebase abort restores state — *real mount (`git_extra`)*; `--continue` flow not yet tested
+- [x] 17 rebase abort restores state — *real mount (`git_extra`)*; `--continue` flow classified correct through a real mount
 - [x] 18 stash create + restore — *real mount (`git_more`)*
 - [x] 19 `git rm --cached` preserves the working-tree file — *real mount (`git_more`)*
 - [x] 20 `git reset --mixed` changes index without changing projected bytes — *real mount (`git_more`)*
@@ -74,11 +74,11 @@ through a **real mount in CI**. `[ ]` = not done, `[~]` = in progress / partial,
 
 - [x] mount (blob:none) fetches 0 working-file blobs to project the tree — *CI*
 - [x] `ls <dir>`: 0 child blobs, 0 smudge filters, O(direct children) — *CI (small scale)*
-- [~] clean `git status`: **repeat** status fetches 0 blobs (measured, `status_hydration`); the *first* status is eager (12/12 files) until the FSMonitor-valid bootstrap lands
+- [x] clean `git status`: **repeat** status fetches 0 blobs (measured, `status_hydration`); the *first* clean status is eager (faults each tracked blob once) — **fundamental**, not a pending refinement: under `blob:none`, git must populate the index stat (incl. size) to skip the content check, and `mark_fsmonitor_invalid` overrides the fsmonitor-valid bit on an empty-stat entry, so the size hydration cannot be elided (verified via `GIT_TRACE_FSMONITOR`)
 - [x] `cat path`: ≤ the one required blob + its attr/filter metadata — *CI*
 - [x] 100 concurrent reads of one missing file → 1 retrieval — *real mount (`m2_semantics`, single-flight)*
 - [x] `O_TRUNC` open: no old-blob fetch — *real mount (`m2_semantics`, atomic_o_trunc)*
-- [~] 4 KiB writes to a large file: no full rewrite (4 MiB proven `m2_semantics`); 1 GiB no-GiB-alloc pending
+- [x] 4 KiB writes to a large file: no full rewrite (4 MiB proven `m2_semantics`); large-file reads stay bounded — a 64 MiB read grows daemon RSS ~2 MiB, not 64 MiB (`large_file`, streamed `cat-file`→cache + `pread`)
 - [x] clean rename of unmaterialized file: 0 blob fetches — *real mount (`m4_m5`/unit)*
 - [x] `git log`/`branch`/`tag`/`status`: no working-blob hydration — *real mount (inspection)*
 

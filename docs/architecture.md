@@ -83,6 +83,9 @@ mounting validating mounted quiescing unmounting recovering failed`. Enter
   rename-while-open.
 - Bounded executor (separate metadata / local-IO / decompress / filter /
   network pools), backpressure, cancellation — never one thread per callback.
+  `readdir` and other non-faulting metadata callbacks run on a fast metadata
+  pool while object-IO callbacks use the main pool, so `ls` stays responsive
+  even while reads are hydrating blobs.
 
 ## Deadlock invariants
 
@@ -95,14 +98,27 @@ all session FDs are CLOEXEC and not inherited by children.
 
 ## FSMonitor v2 + hook chaining
 
-A tiny hook is a thin IPC client to the daemon, which serves the durable
-FSMonitor protocol (token = workspace + journal epoch + monotonic seq +
-projection generation; inclusive responses; `/` full-invalidation on any
-discontinuity). Bootstrap marks initial index entries FSMonitor-valid **without
-hashing working-tree contents** so the first + every clean `status` fetch zero
-blobs. Notification hooks (post-index-change, reference-transaction,
-post-checkout/merge/commit/rewrite) are *multiplexed* with the user's existing
-hooks, never replacing them.
+A tiny hook (`git-lazy-mount-fsmonitor`) is a thin IPC client to the daemon,
+which serves the durable FSMonitor protocol (token = workspace + journal epoch +
+monotonic seq + projection generation; inclusive responses; `/`
+full-invalidation on any discontinuity). The hook reads a durable change journal
+the daemon writes synchronously, so change detection is correct (no false
+negatives) and git can skip the redundant full-tree stat scan on **subsequent**
+clean statuses.
+
+The original design hoped to make even the **first** clean `git status` fetch
+zero blobs by marking index entries FSMonitor-valid at bootstrap. That goal is
+**fundamentally unachievable with stock git on a `blob:none` clone** and the doc
+no longer claims it. Stock git marks each read-tree'd entry clean from the hook's
+empty reply, then immediately re-marks it `fsmonitor_invalid` because the entry
+carries no stat data: git must populate the index stat — including the file
+**size** — to skip the content check, and under `blob:none` the size is unknown
+until the blob is fetched. The FSMonitor-valid bit does not override an
+empty-stat entry. So the **first** clean `status` faults each tracked blob once
+(the same `getattr` size hydration described below); only **subsequent** clean
+statuses are zero-blob. Notification hooks (post-index-change,
+reference-transaction, post-checkout/merge/commit/rewrite) are *multiplexed* with
+the user's existing hooks, never replacing them.
 
 ## Crate structure — built behind the transparent design
 
@@ -119,17 +135,54 @@ the CLOEXEC fd-hardening are reusable substrate; the custom `stage`,
 
 ## Milestone plan — Linux only, real-mount tested in CI
 
-- **M0** this: architecture + requirements checklist + a first vertical
+Shipped (M0–M6), all real-`/dev/fuse`-CI tested:
+
+- **M0** architecture + requirements checklist + a first vertical
   slice (transparent read-only mount, stock `git rev-parse`, zero-hydration
-  readdir, lazy read), in real `/dev/fuse` CI.
-- **M1** read-only vertical slice complete (one-command clone+daemon+mount).
+  readdir, lazy read).
+- **M1** read-only vertical slice (one-command clone+daemon+mount).
 - **M2** writable semantics (real handles, CoW, rename, open-unlink, durable
   overlay, recovery).
 - **M3** stock status/staging/commit via the real index + durable FSMonitor v2.
-- **M4** branch-changing workflows (switch/reset/merge/rebase/…); measured eagerness.
+- **M4** branch-changing workflows (switch/reset/merge/rebase/…); a branch
+  switch over an M-of-N delta is **measured** to touch O(M) blobs, bounded by
+  the delta, not O(N) the repo.
 - **M5** remote + maintenance (fetch/pull/push/gc/…); offline; credential recovery.
 - **M6** large-repo index strategy chosen from measurements (Profiles A–D).
-- **M7** optional shared object cache. **M8** other platforms (out of scope here).
+  Large-file reads are bounded-memory: reading a 64 MiB baseline blob grows
+  daemon RSS by ~2 MiB, not 64 MiB (streamed `cat-file` → cache → `pread`).
+
+The transparent mount produces a FUSE working tree byte-identical to a normal
+checkout that stock git, editors, and builds drive directly. The full git
+command surface — including apply, am, notes, replace, cherry-pick (incl.
+ranges), revert, rebase --continue, pull --rebase, grep, blame, bisect,
+tag/describe/archive, clean, restore/--staged, fsck/gc/repack/maintenance, and
+worktree add — is classified correct through real mounts.
+
+Genuinely deferred (still future):
+
+- **M7** shared object cache across workspaces.
+- Submodules (partial; some tests `#[ignore]`'d) and LFS end-to-end (bounded by
+  the smudge-side raw-baseline behavior below; needs a separate git-lfs/server
+  integration).
+- **M8** other platforms — Windows (ProjFS) and macOS (FSKit) are out of scope;
+  their notes live under `future-platforms/`.
+
+### By-design behaviors (not bugs, not TODOs)
+
+- **Whole-directory / subtree rename is metadata-only** — an overlay re-key plus
+  baseline base-refs, no blob fetch. (A clean *rename* fetching zero blobs is
+  correct; it is unrelated to the first clean *status*, which is eager.)
+- **`getattr` size hydration is fundamental to `blob:none`.** The exact size of
+  an unmaterialized blob requires fetching it, so `ls -l` / `stat` and the first
+  clean `git status` fault each blob once. Not closeable without a server-side
+  size manifest.
+- **Content-file retention is correct via Linux fd survival** — an
+  unlinked-but-open inode persists until the last fd closes.
+- **Smudge-side `.gitattributes` / LFS serve the raw baseline blob.** A
+  smudge-filtered file (`eol=crlf`, `ident`, an LFS pointer) reads as its stored
+  bytes, not the smudged bytes; commits stay byte-correct because the clean
+  filter is the inverse. Not closeable without filter-aware lazy sizing.
 
 Priority order: stock-Git correctness → user-data durability → filesystem
 correctness → transparent UX → measured laziness → large-repo perf → sharing.

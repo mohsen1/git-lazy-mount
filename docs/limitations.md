@@ -1,9 +1,10 @@
 # Known limitations & tracked refinements
 
-What doesn't work, what's deferred, and why — honestly (we don't claim anything
-we haven't proven). What **does** work is in the [requirements
-checklist](requirements-checklist.md);
-this lists what is deliberately deferred, with the test
+What's by-design, what's fundamental, and what's genuinely deferred — honestly
+(we don't claim anything we haven't proven). What **does** work is in the
+[requirements checklist](requirements-checklist.md);
+this lists the refinements that shipped, the costs that are fundamental to
+`blob:none`, and the few items still deferred, each with the test
 that will be un-`#[ignore]`d when it lands.
 
 ## Correctness / filesystem refinements
@@ -18,7 +19,7 @@ that will be un-`#[ignore]`d when it lands.
 | R6 | **`getattr` size hydration (fundamental to `blob:none`)** — the exact size of an unmaterialized blob requires faulting the object: trees carry no sizes, and `cat-file --batch-check` fetches the whole promisor object to report one. So `ls -l`/`stat` and the **first** `git status` (which must populate the index stat to verify cleanliness) fault each blob once. This is **not closeable** without a server-side size manifest — it is the root cause of P1's first-status cost. | by-design (fundamental) | — |
 | R7 | **Smudge-side `.gitattributes`** — the projection serves the **raw baseline blob**, so a file governed by a *smudge* filter (`eol=crlf`, `ident`, `working-tree-encoding`, a custom `filter=`/LFS driver) reads through the mount as its stored bytes (LF, unexpanded `$Id$`), not the bytes a real checkout would write. Git's *content* comparison stays clean (the clean filter is the inverse) and **commits remain byte-correct**; only working-tree reads of smudge-attributed files diverge. Applying smudge at materialize would make `getattr` size depend on the filter output, breaking the lazy-stat / clean-rename-without-fetch guarantees (the directory-rename-without-fetch path of R5) — a correct fix needs filter-aware lazy sizing. | by-design (documented) | — |
 
-## Performance / laziness (built but not yet wired)
+## Performance / laziness (wired and shipped)
 
 | # | Area | Status |
 |---|------|--------|
@@ -26,7 +27,7 @@ that will be un-`#[ignore]`d when it lands.
 | P2 | **Bounded executor split** — **done**: `readdir` (which reads only present tree objects + the overlay, never a blob) runs on a separate small **metadata pool**; object-IO callbacks (read/open/write/lookup/getattr/…) keep the main pool. So an `ls` stays responsive even when every IO thread is hydrating a blob. (`lookup`/`getattr` still fault for *size* — that's R6, a separate fundamental cost, not this split's concern.) | ✅ done |
 | P3 | **Switch/rebase eagerness** — **measured** (`switch_eagerness`): a branch switch over an M-of-N delta touches O(M) blobs, not O(N) — bounded by the delta, not the repo. | ✅ measured |
 
-## Product surface not yet built
+## Product surface: proven core, genuinely deferred extras
 
 | # | Area | Status |
 |---|------|--------|
@@ -34,6 +35,8 @@ that will be un-`#[ignore]`d when it lands.
 | S2 | **Shared object cache** across workspaces, **LFS / custom filters** (an external `filter=` driver — git-lfs not installed in CI; the *clean* filter and native `text/eol/ident` attributes are exercised, R7), **submodules / nested worktrees** (classified `partial`). | deferred |
 | S3 | **Windows (ProjFS) / macOS (FSKit)** backends — out of scope for this Linux-only tool; the engine is platform-neutral and the design notes are kept under [`future-platforms/`](future-platforms/). | out of scope |
 
-Nothing above is claimed as working in the checklist. Each refinement has
-(where applicable) a test that will flip from `#[ignore]` to green
-when implemented.
+The shipped refinements (R1–R5, P1–P3, S1) have green tests, named above; the
+by-design / fundamental costs (R4, R6, R7) are stated plainly rather than
+tracked as bugs; the genuinely deferred items (S2's shared cache, LFS,
+submodules) still carry a test that will flip from `#[ignore]` to green when
+implemented.

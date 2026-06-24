@@ -232,7 +232,7 @@ pub enum MountState {
 | `Creating` | preflight fail | `Failed` | actionable error; record never claimed `Mounted` |
 | `Cloning` | clone+fetch OK | `InitializingGit` | base commit/tree resolved |
 | `InitializingGit` | config written | `BuildingIndex` | gitfile + `core.worktree` set |
-| `BuildingIndex` | index written | `StartingDaemon` | 0 blobs fetched (assert) |
+| `BuildingIndex` | index written | `StartingDaemon` | 0 blobs fetched during build (assert) |
 | `StartingDaemon` | session up | `Mounting` | session fd `O_CLOEXEC` (INV-D6) |
 | `Mounting` | `mount()` returns | `Validating` | kernel mount exists |
 | `Validating` | health checks pass | **`Mounted`** | publish `Mounted`; return success |
@@ -338,11 +338,16 @@ namespace generation = 1             fsmonitor token = (workspace, epoch=1, seq=
 ### 3.4 Phase 3 — initialize the real index → `BuildingIndex`
 
 Build a **full `$GIT_DIR/index`** from the base tree using the admin gitdir.
-Correctness-first: O(tracked paths), **fetch zero blobs**. Use
-`git read-tree <base-tree>` against the admin gitdir (with `core.worktree` set to
-the mountpoint but the mount **not yet live**, so no callbacks fire). Then mark
-entries FSMonitor-valid via the bootstrap without hashing worktree
-content. Report honestly (never market as O(1)):
+Correctness-first: O(tracked paths), **the index build itself fetches zero
+blobs**. Use `git read-tree <base-tree>` against the admin gitdir (with
+`core.worktree` set to the mountpoint but the mount **not yet live**, so no
+callbacks fire). The `read-tree`'d entries carry no worktree stat data, so the
+*first* clean `git status` after mount cannot be skipped by FSMonitor: stock git
+populates each entry's stat (including the file SIZE) before it will trust the
+content as clean, and under a `blob:none` clone the exact size requires the
+blob — so the first status faults each tracked blob once (the getattr
+size-hydration cost; see [`requirements-checklist.md`](requirements-checklist.md)).
+Report honestly (never market as O(1)):
 
 ```rust
 pub struct IndexBuildStats {
@@ -393,10 +398,14 @@ Only after **all** pass: persist `Mounted`, return `MountReady`. Any failure →
 unmount the kernel mount, persist `Failed{HealthCheck}`, **preserve the overlay
 and admin gitdir** (no destructive cleanup of user-reachable state).
 
-**INV-S2.** The health-check `git status` fetches **0** working blobs
-(post-bootstrap) (REG-S2). **INV-S3.** A crash at any phase leaves the registry in
-a non-terminal state recoverable by recovery with no acknowledged-write loss
-(crash-injection matrix: after each phase boundary).
+**INV-S2.** The health-check `git status` exits 0 and is byte-faithful. It is
+**not** zero-blob: this *first* clean status faults each tracked blob once to
+hydrate the index stat size (a `blob:none` clone cannot know a blob's exact size
+without it, and stock git will not mark an entry clean from FSMonitor without that
+size). Only *subsequent* clean statuses are zero-blob, served from `core.fsmonitor`
+plus the now-populated stat data (REG-S2). **INV-S3.** A crash at any phase leaves
+the registry in a non-terminal state recoverable by recovery with no
+acknowledged-write loss (crash-injection matrix: after each phase boundary).
 
 ---
 
@@ -507,13 +516,16 @@ journal compaction past a needed token   unreconciled crash (we were non-termina
 namespace generation bumped during recovery
 ```
 
-The design’s FSMonitor token is `(workspace, journal-epoch, monotonic-seq,
-projection-generation)` — note the current
-`crates/fsmonitor/src/lib.rs` journal is an in-memory `Mutex<Vec<…>>`
-(an anti-pattern) and must become a durable WAL/append log that survives restart or
-returns `/`. Recovery **bumps the journal epoch** when it cannot prove continuity;
-an epoch bump deterministically forces `/` for any pre-restart token. Wire format
-of the `/`-response: `<new-token>\0/\0`.
+The FSMonitor token is `(workspace, journal-epoch, monotonic-seq,
+projection-generation)`. FSMonitor is wired to `core.fsmonitor` via the
+`git-lazy-mount-fsmonitor` hook, which reads the durable change journal the daemon
+writes synchronously; the journal is a durable append log that survives restart (and
+when continuity cannot be proven, FSMonitor returns `/`). It delivers correct change
+detection (no false negatives) and lets git
+skip the redundant full-tree stat scan on subsequent clean statuses. Recovery
+**bumps the journal epoch** when it cannot prove continuity; an epoch bump
+deterministically forces `/` for any pre-restart token. Wire format of the
+`/`-response: `<new-token>\0/\0`.
 
 ### 4.7 Step 7 — quarantine ambiguous files
 
@@ -572,7 +584,7 @@ quarantined rather than removed. This is the single safety bias of recovery.
 | INV-L2 | non-terminal states ⇒ recover on startup | REG-L2 |
 | INV-L3 | write-ahead state persistence | REG-S3 |
 | INV-S1 | index build fetches 0 blobs | REG-S1 |
-| INV-S2 | health-check status fetches 0 blobs | REG-S2 |
+| INV-S2 | health-check status exits 0; first status faults each blob once, subsequent statuses zero-blob | REG-S2 |
 | INV-S3 | crash-at-any-phase recoverable, no loss | REG-R8 |
 | INV-R1 | acknowledged writes never deleted | REG-R1 |
 | INV-R2 | recovery never rewrites git state / steals live locks | REG-R3 |
