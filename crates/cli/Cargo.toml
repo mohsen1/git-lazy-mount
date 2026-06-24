@@ -6,10 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The transparent `git-lazy-mount` executable (design.md §1): `git lazy-mount <url> <path>` then plain stock git works."
+autobins = false
 
 [[bin]]
 name = "git-lazy-mount"
 path = "src/main.rs"
+
+# The core.fsmonitor v2 hook (§12); git invokes it on every status to learn what
+# changed without statting the whole tree.
+[[bin]]
+name = "git-lazy-mount-fsmonitor"
+path = "src/bin/fsmonitor_hook.rs"
 
 [lints]
 workspace = true

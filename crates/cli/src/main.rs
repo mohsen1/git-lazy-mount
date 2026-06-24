@@ -160,9 +160,35 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
         .map_err(|e| format!("clone: {e}"))?;
     repo.build_index()
         .map_err(|e| format!("build index: {e}"))?;
+    // Configure the FSMonitor hook so git learns what changed without statting the
+    // whole tree — the first clean `git status` faults 0 blobs (§12). Best-effort:
+    // if the hook binary isn't found, git status still works (just eager).
+    configure_fsmonitor(&gitdir);
     drop(repo);
 
     mount_and_validate(&gitdir, path, &cache, &overlay)
+}
+
+/// Point `core.fsmonitor` at the `git-lazy-mount-fsmonitor` hook installed
+/// alongside this binary, and select hook protocol v2.
+fn configure_fsmonitor(gitdir: &Path) {
+    let hook = match std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("git-lazy-mount-fsmonitor")))
+    {
+        Some(h) if h.exists() => h,
+        _ => return,
+    };
+    let Some(hook) = hook.to_str() else { return };
+    let set = |key: &str, val: &str| {
+        let _ = Command::new("git")
+            .arg("--git-dir")
+            .arg(gitdir)
+            .args(["config", key, val])
+            .status();
+    };
+    set("core.fsmonitor", hook);
+    set("core.fsmonitorHookVersion", "2");
 }
 
 #[cfg(feature = "fuse")]
@@ -229,9 +255,19 @@ fn mount_and_validate(_gitdir: &Path, _mountpoint: &Path, _cache: &Path, _overla
 fn cmd_serve(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &Path) -> R {
     let repo =
         glm_git_repo::AdminRepo::open(gitdir, mountpoint).map_err(|e| format!("open: {e}"))?;
+    // The FSMonitor change journal (§12): every worktree mutation is recorded so
+    // the hook answers `git status` without statting the whole tree.
+    let journal = glm_worktree::journal::ChangeJournal::open(
+        glm_worktree::journal::journal_dir(gitdir),
+        glm_worktree::journal::workspace_id(gitdir),
+        1,
+        0,
+    )
+    .map_err(|e| format!("journal: {e}"))?;
     let proj = std::sync::Arc::new(
         glm_worktree::Projection::open(repo, cache.to_path_buf(), overlay.to_path_buf())
-            .map_err(|e| format!("projection: {e}"))?,
+            .map_err(|e| format!("projection: {e}"))?
+            .with_journal(journal),
     );
     // Blocks until the mount is unmounted.
     glm_fuse::mount(proj, mountpoint).map_err(|e| format!("mount: {e}"))

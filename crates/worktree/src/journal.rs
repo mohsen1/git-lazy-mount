@@ -18,12 +18,30 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use glm_core::{Error, ErrorCode, Result};
 
 const TOKEN_PREFIX: &str = "glm1";
+
+/// The journal directory inside an admin gitdir. The serve daemon writes the log
+/// here; the `core.fsmonitor` hook reads it.
+pub fn journal_dir(gitdir: &Path) -> PathBuf {
+    gitdir.join("glm-fsmonitor")
+}
+
+/// A stable per-workspace id derived from the admin gitdir path. The serve daemon
+/// and the FSMonitor hook derive it identically, so their tokens match without a
+/// shared metadata file. The journal's `epoch`/`generation` are fixed (1/0): the
+/// durable log preserves continuity across remount, and a reset/short log is
+/// caught by the seq comparison in [`ChangeJournal::query`] (→ full invalidation).
+pub fn workspace_id(gitdir: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    gitdir.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
 
 /// A parsed FSMonitor token (§12.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
