@@ -23,6 +23,8 @@ use crate::pool::Pool;
 const TTL: Duration = Duration::from_secs(1);
 /// Worker threads for blocking callbacks (object IO). Bounded — see crate docs.
 const POOL_THREADS: usize = 16;
+/// Threads for the fast, non-faulting metadata pool (`readdir`/`statfs`, §18).
+const META_THREADS: usize = 4;
 
 fn file_type(kind: Kind) -> FileType {
     match kind {
@@ -92,12 +94,18 @@ impl Handle {
     }
 }
 
-/// The transparent mount: the projection, a real handle table, the worker pool.
+/// The transparent mount: the projection, a real handle table, and **two**
+/// bounded worker pools (§18). `pool` runs object-IO callbacks that may block on
+/// `git`/the network (read, open, write, lookup, getattr, …); `meta_pool` runs
+/// the non-faulting structural callbacks (`readdir`, `statfs`) so a directory
+/// listing stays responsive even when every object-IO thread is busy hydrating a
+/// blob — an `ls` never queues behind a slow `cat`.
 struct TransparentFs {
     proj: Arc<Projection>,
     handles: Arc<Mutex<HashMap<u64, Handle>>>,
     next_fh: Arc<AtomicU64>,
     pool: Pool,
+    meta_pool: Pool,
 }
 
 impl TransparentFs {
@@ -107,6 +115,7 @@ impl TransparentFs {
             handles: Arc::new(Mutex::new(HashMap::new())),
             next_fh: Arc::new(AtomicU64::new(1)),
             pool: Pool::new(POOL_THREADS),
+            meta_pool: Pool::new(META_THREADS),
         }
     }
 }
@@ -497,7 +506,10 @@ impl Filesystem for TransparentFs {
         mut reply: ReplyDirectory,
     ) {
         let proj = Arc::clone(&self.proj);
-        self.pool.spawn(move || {
+        // readdir reads only tree objects (present under blob:none) + the overlay
+        // — it never faults a blob — so it runs on the fast metadata pool and
+        // stays responsive even when every object-IO thread is hydrating (§18).
+        self.meta_pool.spawn(move || {
             let entries = match proj.readdir(ino) {
                 Ok(e) => e,
                 Err(e) => {
