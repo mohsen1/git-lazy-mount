@@ -17,11 +17,16 @@
 
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
 use glm_fs_common::{InodeTable, ROOT_INO};
 use glm_git_repo::AdminRepo;
+
+/// Uniquifier for temporary cache files during atomic publish (§17.1, §20.2).
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// The reserved name of the synthetic gitfile at the projection root (§6).
 pub const GITFILE_NAME: &[u8] = b".git";
@@ -82,6 +87,8 @@ pub struct Projection {
     inodes: InodeTable,
     baseline_tree: ObjectId,
     gitfile: Vec<u8>,
+    /// Content-addressed cache directory for materialized blob bytes (§20.2).
+    cache_dir: PathBuf,
     /// Whether `getattr` may fault an object in to learn its exact size (§21:
     /// metadata-triggered hydration, never a faked size). INTERIM: this uses
     /// git's lazy fetch; once the bounded fetch scheduler exists it must route
@@ -93,21 +100,73 @@ pub struct Projection {
     lock: Mutex<()>,
 }
 
+/// An open read handle backing a `read` callback. Content is served from a file
+/// descriptor (a cache file) or, for the tiny synthetic `.git`, from memory —
+/// **never** by allocating the whole blob (redesign.md §4.6, §17).
+pub struct ContentHandle {
+    inner: ContentInner,
+}
+
+enum ContentInner {
+    /// The synthetic `.git` gitfile bytes (tens of bytes).
+    Bytes(Vec<u8>),
+    /// A materialized blob, served by `pread` from the cache file.
+    File(std::fs::File),
+}
+
+impl ContentHandle {
+    /// The total content size in bytes.
+    pub fn size(&self) -> Result<u64> {
+        match &self.inner {
+            ContentInner::Bytes(b) => Ok(b.len() as u64),
+            ContentInner::File(f) => f
+                .metadata()
+                .map(|m| m.len())
+                .map_err(|e| Error::new(ErrorCode::Internal, format!("stat cache file: {e}"))),
+        }
+    }
+
+    /// Read up to `len` bytes at `offset` — bounded by `len` (the FUSE request
+    /// size), never proportional to the file size (§4.6, §38.8).
+    pub fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        match &self.inner {
+            ContentInner::Bytes(b) => {
+                let start = (offset as usize).min(b.len());
+                let end = start.saturating_add(len).min(b.len());
+                Ok(b[start..end].to_vec())
+            }
+            ContentInner::File(f) => {
+                use std::os::unix::fs::FileExt;
+                let mut buf = vec![0u8; len];
+                let n = f
+                    .read_at(&mut buf, offset)
+                    .map_err(|e| Error::new(ErrorCode::Internal, format!("pread: {e}")))?;
+                buf.truncate(n);
+                Ok(buf)
+            }
+        }
+    }
+}
+
 impl Projection {
     /// Open a read-only projection over `repo`, baselined at its HEAD tree.
-    pub fn open(repo: AdminRepo) -> Result<Projection> {
+    /// `cache_dir` holds materialized blob content (created if absent).
+    pub fn open(repo: AdminRepo, cache_dir: PathBuf) -> Result<Projection> {
         let baseline_tree = repo.head_tree()?.ok_or_else(|| {
             Error::new(
                 ErrorCode::Internal,
                 "cannot project an unborn HEAD (no baseline tree)",
             )
         })?;
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("create cache dir: {e}")))?;
         let gitfile = repo.synthetic_gitfile();
         Ok(Projection {
             repo,
             inodes: InodeTable::new(),
             baseline_tree,
             gitfile,
+            cache_dir,
             metadata_fetch: true,
             lock: Mutex::new(()),
         })
@@ -286,6 +345,78 @@ impl Projection {
         }
         Ok(out)
     }
+
+    /// Open content for reading (§17.1). A clean tracked blob is materialized
+    /// once into a content-addressed cache file (atomic publish) and then served
+    /// by `pread` from its FD; the synthetic `.git` is served from memory.
+    /// Faults the blob in on first access (a later refinement routes this through
+    /// the bounded fetch scheduler so "only the scheduler causes network", §20).
+    pub fn open_content(&self, ino: u64) -> Result<ContentHandle> {
+        let _g = self.lock.lock().unwrap();
+        let path = self.path_of(ino)?;
+        match self
+            .resolve(&path)?
+            .ok_or_else(|| Error::new(ErrorCode::Internal, format!("inode {ino} vanished")))?
+        {
+            Resolved::Gitfile => Ok(ContentHandle {
+                inner: ContentInner::Bytes(self.gitfile.clone()),
+            }),
+            Resolved::File { oid, .. } => {
+                let file = self.materialize(&oid)?;
+                Ok(ContentHandle {
+                    inner: ContentInner::File(file),
+                })
+            }
+            Resolved::Symlink(_) => Err(Error::new(
+                ErrorCode::Internal,
+                "open_content on a symlink; use readlink",
+            )),
+            Resolved::Dir(_) => Err(Error::new(ErrorCode::Internal, "is a directory")),
+        }
+    }
+
+    /// Materialize a blob's working-tree bytes into the content-addressed cache
+    /// and return an open read FD. Streams via `cat-file` (no in-process buffer)
+    /// and publishes atomically (temp + rename) so a partial file is never used.
+    fn materialize(&self, oid: &ObjectId) -> Result<std::fs::File> {
+        let final_path = self.cache_dir.join(oid.to_hex());
+        if !final_path.exists() {
+            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = self
+                .cache_dir
+                .join(format!(".{}.{}.tmp", oid.to_hex(), seq));
+            // TODO(§38.6): coalesce concurrent faults of the same oid through the
+            // fetch scheduler so 100 readers cause one retrieval. For now each
+            // first-open may fetch; the rename keeps the published file correct.
+            self.repo.store().blob_to_file(oid, true, &tmp)?;
+            if let Err(e) = std::fs::rename(&tmp, &final_path) {
+                let _ = std::fs::remove_file(&tmp);
+                // A racing open may have published it already.
+                if !final_path.exists() {
+                    return Err(Error::new(
+                        ErrorCode::Internal,
+                        format!("publish cache file: {e}"),
+                    ));
+                }
+            }
+        }
+        std::fs::File::open(&final_path)
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("open cache file: {e}")))
+    }
+
+    /// `readlink(ino)` — the symlink's raw target bytes (§30.1). Targets are
+    /// small, so the blob is read whole here (this is not a content stream).
+    pub fn readlink(&self, ino: u64) -> Result<Vec<u8>> {
+        let _g = self.lock.lock().unwrap();
+        let path = self.path_of(ino)?;
+        match self
+            .resolve(&path)?
+            .ok_or_else(|| Error::new(ErrorCode::Internal, format!("inode {ino} vanished")))?
+        {
+            Resolved::Symlink(oid) => self.repo.store().read_blob_raw(&oid, self.metadata_fetch),
+            _ => Err(Error::new(ErrorCode::Internal, "not a symlink")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -309,7 +440,8 @@ mod tests {
             &CloneOptions::default(),
         )
         .unwrap();
-        let proj = Projection::open(repo).unwrap();
+        let cache = tmp.path().join("cache");
+        let proj = Projection::open(repo, cache).unwrap();
         (tmp, remote, proj)
     }
 
@@ -364,5 +496,55 @@ mod tests {
         assert_eq!(again.size, 13);
         // A missing path resolves to None, not an error.
         assert!(p.lookup(p.root_ino(), b"nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn open_content_serves_blob_bytes_from_a_cache_fd() {
+        let body: &[u8] = b"line one\nline two\nthe quick brown fox\n";
+        let (_t, _r, p) = projection_of(&[("doc.txt", body)]);
+        let a = p.lookup(p.root_ino(), b"doc.txt").unwrap().unwrap();
+        let h = p.open_content(a.ino).unwrap();
+        assert_eq!(h.size().unwrap(), body.len() as u64);
+        // full read
+        assert_eq!(h.read_at(0, body.len()).unwrap(), body);
+        // a bounded range read (offset + len), not the whole file
+        assert_eq!(h.read_at(9, 8).unwrap(), b"line two");
+        // read past EOF returns a short read, not an error
+        assert!(h.read_at(body.len() as u64, 16).unwrap().is_empty());
+        // a second open hits the published cache file (idempotent identity)
+        let h2 = p.open_content(a.ino).unwrap();
+        assert_eq!(h2.read_at(0, body.len()).unwrap(), body);
+    }
+
+    #[test]
+    fn synthetic_git_content_is_the_gitfile() {
+        let (_t, _r, p) = projection_of(&[("ok.txt", b"y\n")]);
+        let a = p.lookup(p.root_ino(), b".git").unwrap().unwrap();
+        let h = p.open_content(a.ino).unwrap();
+        let bytes = h.read_at(0, 4096).unwrap();
+        assert_eq!(bytes, p.gitfile_bytes());
+        assert!(bytes.starts_with(b"gitdir: "));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn readlink_returns_raw_symlink_target() {
+        // seed a symlink via a tree the normal way: testkit writes files, but a
+        // symlink needs git to record mode 120000 — so write the link in the
+        // seed working tree through a path that git stores as a symlink.
+        let remote = glm_testkit::seed_remote_symlink("link", "target/path");
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = AdminRepo::clone(
+            &remote.url,
+            &tmp.path().join("git"),
+            &tmp.path().join("mnt"),
+            &tmp.path().join("anchor"),
+            &CloneOptions::default(),
+        )
+        .unwrap();
+        let p = Projection::open(repo, tmp.path().join("cache")).unwrap();
+        let a = p.lookup(p.root_ino(), b"link").unwrap().unwrap();
+        assert_eq!(a.kind, Kind::Symlink);
+        assert_eq!(p.readlink(a.ino).unwrap(), b"target/path");
     }
 }
