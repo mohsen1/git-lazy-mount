@@ -1,6 +1,6 @@
 # FUSE operations, inode/namespace model, file-handle state machine
 
-Authoritative spec: [`design.md`](../../design.md), primarily **§14** (inode
+This area of the [specification](design.md) covers, primarily **§14** (inode
 model), **§15** (namespace), **§16** (required ops), **§17** (file handles),
 **§28** (editor/build semantics), **§29** (rename). Cross-cuts §4.5–§4.9 (prior
 mistakes turned into invariants), §18–§19 (executor/deadlock), §20–§23
