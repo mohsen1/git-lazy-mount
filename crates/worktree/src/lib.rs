@@ -1295,4 +1295,33 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn large_directory_readdir_fetches_zero_blobs() {
+        // Experiment B (§39, moderate scale): listing a directory with many
+        // entries reads only the tree object — zero blobs, O(direct children).
+        let files: Vec<(String, Vec<u8>)> = (0..1000)
+            .map(|i| {
+                (
+                    format!("big/f{i:04}.txt"),
+                    format!("file {i}\n").into_bytes(),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let big = p.lookup(p.root_ino(), b"big").unwrap().unwrap();
+        assert_eq!(big.kind, Kind::Dir);
+        let before = p.hydrations();
+        let entries = p.readdir(big.ino).unwrap();
+        assert_eq!(entries.len(), 1000, "all entries listed");
+        assert_eq!(
+            p.hydrations(),
+            before,
+            "readdir of 1000 files fetched a blob"
+        );
+    }
 }
