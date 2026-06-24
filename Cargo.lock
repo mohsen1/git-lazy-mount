@@ -291,6 +291,7 @@ dependencies = [
  "glm-core",
  "glm-fs-common",
  "glm-git-store",
+ "glm-ipc",
  "glm-object-provider",
  "glm-platform",
  "glm-testkit",
