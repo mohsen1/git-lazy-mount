@@ -3,15 +3,15 @@
 This area of the [specification](design.md) covers the object provider,
 metadata & size, filters/attributes, and LFS, with supporting bounded I/O,
 deadlock avoidance, alternates, auth/offline, and hydration budgets. This doc
-specifies the **daemon-internal** object/content layer. It owns none of Git's
-repository state — it only turns object IDs + filter context into bounded,
+specifies the daemon-internal object/content layer. It owns none of Git's
+repository state. It only turns object IDs + filter context into bounded,
 streamable working-tree bytes and correct sizes.
 
 This is a *design*. The streaming-provider shape and the
 residency-authority + coalescing core (`crates/object-provider`,
-`crates/git-store/src/batch.rs`) are **reusable substrate**. What changes:
+`crates/git-store/src/batch.rs`) are reusable substrate. What changes:
 `raw_blob`/`filtered_blob` returning `Vec<u8>` become `ReadSeek` /
-`ContentHandle`; coalescing-by-condvar grows into a real **scheduler** with
+`ContentHandle`; coalescing-by-condvar grows into a real scheduler with
 priorities/limits/retries/circuit-breaker; the five caches are
 separated and given atomic validated publication; filter context grows to the
 full filter-context key. Superseded crates (`stage`, custom `workspace` branch/commit, the
@@ -22,8 +22,8 @@ full filter-context key. Superseded crates (`stage`, custom `workspace` branch/c
 ## 1. Position in the stack
 
 ```
-FUSE callback (getattr/read/open)                         — passes FetchPolicy::MustNotFetch
-  └─ Worktree projection (baseline+overlay)               — resolves path → (oid, FilterContext)
+FUSE callback (getattr/read/open)                         (passes FetchPolicy::MustNotFetch)
+  └─ Worktree projection (baseline+overlay)               (resolves path -> (oid, FilterContext))
        └─ ObjectProvider  ── this doc ────────────────────┐
             ├─ FetchScheduler   (network, the ONLY fetcher)
             ├─ CacheSet         (odb/tree/filtered/meta/lfs)
@@ -45,7 +45,7 @@ fetch invocation.
 
 No method returns `Vec<u8>` for blob/working-tree content (which would allocate
 the complete blob). Identity is `ObjectId` (format-agnostic,
-`core/src/object_id.rs`) and `RepoPath` (raw bytes, `core/src/path.rs`) — never
+`core/src/object_id.rs`) and `RepoPath` (raw bytes, `core/src/path.rs`), never
 lossy UTF-8.
 
 ```rust
@@ -95,10 +95,10 @@ pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
 /// A resolved working-tree representation, opened against a published,
-/// validated cache file (or an overlay/native file — see fast paths below).
+/// validated cache file (or an overlay/native file; see fast paths below).
 pub struct ContentHandle {
     pub reader: Box<dyn ReadSeek + Send>,
-    pub size: u64,                 // EXACT projected size — never synthetic
+    pub size: u64,                 // EXACT projected size, never synthetic
     pub source: ContentSource,     // for metrics + getattr fast-path classification
     pub size_source: SizeSource,   // Local | RawObject | FilteredHydration | Manifest
 }
@@ -118,20 +118,20 @@ pub struct EnsureResult {            // already in object-provider/src/lib.rs
 `FetchPolicy` / `FetchPriority` keep the existing shapes
 (`core/src/fetch.rs`): `MustNotFetch ⊂ CacheOnly` for fs callbacks,
 `AllowNetwork`/`Prefetch` for the scheduler; `Interactive > Prefetch >
-Background`. `MustNotFetch.may_fetch() == false` is load-bearing — a passive
+Background`. `MustNotFetch.may_fetch() == false` is load-bearing. A passive
 read that misses returns `offline_missing_object` rather than escalating.
 
 ### Trait invariants (regression tests)
 
-- **T1 — no full-blob allocation.** `open_raw_blob`/`open_worktree_file` peak
+- **T1, no full-blob allocation.** `open_raw_blob`/`open_worktree_file` peak
   RSS is bounded by a fixed buffer, independent of blob size. A
   multi-GiB blob read in 64 KiB ranges allocates O(1).
-- **T2 — `object_info` never materializes.** Calling it on a present blob runs
+- **T2, `object_info` never materializes.** Calling it on a present blob runs
   one `info` (no `contents`), 0 filter runs, 0 fetches.
-- **T3 — identity is bytes.** A `RepoPath` with invalid UTF-8 round-trips
+- **T3, identity is bytes.** A `RepoPath` with invalid UTF-8 round-trips
   through `open_worktree_file` and reaches git plumbing without lossy
   conversion.
-- **T4 — `tree` is fetch-free under blob:none** for trees already present;
+- **T4, `tree` is fetch-free under blob:none** for trees already present;
   parsed trees come from the parsed-tree cache after first parse.
 
 ---
@@ -182,7 +182,7 @@ struct FetchSlot {
   - **Invariant S2:** N distinct missing oids requested together ⇒ 1
     invocation (existing test: distinct objects batch).
 - A waiter is released the instant *its* oid resolves, even if the batch carries
-  others (per-slot `done`, not a single global condvar) — so an interactive read
+  others (per-slot `done`, not a single global condvar), so an interactive read
   never waits on an unrelated slow object in the same batch.
 
 ### 3.2 Per-origin concurrency, bandwidth, priority
@@ -207,10 +207,10 @@ struct FetchSlot {
   promptly with a cancelled error. The last waiter leaving an in-flight
   background-only slot may abort it.
 
-### 3.4 Retries, auth, offline, circuit breaker — state machine
+### 3.4 Retries, auth, offline, circuit breaker: state machine
 
 Per-origin state. Transitions on a fetch invocation's classified result
-(`git-store/src/proc.rs::classify` already maps stderr →
+(`git-store/src/proc.rs::classify` already maps stderr to
 `Authentication` / `OfflineMissingObject` / `RemoteMissingObject` / …).
 
 | State        | Event                                   | Action                                                              | Next         |
@@ -233,7 +233,7 @@ Per-origin state. Transitions on a fetch invocation's classified result
   succeed; a miss returns `offline_missing_object`. `prefetch --for-offline`
   temporarily lifts this for an explicit user op.
 - **Never prompt from a callback.** Auth interaction happens only
-  during the initial mount or an explicit `git fetch`/`doctor`; the scheduler
+  during the initial mount or an explicit `git fetch`/`doctor`. The scheduler
   records `AuthBlocked` and surfaces a daemon diagnostic.
 
 ### 3.5 The original-failure invariant
@@ -243,7 +243,7 @@ Per-origin state. Transitions on a fetch invocation's classified result
 
 The `FetchSlot` stores the *classified `Error`* from the failing fetch.
 Every joined waiter returns a **clone of that error** (preserving code,
-`recommended_action`, redacted context — `core/src/error.rs`). The current code
+`recommended_action`, redacted context; see `core/src/error.rs`). The current code
 violates this: after a failed fetch it re-checks presence and returns a fresh
 `RemoteMissingObject` (`object-provider/src/lib.rs::ensure_present_locally`).
 
@@ -255,14 +255,14 @@ violates this: after a failed fetch it re-checks presence and returns a fresh
 
 ### 3.6 Scheduler invariants
 
-- **S4 — no lock across network.** A debug assertion / lock-order
+- **S4, no lock across network.** A debug assertion / lock-order
   lint: the fetch invocation runs with `inflight`/`origins`/provider locks
   released (already the rule in `ensure_objects`).
-- **S5 — breaker fails fast.** With an `Open` origin, an `AllowNetwork` request
+- **S5, breaker fails fast.** With an `Open` origin, an `AllowNetwork` request
   returns in < 1 ms without spawning git.
-- **S6 — cancellation is prompt.** A cancelled queued request returns within the
+- **S6, cancellation is prompt.** A cancelled queued request returns within the
   batch window; it does not wait for the origin semaphore.
-- **S7 — bounded retries.** A permanently-offline origin makes ≤ `max_retries`
+- **S7, bounded retries.** A permanently-offline origin makes ≤ `max_retries`
   invocations per request then fails; no unbounded loop.
 
 ---
@@ -289,8 +289,8 @@ tempfile→`persist` writes; reuse as-is for parsed-tree.
 ### 4.1 Atomic validated publication
 
 Every cache *file* (filtered, lfs, tree-on-disk, future size manifest) is
-published with this exact protocol (temp path → validate → fsync →
-atomic publish → immune to partial reuse):
+published with this exact protocol: temp path, validate, fsync, atomic
+publish, and the result is immune to partial reuse.
 
 ```rust
 fn publish(dir: &Path, key: &str, write: impl FnOnce(&mut File) -> Result<Validation>)
@@ -312,21 +312,21 @@ fn publish(dir: &Path, key: &str, write: impl FnOnce(&mut File) -> Result<Valida
   digest is over the *produced* bytes and is stored in a sidecar / xattr so a
   reader can re-verify; a file whose digest mismatches is treated as absent and
   rebuilt (guarding against cache poisoning and partially written reuse).
-- A reader **only** opens the final published path; a crash mid-write leaves a
-  temp file that recovery reconciles/sweeps — never the final name.
+- A reader **only** opens the final published path. A crash mid-write leaves a
+  temp file that recovery reconciles/sweeps, never the final name.
 - `metadata::TreeCache::put` already follows tempfile→fsync→persist; extend it
   with the dir-fsync + digest step for the format unifier.
 
 ### 4.2 Cache invariants (regression tests)
 
-- **C1 — no torn reads.** Kill the process between steps 2 and 5; on restart the
+- **C1, no torn reads.** Kill the process between steps 2 and 5; on restart the
   key is absent (not half-written) and rebuilds cleanly (crash injection).
-- **C2 — filtered bytes are never a git blob.** A filtered-cache entry is a
+- **C2, filtered bytes are never a git blob.** A filtered-cache entry is a
   plain file under `filtered-cache/`, addressed by `cache_key()`, with no
   corresponding `hash-object -w`.
-- **C3 — digest gate.** Corrupting a published filtered file flips it to
+- **C3, digest gate.** Corrupting a published filtered file flips it to
   "absent" on next open and triggers rebuild, never serving poison.
-- **C4 — key isolation.** Two paths with different `.gitattributes` but the same
+- **C4, key isolation.** Two paths with different `.gitattributes` but the same
   raw blob get **different** filtered keys.
 
 ---
@@ -353,17 +353,17 @@ must include **at least** these; map 1:1 and close the gaps:
 | baseline/attribute-source identity  | `attr_source`                | the base-commit/tree id (ADR-0007); present               |
 | relevant `.gitattributes` state     | *(via `attr_source`)*        | **gap:** must also fold a digest of the *effective* attr  |
 |                                     |                              | stack for `path` so an overlay-modified `.gitattributes`  |
-|                                     |                              | (not yet committed) invalidates — add `attr_digest`       |
+|                                     |                              | (not yet committed) invalidates: add `attr_digest`        |
 | relevant Git config digest          | `config_digest`              | present; covers autocrlf/eol/encoding/filter.* config     |
 | filter implementation identity      | `filter_identity`            | present; e.g. `lfs`, or `clean=<cmd>` version             |
-| platform EOL mode                   | `eol_mode`                   | present (`native`/`crlf`/`lf`) — accounts for the eol     |
+| platform EOL mode                   | `eol_mode`                   | present (`native`/`crlf`/`lf`); accounts for the eol      |
 |                                     |                              | size delta in `docs/feasibility/file-metadata.md`         |
 | cache format version                | `format_version`            | present                                                   |
 
 - **Rename across attribute boundaries.** A clean rename changes
   `path`, hence `cache_key()`, so the new path's filtered result is recomputed
-  and the old key's entry is no longer referenced — old result effectively
-  invalidated. The overlay rename mapping does *not* fetch descendant blobs;
+  and the old key's entry is no longer referenced, which invalidates the old
+  result. The overlay rename mapping does *not* fetch descendant blobs;
   only a *read* of the renamed path resolves a (possibly different)
   filtered key.
 - **`.gitattributes` change invalidates descendants.** Two mechanisms:
@@ -390,8 +390,8 @@ four-mode vocabulary:
   rather than executing the command. Trust is per-repo and persisted
   (`TrustStore`, keyed by `RepoId`).
 - **Resource limits.** External filters run under the dedicated
-  filter pool with a wall-clock timeout, output-size cap (anti
-  decompression/expansion bomb), and memory cap; a breach is `FilterFailure`
+  filter pool with a wall-clock timeout, an output-size cap (anti
+  decompression/expansion bomb), and a memory cap; a breach is `FilterFailure`
   (and, for LFS, `LfsFailure`). The filter never inherits the mount fd
   (`harden_fds`).
 
@@ -401,8 +401,8 @@ A passive read can occur while the user's git holds `index.lock`. Attribute
 resolution + smudge in that read **must not** lock or rewrite the index. Rules:
 
 - Resolve attributes from the **bare gitdir** via `--attr-source=<commit>`
-  (ADR-0007), reading `<commit>:<dir>/.gitattributes` tree objects — a read-only
-  object path that never touches the index or worktree.
+  (ADR-0007), reading `<commit>:<dir>/.gitattributes` tree objects. That is a
+  read-only object path that never touches the index or worktree.
 - `GitStore` runs with `GIT_OPTIONAL_LOCKS=0` (already set in `git()`), so
   inspection subprocesses never *take* the index lock.
 - The smudge invocation is `cat-file --filters` (object-level), **not** `git
@@ -415,19 +415,19 @@ resolution + smudge in that read **must not** lock or rewrite the index. Rules:
 
 ### 5.4 Filter invariants (regression tests)
 
-- **F1 — checkout parity.** Projected bytes for a path equal `git checkout`'s
+- **F1, checkout parity.** Projected bytes for a path equal `git checkout`'s
   bytes under the same config, for CRLF, `working-tree-encoding`, `ident`, and a
   clean/smudge driver (differential test).
-- **F2 — untrusted external refused, not executed.** A repo with `filter=evil`
-  attribute, untrusted ⇒ read returns `FilterFailure`; the command never runs
-  — assert via a sentinel side-effect file the filter would create.
-- **F3 — no index lock taken.** Hold `index.lock` externally, then read a
+- **F2, untrusted external refused, not executed.** A repo with `filter=evil`
+  attribute, untrusted ⇒ read returns `FilterFailure`; the command never runs.
+  Assert via a sentinel side-effect file the filter would create.
+- **F3, no index lock taken.** Hold `index.lock` externally, then read a
   filtered file ⇒ succeeds; the read takes no index lock.
-- **F4 — non-UTF-8 path filters.** A non-UTF-8 path with a `.gitattributes`
+- **F4, non-UTF-8 path filters.** A non-UTF-8 path with a `.gitattributes`
   rule still resolves attributes (no "stop at first non-UTF-8 component");
   if `cat-file --path` cannot accept the bytes, fall back to raw with a recorded
   reason rather than silently wrong bytes.
-- **F5 — `.gitattributes` edit invalidates.** Editing an overlay
+- **F5, `.gitattributes` edit invalidates.** Editing an overlay
   `.gitattributes` changes the filtered result of affected descendants on next
   read.
 
@@ -437,8 +437,8 @@ resolution + smudge in that read **must not** lock or rewrite the index. Rules:
 
 A tree entry has **no size**; the size a program sees is the *filtered
 working-tree* size, which differs under CRLF / encoding / ident / smudge / LFS /
-path-attrs (measured in `docs/feasibility/file-metadata.md` — the same blob
-projects to a different byte count under an `lf` vs `crlf` eol mode). Therefore:
+path-attrs. (Measured in `docs/feasibility/file-metadata.md`: the same blob
+projects to a different byte count under an `lf` vs `crlf` eol mode.) Therefore:
 
 ### 6.1 The three rules
 
@@ -448,7 +448,7 @@ projects to a different byte count under an `lf` vs `crlf` eol mode). Therefore:
 - **`getattr` must return the correct size.** It may cause
   metadata-triggered hydration when the size is otherwise unknowable. The exact
   size of an unmaterialized blob is *fundamentally* not derivable under a
-  blob:none clone — it requires the object's bytes — so `getattr` (`ls -l`,
+  blob:none clone, since it requires the object's bytes, so `getattr` (`ls -l`,
   `stat`) faults each such blob once. This is by design, not a closeable gap;
   closing it would need a server-side size manifest.
 - **Never fake a size.** No zero, no raw-size-as-projected
@@ -457,14 +457,14 @@ projects to a different byte count under an `lf` vs `crlf` eol mode). Therefore:
 
 Because git records each index entry's stat data (including the file **size**)
 to mark it clean, the **first** clean `git status` after a mount necessarily
-faults each tracked blob once through `getattr` size hydration — the same
+faults each tracked blob once through `getattr` size hydration. That is the same
 fundamental size requirement above. The fsmonitor-valid bit cannot override an
 entry that has no stat data, so a zero-blob *first* status is unachievable with
 stock git over a blob:none clone. Subsequent clean statuses are zero-blob: git
 records the populated stat data and the FSMonitor hook (which replays the
 daemon's durable change journal) lets git skip the redundant full-tree scan.
 
-### 6.2 `getattr` size resolution — decision table
+### 6.2 `getattr` size resolution: decision table
 
 Resolve in this order; **stop at the first that yields an exact size** (records
 `SizeSource` for the hydration ledger):
@@ -480,21 +480,21 @@ Resolve in this order; **stop at the first that yields an exact size** (records
 
 \* A symlink's projected size is its target-byte length = blob content length;
 needs the (tiny) blob. † Raw size needs the object locally; under blob:none a
-never-read blob may be absent — escalating here is the *getattr-may-hydrate*
+never-read blob may be absent, so escalating here is the *getattr-may-hydrate*
 allowance. When `getattr` arrives with `MustNotFetch` and the size is
 unknown, return the structured `offline_missing_object`/EIO rather than a fake
-size — the fast paths 1/2/5 cover the common warm cases.
+size. The fast paths 1/2/5 cover the common warm cases.
 
 "No transform applies" (row 4) is decided by checking the effective attributes
 for `path` (text/eol/encoding/ident/filter unset and not LFS); this is an
-attribute lookup (object-level, no index — see index-lock avoidance above), not
+attribute lookup (object-level, no index; see index-lock avoidance above), not
 a content read.
 
 ### 6.3 Fast paths and the `open` path
 
 - `open_worktree_file` returns a `ContentHandle` whose `size` is exact; `getattr`
   after open is `fstat` (row 1/2). First writable open / `O_TRUNC` seeds an empty
-  overlay file and **does not fetch the baseline blob** — size
+  overlay file and **does not fetch the baseline blob**, so size
   becomes `Local`.
 - `ls` vs `ls -l` hydration differs and that is documented: `ls` → readdir
   (rows none, 0 fetch); `ls -l` → getattr per entry (may hit row 6). Both report
@@ -502,16 +502,16 @@ a content read.
 
 ### 6.4 Metadata invariants (regression tests)
 
-- **M1 — readdir is fetch-free.** `ls` of a 100k-file dir ⇒ 0 blob
+- **M1, readdir is fetch-free.** `ls` of a 100k-file dir ⇒ 0 blob
   fetches, 0 filtered reads, O(direct children) tree work.
-- **M2 — getattr exact + classified.** `ls -l` of a CRLF text file reports the
+- **M2, getattr exact + classified.** `ls -l` of a CRLF text file reports the
   *filtered* size and records a `FilteredHydration`; a binary no-filter file
   reports raw size with **no** filter run (rows 4 vs 6).
-- **M3 — never fake.** No code path returns size 0 / raw-as-filtered for a file
+- **M3, never fake.** No code path returns size 0 / raw-as-filtered for a file
   needing a transform; `file_size()` cannot be satisfied by a guess.
-- **M4 — overlay/cache fast paths fetch nothing.** getattr on a materialized or
+- **M4, overlay/cache fast paths fetch nothing.** getattr on a materialized or
   cached file performs only `fstat` (rows 1/2), 0 network.
-- **M5 — synthetic metadata stability.** Repeated getattr within a
+- **M5, synthetic metadata stability.** Repeated getattr within a
   projection generation returns identical inode/mode/mtime; a synthetic-time
   mismatch never marks the file dirty (racy-clean care).
 
@@ -519,13 +519,13 @@ a content read.
 
 ## 7. Git LFS
 
-Three explicit modes; LFS content is cached **separately**
+Three explicit modes; LFS content is cached separately
 and reported as a distinct hydration class.
 
 | Mode      | Behavior                                                                                       |
 |-----------|------------------------------------------------------------------------------------------------|
 | `smudge`  | use installed `git-lfs`; fetch real content on first access; cache in `lfs/`; no callback auth prompt |
-| `pointer` | expose the raw pointer blob (the ≈130-byte `version … oid sha256:… size …` text) — `open_raw_blob` |
+| `pointer` | expose the raw pointer blob (the ≈130-byte `version … oid sha256:… size …` text) via `open_raw_blob` |
 | `error`   | return an actionable `LfsFailure` (`git lazy-mount …` action)                                  |
 
 - **Detection.** A path is LFS when its `filter` attribute is `lfs` and the raw
@@ -534,7 +534,7 @@ and reported as a distinct hydration class.
 - **smudge fetch.** LFS object download goes through the
   `FetchScheduler`/LFS engine, **noninteractive** in a callback (no credential
   prompt; auth handled at mount or explicit op). A missing LFS object offline ⇒
-  `offline_missing_object`/`LfsFailure`, never a hang.
+  `offline_missing_object`/`LfsFailure`, and never a hang.
 - **Cache key.** Filtered/LFS key includes `filter_identity = "lfs"` and the
   pointer oid so a pointer change invalidates the materialized content.
 - **Plain git LFS untouched.** `git add`/`commit`/`push` continue to use
@@ -543,11 +543,11 @@ and reported as a distinct hydration class.
 
 ### LFS invariants
 
-- **L1 — pointer mode is fetch-free.** `pointer` mode read returns the pointer
+- **L1, pointer mode is fetch-free.** `pointer` mode read returns the pointer
   bytes with 0 LFS network.
-- **L2 — smudge caches + classifies.** First `smudge` read fetches once, caches
+- **L2, smudge caches + classifies.** First `smudge` read fetches once, caches
   in `lfs/`, records an LFS hydration; second read is cache-only.
-- **L3 — error mode is actionable.** `error` mode read returns `LfsFailure` with
+- **L3, error mode is actionable.** `error` mode read returns `LfsFailure` with
   a recommended action and never hangs.
 
 ---

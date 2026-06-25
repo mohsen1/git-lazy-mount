@@ -1,4 +1,4 @@
-# 0001 — The installed `git` binary is the source of truth
+# 0001: The installed `git` binary is the source of truth
 
 **Status:** Accepted
 
@@ -8,7 +8,7 @@ git-lazy-mount needs Git's full network protocol (smart HTTP/SSH), credential
 handling, partial-clone/promisor logic, the configured object format, ref
 transactions, working-tree filters (clean/smudge, LFS), and push. Re-implementing
 any of these in Rust would be a large, security-sensitive surface that must track
-upstream Git exactly — credential helpers and filter drivers especially.
+upstream Git exactly. Credential helpers and filter drivers are the worst offenders.
 
 ## Decision
 
@@ -22,8 +22,8 @@ tree/blob/`--filters`, `hash-object`, `commit-tree`, and a long-lived
 format is detected via `rev-parse --show-object-format` rather than assumed.
 
 A pure-Rust library (e.g. `gitoxide`) **may** be added later for fast read-only
-parsing (tree/blob decode) once it is proven against the same tests — but only as
-an optimization behind the existing API, never as the authority for network,
+parsing (tree/blob decode) once it is proven against the same tests. But it stays
+an optimization behind the existing API, never the authority for network,
 credentials, or writes.
 
 ## Consequences
@@ -34,5 +34,5 @@ credentials, or writes.
   Git versions, so subprocess output is parsed defensively (NUL delimiters where
   paths appear, classified stderr).
 * Subprocess overhead is mitigated by the persistent batch session and by
-  reusing unchanged subtrees on commit; a future Rust read path can remove it for
+  reusing unchanged subtrees on commit. A future Rust read path can remove it for
   hot reads without changing call sites.

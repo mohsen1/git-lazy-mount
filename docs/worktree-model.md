@@ -1,17 +1,16 @@
 # Virtual working-tree model: baseline + overlay
 
-This area of the [specification](design.md) covers, primarily, the rules that
-the custom state represents *only* the virtual working tree, rename semantics,
-symlinks / hard links / special files, and raw repository paths. It builds on
-the principles that Git is authoritative, stock-Git index behavior holds, and
-the inode/handle, filter/attribute, and overlay-durability models. This is a
-design doc for the *design*: the custom stage, custom branch DB,
-commit-adoption, and `git lazy-mount git --` bridge are **superseded** and out
-of scope here.
+This area of the [specification](design.md) covers the rules that the custom
+state represents *only* the virtual working tree, rename semantics, symlinks /
+hard links / special files, and raw repository paths. It builds on the
+principles that Git is authoritative and that stock-Git index behavior holds,
+and on the inode/handle, filter/attribute, and overlay-durability models. The custom
+stage, custom branch DB, commit-adoption, and `git lazy-mount git --` bridge are
+**superseded** and out of scope here.
 
 This document specifies what bytes the working tree contains, independent of
-`HEAD` and the index. It does **not** specify staging, commit, refs, or status —
-those are Git's, served from the real `$GIT_DIR/index` and refs.
+`HEAD` and the index. It does **not** specify staging, commit, refs, or status.
+Those are Git's, served from the real `$GIT_DIR/index` and refs.
 
 ---
 
@@ -19,8 +18,8 @@ those are Git's, served from the real `$GIT_DIR/index` and refs.
 
 | Owner | State this doc governs? |
 |-------|-------------------------|
-| **Git** (native admin gitdir) | No — `HEAD`, refs, reflogs, the real index + conflict stages, commit/merge/rebase state. |
-| **Daemon** (this doc) | Yes — the *working-tree bytes*: baseline + overlay + tombstones + synthetic entries; inode/namespace identity; rename mappings. |
+| **Git** (native admin gitdir) | No. `HEAD`, refs, reflogs, the real index + conflict stages, commit/merge/rebase state. |
+| **Daemon** (this doc) | Yes: the *working-tree bytes* (baseline + overlay + tombstones + synthetic entries), inode/namespace identity, and rename mappings. |
 
 The working tree is a **pure projection** computed from four daemon-owned inputs
 plus Git objects. It answers exactly one question:
@@ -29,8 +28,8 @@ plus Git objects. It answers exactly one question:
 
 It must never answer "what is staged", "what is HEAD", or "what branch is
 checked out". Those flow from Git. The daemon's parses of Git state are
-disposable caches; the working-tree model is *not* — it holds acknowledged
-user bytes and must be durable.
+disposable caches. The working-tree model is *not*: it holds acknowledged user
+bytes and must be durable.
 
 ### Reuse map (existing code)
 
@@ -41,7 +40,7 @@ user bytes and must be durable.
 | `InodeTable` (stable identity, open-unlink, rename) | `crates/fs-common/src/inode.rs` | **Keep.** Already meets the inode model. |
 | `GitMode`, `TreeEntry`, `TreeObject` | `crates/core/src/{mode,tree}.rs` | **Keep.** |
 | `EntryKind`, baseline resolution, `list_dir`, CoW write primitives | `crates/workspace/src/lib.rs` | **Salvage the resolution + write logic; discard** the `Stage`, `attached_branch`/`workspace_head_ref`, `commit`/`adopt_commit`/`merge`/`switch`/`reset` (superseded by stock Git). |
-| `Source`/`SemanticStatus`/`Residency` axes | `crates/core/src/state.rs` | **Keep `Residency`/`Source`** for diagnostics; `SemanticStatus` is now Git's to report, not ours. |
+| `Source`/`SemanticStatus`/`Residency` axes | `crates/core/src/state.rs` | **Keep `Residency`/`Source`** for diagnostics. `SemanticStatus` is now Git's to report, not ours. |
 
 The salvageable resolution lives today in `Workspace::lookup` /
 `Workspace::list_dir` / `Workspace::read_file` (`crates/workspace/src/lib.rs`
@@ -58,16 +57,16 @@ working_tree(path) = resolve(synthetic, overlay, baseline)
 
 Four inputs:
 
-1. **Synthetic entries** — daemon-reserved control paths. Exactly one today: the
+1. **Synthetic entries**: daemon-reserved control paths. Exactly one today, the
    root `.git` gitfile. Read-only, fixed inode, protected from
    unlink/rename/replace/chmod/write/mkdir-beneath.
-2. **Overlay** — durable native files + a transactional namespace DB holding
-   *locally materialized* state: written files, created symlinks, **base-refs**
-   (a clean rename pointing at an existing blob with no bytes copied), and
-   **tombstones** (deletions). `crates/overlay/src/lib.rs`.
-3. **Baseline** — a committed Git **tree** oid: "what an unmaterialized path
-   would contain". Lazy; nothing is fetched to hold a baseline.
-4. **Absent** — neither synthetic, overlay, nor baseline resolves the path.
+2. **Overlay**: durable native files plus a transactional namespace DB holding
+   *locally materialized* state. That covers written files, created symlinks,
+   **base-refs** (a clean rename pointing at an existing blob with no bytes
+   copied), and **tombstones** (deletions). `crates/overlay/src/lib.rs`.
+3. **Baseline**: a committed Git **tree** oid, "what an unmaterialized path would
+   contain". Lazy; nothing is fetched to hold a baseline.
+4. **Absent**: neither synthetic, overlay, nor baseline resolves the path.
 
 Initial state at mount: `baseline = HEAD-commit tree`,
 `overlay = empty`.
@@ -76,7 +75,7 @@ Initial state at mount: `baseline = HEAD-commit tree`,
 /// The daemon's complete working-tree definition (one per mount).
 pub struct Worktree {
     /// Committed tree the unmaterialized projection reads from. NOT HEAD,
-    /// NOT the index — see the resolution order. Guarded so advancement is atomic.
+    /// NOT the index; see the resolution order. Guarded so advancement is atomic.
     baseline: RwLock<Baseline>,
     overlay: Overlay,            // crates/overlay
     inodes: InodeTable,          // crates/fs-common
@@ -93,7 +92,7 @@ pub struct Baseline {
 }
 ```
 
-`Baseline` carries the **commit** (not just the tree) because filter/attribute
+`Baseline` carries the **commit**, not just the tree, because filter/attribute
 resolution needs an `--attr-source` tree-ish (`GitStore::smudge_blob`'s
 `attr_source` parameter, `crates/git-store/src/store.rs`).
 
@@ -101,7 +100,7 @@ resolution needs an `--attr-source` tree-ish (`GitStore::smudge_blob`'s
 
 ## 3. Path resolution order (the 6 steps)
 
-Made precise. `resolve(path)` returns a `Resolved`:
+`resolve(path)` returns a `Resolved`:
 
 ```rust
 pub enum Resolved {
@@ -120,17 +119,18 @@ pub enum Resolved {
 | 3 | **Overlay tombstone** | `overlay.entry(path) == Tombstone` | `Absent` (the deletion shadows the baseline). |
 | 4 | **Overlay rename / base-ref** | `overlay.entry(path) == BaseRef{oid,mode}` | `Baseline{oid,mode}`-equivalent: content streams from `oid`, *no fetch to relocate*. |
 | 5 | **Baseline tree** | `resolve_base_entry(path)` is `Some(entry)` | `Baseline{entry.oid, entry.mode}` (walks trees component-by-component; one tree object per level). |
-| 6 | **Absent** (with implied-dir check) | none of the above; but if any non-tombstone overlay entry has `path` as a strict prefix → `ImpliedDir` | else `Absent`. |
+| 6 | **Absent** (with implied-dir check) | none of the above, but if any non-tombstone overlay entry has `path` as a strict prefix → `ImpliedDir` | else `Absent`. |
 
 Notes:
 
-- Steps 2–4 are **one** namespace-DB read (`overlay.entry`); the table dispatches
-  on `OverlayKind`. This is already how `Workspace::lookup` is structured.
-- Step 5's walk must use a **cache-only** fetch policy for *passive* reads (a
+- Steps 2 through 4 are **one** namespace-DB read (`overlay.entry`); the table
+  dispatches on `OverlayKind`. This is already how `Workspace::lookup` is
+  structured.
+- Step 5's walk must use a **cache-only** fetch policy for *passive* reads. A
   tree object missing locally is faulted only by the dedicated fetch scheduler,
-  never inline under an inode lock). Tree objects for the committed
-  baseline are present after a `blob:none` clone, so step 5 normally hits cache.
-- **Implied directories** (step 6) exist because the overlay stores leaves; a
+  never inline under an inode lock. Tree objects for the committed baseline are
+  present after a `blob:none` clone, so step 5 normally hits cache.
+- **Implied directories** (step 6) exist because the overlay stores leaves: a
   written `a/b/c` with no entry for `a/b` still makes `a/b` a directory. This is
   `Workspace::overlay_has_descendant`. Empty *untracked* directories that are
   not implied by any descendant are persisted as explicit namespace records so
@@ -138,9 +138,8 @@ Notes:
 
 `readdir(dir)` is the union of (a) the baseline tree at `dir` and (b) overlay
 entries whose parent is `dir`, with tombstones subtracting and base-refs/files
-adding — O(direct children), never O(dirty paths). It returns
-names + `d_type` only; **never** sizes or blob reads. This is
-`Workspace::list_dir`.
+adding. It is O(direct children), never O(dirty paths), and returns names +
+`d_type` only, **never** sizes or blob reads. This is `Workspace::list_dir`.
 
 ---
 
@@ -157,15 +156,15 @@ git update-index --cacheinfo …  # index entry forced; worktree unchanged
 ```
 
 If the projection sourced "unmaterialized" content from the **index**, every one
-of these would silently rewrite or delete working-tree files — a correctness
-disaster and a direct violation of stock-Git index semantics and the
+of these would silently rewrite or delete working-tree files. That is a
+correctness disaster and a direct violation of stock-Git index semantics and the
 release criteria.
 
-The baseline decouples the two: it is the *content source for unmaterialized
-clean paths*, advanced **only** when Git actually wrote the working tree,
-while the index moves independently under Git's control. Symmetrically, a
-working-tree edit goes to the **overlay**, never the index — the index changes
-only when the user runs `git add`, which Git does through the real index.
+The baseline decouples the two. It is the *content source for unmaterialized
+clean paths*, advanced **only** when Git actually wrote the working tree, while
+the index moves independently under Git's control. Symmetrically, a working-tree
+edit goes to the **overlay**, never the index: the index changes only when the
+user runs `git add`, which Git does through the real index.
 
 **Testable invariant (W-BASELINE-1):** after `git rm --cached p` and
 `git reset --mixed`, `cat p` returns the same bytes as before, and `readdir`
@@ -176,7 +175,7 @@ still lists `p`. Differential against a conventional checkout.
 ## 5. Baseline advancement
 
 The baseline advances **only after a known worktree-updating command**, detected
-out-of-band — never inferred from the index and **never** from a timestamp
+out-of-band. It is never inferred from the index and **never** from a timestamp
 ("Do not infer worktree updates solely from a changed index").
 
 ### 5.1 Triggers
@@ -192,7 +191,7 @@ Detection sources, in trust order:
    treat it as an advancement to the new `HEAD`.
 
 A *bare* index mutation (no worktree write) produces `post-index-change` but
-**no** `post-checkout`/`post-merge` — so it does **not** advance the baseline.
+**no** `post-checkout`/`post-merge`, so it does **not** advance the baseline.
 That is the mechanism that makes index-only operations safe.
 
 ### 5.2 The advancement transaction
@@ -223,19 +222,20 @@ synthetic directory mtimes changing when children change.
 ### 5.3 Why overlay entries survive
 
 Consider an unmaterialized file `p` that the user edits (overlay `File`), then
-`git stash` writes the worktree back to clean: the *checkout* materializes the
+`git stash` writes the worktree back to clean. The *checkout* materializes the
 clean bytes by writing through FUSE, which lands in the overlay as the new clean
 content, and `advance_baseline` moves to the new tree. The overlay entry is
 preserved across the advance; only **compaction** (5.4) may later drop it, and
 only after proving equality. Eagerly clearing the overlay on advancement would
-discard an edit that races the checkout — forbidden; the daemon must
+discard an edit that races the checkout. That is forbidden: the daemon must
 "preserve every file containing acknowledged user writes".
 
 ### 5.4 Dematerialization (compaction) preconditions
 
 Compaction is a *separate, later, optional* pass ("Initially favor
 correctness over aggressive compaction"). An overlay entry for `p` may be
-dropped (reverting `p` to lazy baseline resolution) **only when all** hold:
+dropped (reverting `p` to lazy baseline resolution) **only when all** of these
+hold:
 
 ```rust
 fn may_dematerialize(&self, p: &RepoPath, fh: &HandleTable) -> bool {
@@ -247,15 +247,14 @@ fn may_dematerialize(&self, p: &RepoPath, fh: &HandleTable) -> bool {
     && !fh.has_writable_open(p)          // 3. no writable handle open
     && !fh.has_pending_fsync(p)          // 4. no pending fsync
     && !self.rename_refs(p)              // 5. no in-flight rename references it
-    // 6. NEVER by timestamp — time is not an input here.
+    // 6. NEVER by timestamp; time is not an input here.
 }
 ```
 
-Condition 6 is the prohibition. "Content
-equals baseline" compares the *filtered working-tree representation* of the
-baseline blob (CRLF/encoding/ident/LFS-aware), not the raw blob —
-otherwise a CRLF repo would never compact. Dematerialization calls
-`Overlay::clear` (`crates/overlay/src/lib.rs`).
+Condition 6 is the prohibition. "Content equals baseline" compares the *filtered
+working-tree representation* of the baseline blob (CRLF/encoding/ident/LFS-aware),
+not the raw blob; otherwise a CRLF repo would never compact. Dematerialization
+calls `Overlay::clear` (`crates/overlay/src/lib.rs`).
 
 **Testable invariants:**
 - **W-ADV-1:** index-only commands never advance the baseline (no
@@ -283,7 +282,7 @@ pub struct RepoPath { bytes: Vec<u8> } // identity = raw bytes, never lossy UTF-
 | No lossy UTF-8 for identity | `as_bytes()` is the only identity; `Hash`/`Eq`/`Ord` are over bytes. `display()` is lossy and explicitly *not* parseable back. |
 | NUL-delimited plumbing | Git invocations use `-z`/NUL framing; `RepoPath` forbids embedded NUL so a path can never inject a delimiter. |
 | Safe display / JSON escaping | `escape()`/`unescape()` round-trip percent-encoding; `serde` uses `escape()`, so non-UTF-8 paths survive JSON (the namespace DB and IPC). |
-| No shell construction; no `rev:path` | Object access is by **oid**, never `rev:path`. The one path-taking plumbing call (`cat-file --filters --path=`) requires UTF-8 and is gated — see below. |
+| No shell construction; no `rev:path` | Object access is by **oid**, never `rev:path`. The one path-taking plumbing call (`cat-file --filters --path=`) requires UTF-8 and is gated; see below. |
 | Attribute lookup not stopped at first non-UTF-8 component | Resolution walks `components()` (byte slices); it never UTF-8-decodes to traverse. |
 
 **Rejected on construction** (`from_bytes`, already enforced & unit-tested):
@@ -300,8 +299,8 @@ pass `--path=<utf8>` to `git cat-file --filters` and **error** on non-UTF-8
 paths. The raw-path contract forbids "stopping attribute lookup at the first
 non-UTF-8 component". Handling:
 
-- The projection serves the **raw baseline blob** directly (no plumbing path
-  argument needed) — correct and byte-exact. A smudge-filtered file (eol=crlf,
+- The projection serves the **raw baseline blob** directly, no plumbing path
+  argument needed, correct and byte-exact. A smudge-filtered file (eol=crlf,
   ident, an LFS pointer) therefore reads as its stored bytes, not the smudged
   bytes; commits stay byte-correct because the clean filter is the inverse.
   This is by design (not closeable without filter-aware lazy sizing), and it is
@@ -309,7 +308,7 @@ non-UTF-8 component". Handling:
 - Driving a filter for a path that *both* needs one *and* contains non-UTF-8
   bytes would require a mechanism that accepts raw path bytes (a long-running
   `git filter-process` protocol-v2 session, which is NUL/length-framed), not
-  `--path=`; absent that, such a read returns a bounded, *escaped*-path error
+  `--path=`. Absent that, such a read returns a bounded, *escaped*-path error
   rather than a silent wrong answer.
 
 **Testable invariant (W-PATH-1):** a tracked file whose path contains invalid
@@ -330,7 +329,7 @@ The key mechanism is `OverlayKind::BaseRef { oid, mode }`
 (`crates/overlay/src/lib.rs`; ADR 0005): place a reference to the **existing
 blob** at the new path. No bytes are copied or fetched ("A clean file rename
 should be representable as metadata referring to the same blob without fetching
-its contents"). The source gets a tombstone (if it was a baseline path) or
+its contents"). The source gets a tombstone if it was a baseline path, otherwise
 its overlay entry is moved.
 
 ```rust
@@ -345,7 +344,7 @@ Resolution of `from` (mirrors `Workspace::rename`):
 | Overlay `BaseRef{oid,mode}` | `put_base_ref(to, oid, mode)` | none |
 | Baseline file/symlink | `put_base_ref(to, oid, mode)` | none |
 | Baseline **tree** (subtree) | see 7.2 | none for clean descendants |
-| Tombstone / Absent | `ENOENT` | — |
+| Tombstone / Absent | `ENOENT` | n/a |
 
 Then `from` is deleted (tombstone if baseline-backed, else `clear`). The inode
 moves with the content (`InodeTable::rename`), so open handles on `from` keep
@@ -361,15 +360,16 @@ should not read descendant blobs"). No blob is fetched.
 
 Representation options:
 
-- **(a) Subtree-mapping record** — a single namespace entry "`to` ⇒ baseline
+- **(a) Subtree-mapping record**: a single namespace entry "`to` ⇒ baseline
   subtree `oid_of(from)` at generation `g`"; resolution of `to/x/y` walks the
   mapped baseline tree. O(1) to record, O(depth) per descendant lookup.
-- **(b) Eager namespace re-parent** — rewrite parent pointers of *direct*
+- **(b) Eager namespace re-parent**: rewrite parent pointers of *direct*
   children only, recursing lazily on access. O(direct children) up front.
 
-Either way: **zero blob fetches**, descendant content still streams from the
-original blobs. Mixed subtrees (some descendants already in the overlay) re-parent
-the overlay entries *and* carry the baseline mapping for the clean remainder.
+Either way there are **zero blob fetches**, and descendant content still streams
+from the original blobs. Mixed subtrees (some descendants already in the overlay)
+re-parent the overlay entries *and* carry the baseline mapping for the clean
+remainder.
 
 ### 7.3 Filter-context invalidation
 
@@ -415,10 +415,9 @@ pub struct SyntheticEntry {
   check). Served from a fixed buffer; no overlay, no Git object.
 - **Resolution priority 1**: it shadows any baseline/overlay path of the
   same name. A Git **tree** that contains a literal `.git` entry at the root (a
-  malicious or pathological repo) must **fail safely** — the synthetic entry
-  wins and the tree entry is suppressed/reported, never projected ("A Git
-  tree entry that conflicts with Git's protected `.git` namespace must fail
-  safely").
+  malicious or pathological repo) must **fail safely**. The synthetic entry wins
+  and the tree entry is suppressed/reported, never projected ("A Git tree entry
+  that conflicts with Git's protected `.git` namespace must fail safely").
 - Protected operations on `.git`: `unlink`, `rename` (as source or dest),
   replace, `chmod`/`setattr`, `write`, and `mkdir`/`create` beneath it all
   return `EPERM`/`EACCES`. The namespace layer rejects any overlay write
@@ -441,7 +440,7 @@ On Linux, project Git symlinks (`GitMode::Symlink`, blob bytes = target) as
 
 - Preserve **raw target bytes** exactly: broken targets, relative *and* absolute
   targets, non-UTF-8 targets. Symlink blobs are **never filtered**
-  (`Workspace::read_blob_for_mode` uses `raw_blob` for `Symlink` — keep).
+  (`Workspace::read_blob_for_mode` uses `raw_blob` for `Symlink`; keep).
 - **Never follow repository symlinks for internal overlay writes**
   (symlink-race): overlay content/meta files are addressed by a hash of the path
   bytes (`Overlay::id_for`), so the daemon never `open`s a repo-controlled path
@@ -455,9 +454,8 @@ On Linux, project Git symlinks (`GitMode::Symlink`, blob bytes = target) as
 Git does not preserve hard-link identity. **MVP policy: return a clear
 unsupported error** from `link()` (`EOPNOTSUPP`), documented in `limitations.md`.
 The alternative (overlay hard links that lose identity at commit) is deferred and
-must be *explicit* if ever adopted — never silently copy while pretending
-identity was preserved. `link` is already listed as "or a clearly
-documented error".
+must be *explicit* if ever adopted. Never silently copy while pretending identity
+was preserved. `link` is already listed as "or a clearly documented error".
 
 ### 9.3 Special files
 
@@ -497,6 +495,5 @@ never-committed screening in `glm_platform::metadata`).
 | W-LINK-1/2/3 | Symlinks byte-exact & unfiltered; hard links/special files refused cleanly; no symlink-swap follow | Section 9 |
 
 All marked invariants become differential tests against a conventional checkout
-executed through a **real `/dev/fuse` mount**, and the
-hydration-budget ones (W-RESOLVE-2, W-RENAME-1/2) become automated fetch-count
-assertions.
+executed through a **real `/dev/fuse` mount**, and the hydration-budget ones
+(W-RESOLVE-2, W-RENAME-1/2) become automated fetch-count assertions.

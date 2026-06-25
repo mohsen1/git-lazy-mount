@@ -5,9 +5,9 @@ content?
 
 ## Finding
 
-Often **no**. A Git tree entry has no size, and the size a program sees is the
-**filtered working-tree** size, which differs from the raw blob whenever CRLF /
-`working-tree-encoding` / `ident` / clean-smudge filters / LFS /
+Often no. A Git tree entry has no size, and the size a program sees is the
+filtered working-tree size, which differs from the raw blob whenever CRLF,
+`working-tree-encoding`, `ident`, clean-smudge filters, LFS, or
 path-dependent `.gitattributes` apply. A symlink's `lstat` size is the link
 target length (the blob content).
 
@@ -31,7 +31,7 @@ With the same repo (`hello\n` committed, raw 6 bytes):
 * Windows default (`autocrlf=true`, Git for Windows system config): projected
   size **7** (`hello\r\n`).
 
-This surfaced as a real CI difference and is **correct** — faithful filtering
+This surfaced as a real CI difference. It is correct: faithful filtering
 matches a checkout. Tests pin `core.autocrlf=false` for determinism.
 
 ## Decision (release gate)

@@ -1,6 +1,6 @@
 # `git-lazy-mount`: a transparent, stock-Git, lazily hydrated working tree in Rust
 
-This is the design of `git-lazy-mount` — the authoritative specification the
+This is the design of `git-lazy-mount`, the authoritative specification the
 implementation is built and tested against. It targets **Linux only** (FUSE);
 macOS (FSKit) and Windows (ProjFS) are out of scope but possible, with notes
 under [`future-platforms/`](future-platforms/).
@@ -975,7 +975,7 @@ Develop a measured bootstrap process that marks initial index entries FSMonitor-
 
 The first clean status and all subsequent clean statuses must fetch zero blob contents.
 
-**Implementation finding:** the *first* clean status proved fundamentally unachievable as zero-blob under `blob:none`. Git must populate the index stat (including each file's size) to skip the content check, and the size requires fetching the blob — the FSMonitor-valid bit does not override an empty-stat entry. So the first clean status faults each tracked blob once; only *subsequent* clean statuses are zero-blob. FSMonitor still delivers correct change detection and skips the redundant stat scan. (Verified with `GIT_TRACE_FSMONITOR`; recorded in the limitations doc.)
+**Implementation finding:** the *first* clean status proved fundamentally unachievable as zero-blob under `blob:none`. Git must populate the index stat (including each file's size) to skip the content check, and the size requires fetching the blob. The FSMonitor-valid bit does not override an empty-stat entry. So the first clean status faults each tracked blob once; only *subsequent* clean statuses are zero-blob. FSMonitor still delivers correct change detection and skips the redundant stat scan. (Verified with `GIT_TRACE_FSMONITOR`; recorded in the limitations doc.)
 
 ## 12.3 Untracked paths
 
@@ -2278,7 +2278,7 @@ avoid statting every projected file
 
 It may still parse a full index in the correctness profile; measure that separately.
 
-**Implementation finding:** the *first* such status cannot fetch zero blobs — it faults each blob once to populate the index stat, because the FSMonitor bootstrap above cannot make the first status lazy. The zero-blob, no-full-stat-scan behavior holds for *subsequent* clean statuses.
+**Implementation finding:** the *first* such status cannot fetch zero blobs. It faults each blob once to populate the index stat, because the FSMonitor bootstrap above cannot make the first status lazy. The zero-blob, no-full-stat-scan behavior holds for *subsequent* clean statuses.
 
 ## 38.5 One file read
 

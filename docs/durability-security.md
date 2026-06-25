@@ -1,15 +1,15 @@
 # Overlay durability, recovery journal, auth/offline, security
 
-This area of the [specification](design.md) covers, primarily overlay
+This area of the [specification](design.md) covers overlay
 storage and durability, the optional operation journal, auth/offline, the
 security model, and stable synthetic metadata + racy-clean. Read
 alongside [`architecture.md`](architecture.md) (baseline+overlay model,
 two-sources-of-truth) and [`requirements-checklist.md`](requirements-checklist.md).
 
-This document covers the daemon's **own** durable state — the writable working
+This document covers the daemon's own durable state: the writable working
 tree. Git's gitdir owns refs/index/reflogs/commits; we never duplicate
-them and never journal them here. The design **supersedes** the old
-custom-stage / commit-adoption / `git lazy-mount git --` bridge: the operation
+them and never journal them here. The design supersedes the old
+custom-stage / commit-adoption / `git lazy-mount git --` bridge. The operation
 journal in this design is a *crash-recovery* artifact, not a second history.
 
 Crate map (target layout vs. existing): `overlay/` keeps native content +
@@ -26,8 +26,8 @@ view-history/commit-adoption semantics are not.
 ## 1. Overlay storage layout
 
 Native files hold content; a transactional SQLite-WAL database holds the
-namespace. **Large content is never stored in SQLite**. The daemon is the
-**single writer**.
+namespace. **Large content is never stored in SQLite.** The daemon is the
+single writer.
 
 ```
 ~/.local/share/git-lazy-mount/workspaces/<id>/
@@ -41,9 +41,9 @@ namespace. **Large content is never stored in SQLite**. The daemon is the
       ab/<content-id>.tmp    in-flight (reconciled/quarantined on startup)
   filtered-cache/            validated working-tree representations
   journal/
-    recovery.sqlite          recovery journal — WAL, bounded, compactable
+    recovery.sqlite          recovery journal (WAL, bounded, compactable)
   fsmonitor/
-    tokens.sqlite            FSMonitor durability journal — WAL
+    tokens.sqlite            FSMonitor durability journal (WAL)
   quarantine/                ambiguous files preserved by recovery
   mount.json                 daemon-written mount record (IPC-only writers)
   locks/                     advisory lockfiles
@@ -109,9 +109,9 @@ CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID;
 ```
 
 `kind` enumerates `OverlayKind` from `overlay/src/lib.rs:27` plus `Dir` and
-`Gitlink`. `BaseRef` (lib.rs:41) is preserved verbatim — it is the clean-rename
+`Gitlink`. `BaseRef` (lib.rs:41) is preserved verbatim. It is the clean-rename
 optimization: place content at a new path referencing an existing blob OID
-with **no fetch**.
+with no fetch.
 
 Invariant **NS-1** (`UNIQUE(parent_ino,name)`): a directory never lists two
 entries with the same name; case/normalization collisions are handled by the
@@ -139,10 +139,10 @@ A single namespace mutation:
 4. (optional) directory fsync of overlay/content/<shard>
 ```
 
-Content is durable **before** the namespace row that references it — so a crash
+Content is durable **before** the namespace row that references it, so a crash
 never yields a row pointing at absent/torn content (the existing
 overlay invariant, lib.rs:13). Order is the inverse of delete: to remove
-content, first delete the row (COMMIT), then unlink the content file; a crash
+content, first delete the row (COMMIT), then unlink the content file. A crash
 leaves an unreferenced orphan, never a dangling reference.
 
 Durability levels (the existing `Durability` ladder, `core/src/state.rs:103`, is
@@ -180,7 +180,7 @@ diagnostics). Locks are CLOEXEC so a spawned `git`/filter never inherits them.
 
 | Lock file | Guards | Held by | Held during |
 |-----------|--------|---------|-------------|
-| `locks/mount.lock`     | mount ownership — one daemon owns the mount | daemon | whole `mounted` lifetime |
+| `locks/mount.lock`     | mount ownership (one daemon owns the mount) | daemon | whole `mounted` lifetime |
 | `locks/startup.lock`   | daemon startup race | starting daemon | preflight → live |
 | `locks/migration.lock` | namespace DB schema migration | migrator | migration only |
 | `locks/recovery.lock`  | crash recovery pass | recoverer | recovery only |
@@ -206,7 +206,7 @@ holder, rather than corrupting the DB.
 Invariant **LOCK-2**: a **stale** lock (holder pid dead, or `boot_id` differs
 from current boot) is breakable only by the recovery path under
 `recovery.lock`, never silently. `boot_id` (Linux `/proc/sys/kernel/random/boot_id`)
-distinguishes "process still alive" from "machine rebooted, pid reused" — a
+distinguishes "process still alive" from "machine rebooted, pid reused", which is a
 stale-PID-file attack vector.
 
 ### 2.2 `mount.json` and the registry
@@ -215,12 +215,12 @@ stale-PID-file attack vector.
 written **only** by the daemon, via the same temp-file + fsync + atomic rename
 discipline already in `registry.rs:86` (`Registry::store`). `MountState`
 (registry.rs:12) must reach `Mounted` only after a real kernel mount + Git health
-checks — the registry must never assert `Mounted` without a kernel
+checks. The registry must never assert `Mounted` without a kernel
 mount. CLI `list`/`doctor` read it; they never write it.
 
 ---
 
-## 3. Recovery — startup state machine
+## 3. Recovery: startup state machine
 
 Recovery runs under `recovery.lock` before the mount goes live. It never
 deletes acknowledged user data (DUR-2).
@@ -231,7 +231,7 @@ State table (the `MountState` set, registry.rs:12, drives this):
 |-------|-----------------|---------|------|
 | `Recovering` | daemon start finds a non-clean shutdown marker, or `recover` CLI | run steps R1–R7 below | → `Mounting` (ok) / `Failed` (unrecoverable) |
 | `Mounting` | recovery clean | start FUSE | → `Mounted` / `Failed` |
-| `Mounted` | kernel mount + Git health pass | serve | — |
+| `Mounted` | kernel mount + Git health pass | serve | n/a |
 | `Failed` | unrecoverable inconsistency | preserve everything; surface diagnostic | operator / `recover --export` |
 
 Recovery steps:
@@ -287,16 +287,16 @@ report (fs-fskit/src/recovery.rs:34) are the structural template (`healthy` /
 `stale` / `issues`), retargeted from the superseded view-history to the namespace
 DB + content reconciliation above.
 
-Invariant **REC-1**: recovery is idempotent — running it twice yields the same
+Invariant **REC-1**: recovery is idempotent. Running it twice yields the same
 result and never re-quarantines already-quarantined items.
 
-Invariant **REC-2**: recovery never requires network — dirty overlay
+Invariant **REC-2**: recovery never requires network. Dirty overlay
 content never depends on network for recovery (see "Offline mode and prefetch"
 below).
 
 ---
 
-## 4. Recovery journal — strictly bounded purpose
+## 4. Recovery journal: strictly bounded purpose
 
 A filesystem **recovery** journal is allowed. It must **not** become a second
 Git history. Its only purposes:
@@ -310,7 +310,7 @@ recovery of uncommitted working files
 ```
 
 It explicitly does **not** record: commits, branch moves, ref updates,
-merge/rebase progress — Git's refs and reflogs are the history of those. We do
+merge/rebase progress. Git's refs and reflogs are the history of those. We do
 **not** build a Jujutsu-style operation log here; the
 existing `crates/oplog` view-history and `crates/stage` are removed.
 
@@ -333,7 +333,7 @@ CREATE TABLE journal_meta (k TEXT PRIMARY KEY, v BLOB);
 ```
 
 The journal entry is appended in the **same** SQLite transaction as the
-namespace row mutation (the write-protocol commit step) — one `COMMIT` covers
+namespace row mutation (the write-protocol commit step). One `COMMIT` covers
 both, so the journal can never disagree with the namespace it describes.
 
 ### 4.2 Compaction
@@ -344,12 +344,12 @@ is purely a recovery/audit optimization; losing old rows costs nothing because
 the namespace DB is itself the authoritative state.
 
 Invariant **JRN-1**: the journal is never the source of truth for working-tree
-bytes — dropping `journal/` entirely still leaves a fully usable workspace
+bytes. Dropping `journal/` entirely still leaves a fully usable workspace
 (namespace DB + content files). Tested by deleting the journal and asserting the
 mount still serves correct content.
 
-Invariant **JRN-2**: the journal contains no secrets and no file contents
-(redaction) — `detail` is bounded structured metadata only.
+Invariant **JRN-2**: the journal contains no secrets and no file contents.
+`detail` is bounded structured metadata only.
 
 ---
 
@@ -386,10 +386,10 @@ Rules:
   `getattr` returns byte-identical `ino/mode/uid/gid/mtime/ctime` across repeated
   lookups. The synthetic mtime/ctime is the **projection epoch's** fixed time,
   derived from `meta.baseline_commit` commit time (or mount time), *not* the
-  current clock — re-reading a clean file must not advance its mtime.
+  current clock. Re-reading a clean file must not advance its mtime.
 - **STBL-2**: a directory's `mtime`/`dir_generation` (the `dir_generation` column
   in the namespace schema) changes when a **direct** child is
-  created/removed/renamed — but not when an unrelated dirty path elsewhere
+  created/removed/renamed, but not when an unrelated dirty path elsewhere
   changes. This is what lets Git's untracked cache stay valid. The hazard of
   using one constant synthetic directory mtime forever is fixed by bumping
   `dir_generation` on direct-child mutation.
@@ -419,7 +419,7 @@ Mitigation:
   `core.fsmonitor` (the `git-lazy-mount-fsmonitor` hook reading the daemon's
   durable change journal): it lets a **subsequent** clean status skip the
   redundant full-tree stat scan. It does **not** make the *first* clean status
-  zero-blob — under a `blob:none` clone Git marks each read-tree'd entry clean
+  zero-blob. Under a `blob:none` clone Git marks each read-tree'd entry clean
   from the hook's empty reply, then immediately marks it fsmonitor_invalid
   because the entry has no stat data; Git must populate the index stat
   (including the file size) to skip the content check, and the exact size of an
@@ -429,7 +429,7 @@ Mitigation:
   zero-blob.
 - **RACY-2**: when a file *is* materialized (overlay content), its mtime is the
   real native file mtime (the overlay file's `stat`, like `content_len`,
-  overlay/src/lib.rs:215) — honest, and FSMonitor reports the change so Git
+  overlay/src/lib.rs:215). That is honest, and FSMonitor reports the change so Git
   knows to look.
 - **RACY-3**: never narrow racy detection by lying; if exact size/mtime is
   unknown we report the *stable synthetic* value, and any real edit goes through
@@ -447,7 +447,7 @@ an edit is reported exactly once.
 
 The principle: **interactive auth only at the `mount` command;
 every FUSE callback is non-interactive.** This is already enforced at the
-process layer — `git-store::proc::run` sets `Stdio::null()` for stdin and
+process layer. `git-store::proc::run` sets `Stdio::null()` for stdin and
 hardens fds (proc.rs:84), so a spawned `git` "never inherits a terminal (so
 credential prompts cannot appear)".
 
@@ -468,7 +468,7 @@ even touch the network. This is implemented today: `FetchPolicy::may_fetch()`
 the policy forbids it.
 
 ```rust
-// object-provider/src/lib.rs — callback path uses CacheOnly/MustNotFetch:
+// object-provider/src/lib.rs, callback path uses CacheOnly/MustNotFetch:
 if !policy.may_fetch() { return Err(offline(id)); }  // OfflineMissingObject
 ```
 
@@ -512,8 +512,8 @@ a bounded errno promptly; it never blocks a FUSE callback waiting for an
 interactive prompt.
 
 Invariant **AUTH-2**: after `CredentialRefresh` (or a user `git fetch`), a
-previously failing read of the same object succeeds without unmount/remount —
-doctor or a normal git fetch refreshes credentials and the read retries.
+previously failing read of the same object succeeds without unmount/remount.
+Doctor or a normal git fetch refreshes credentials and the read retries.
 
 ### 6.4 Offline mode and prefetch
 
@@ -533,13 +533,13 @@ git lazy-mount prefetch <path> --for-offline # warm caches for offline use
 Invariant **OFF-1**: **dirty overlay content never depends on the network**.
 Overlay files are self-contained native bytes; recovery and reads of
 locally-written content never call the fetcher. Tested: take a
-workspace offline, edit/create files, kill the daemon, recover — all dirty bytes
-intact, zero fetch attempts (REC-2).
+workspace offline, edit/create files, kill the daemon, recover. All dirty bytes
+stay intact, zero fetch attempts (REC-2).
 
 Invariant **OFF-2**: a `BaseRef` entry (clean rename of an unmaterialized file)
 whose blob is absent offline returns `OfflineMissingObject` on **content**
-read, but its **namespace** presence (lookup/readdir/rename) never needs network
-— a clean rename fetches zero blobs.
+read, but its **namespace** presence (lookup/readdir/rename) never needs network.
+A clean rename fetches zero blobs.
 
 ---
 
@@ -598,10 +598,10 @@ pub enum FilterTrust { Trusted, BuiltinsOnly, ErrorOnExternal, Raw }
 Invariant **SEC-2**: **passive hydration never runs a Git hook**. Hooks run
 only because the user invoked a Git command that normally runs them. The daemon's
 hydration path spawns only `cat-file`-class object readers and (policy-permitting)
-declared filters — never `git` porcelain, and never the hooks directory.
+declared filters, never `git` porcelain, and never the hooks directory.
 
 Invariant **SEC-3**: passive hydration never executes an untrusted external
-command — under the default policy, an unknown external filter errors
+command. Under the default policy, an unknown external filter errors
 instead of running.
 
 ### 7.3 Redaction
@@ -654,7 +654,7 @@ Durability / overlay (crash injection):
   files are quarantined, not deleted.
 - **NS-1** no two entries share `(parent_ino, name)`.
 - crash injected after each of: content `.tmp` create, content publish, namespace
-  COMMIT, rename, unlink, fsync — no acknowledged data lost; DB never
+  COMMIT, rename, unlink, fsync. No acknowledged data lost; DB never
   corrupt.
 - non-UTF-8 path content survives reopen (already tested,
   overlay/src/lib.rs:323 `non_utf8_path_overlay`).

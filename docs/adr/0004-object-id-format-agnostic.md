@@ -1,4 +1,4 @@
-# 0004 — Object IDs are format-agnostic
+# 0004: Object IDs are format-agnostic
 
 **Status:** Accepted
 
@@ -13,10 +13,10 @@ accommodate any future format.
 
 Model an object name as [`ObjectId`](../../crates/core/src/object_id.rs): opaque
 raw bytes tagged with an `ObjectFormat`. `ObjectFormat` has explicit `Sha1` and
-`Sha256` arms plus an **`Other(String)`** arm so a future format Git reports does
-not require a code change merely to *parse* (only to optimize). The format is
+`Sha256` arms plus an `Other(String)` arm, so a future format Git reports does
+not require a code change merely to *parse* it (only to optimize). The format is
 detected from `git rev-parse --show-object-format` and never assumed. We parse and
-compare ids but **never compute hashes ourselves** — Git remains authoritative for
+compare ids but never compute hashes ourselves. Git stays authoritative for
 hashing (see ADR 0001).
 
 Parsing validates hex and, for *known* formats, the exact digest length; for
@@ -28,7 +28,7 @@ coincide.
 
 * SHA-256 repositories work without special-casing; a novel format parses without
   edits.
-* Ids are stored as raw bytes, so equality and hashing are cheap and exact;
+* Ids are stored as raw bytes, so equality and hashing are cheap and exact.
   `to_hex()` is used only for display and for talking to `git`.
 * A "null" oid is constructed per-format for compare-and-swap "create" semantics
   (the expected-old value when creating a ref).
