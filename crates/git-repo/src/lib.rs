@@ -41,7 +41,13 @@ impl Default for CloneOptions {
         CloneOptions {
             branch: None,
             depth: None,
-            filter: Some("blob:none".into()),
+            // `tree:0` fetches every commit (so history, merge-base, and branch
+            // switching work) but no trees or blobs. `build_index` lazily faults the
+            // HEAD tree hierarchy; blobs hydrate on read. A full-history `blob:none`
+            // clone would instead download every tree from all of history (slow and
+            // large on big repos), and `--depth 1` would graft the commits (breaking
+            // `git merge`/`git rebase`). `tree:0` avoids both.
+            filter: Some("tree:0".into()),
             allow_full_object_clone: false,
         }
     }
@@ -87,6 +93,11 @@ impl AdminRepo {
         }
         if let Some(d) = opts.depth {
             cmd.arg(format!("--depth={d}"));
+            // `--depth` implies `--single-branch`, which fetches only the default
+            // branch's tip, so `git switch <other-branch>` would fail with "invalid
+            // reference". Override it: fetch every branch's tip (still shallow and
+            // `blob:none`, so cheap) so branch switching works in the mount.
+            cmd.arg("--no-single-branch");
         }
         if let Some(b) = &opts.branch {
             cmd.arg("--branch").arg(b);
@@ -169,12 +180,18 @@ impl AdminRepo {
     }
 
     /// Populate the real `.git/index` from the baseline (HEAD) tree **without
-    /// fetching any blobs**. This is `git read-tree HEAD`:
-    /// O(tracked paths), reads tree objects only (present under `blob:none`),
-    /// touches no working-tree files. The real index is then the single stage
-    /// that stock `git add`/`status`/`commit` operate on.
+    /// fetching any blobs**. This is `git read-tree HEAD`: O(tracked paths), reads
+    /// tree objects only, touches no working-tree files. The real index is then the
+    /// single stage that stock `git add`/`status`/`commit` operate on.
+    ///
+    /// Under the default `--filter=tree:0` clone the HEAD tree hierarchy is absent,
+    /// so this faults it (a one-time, bounded cost: the trees of HEAD, not of all
+    /// history). Lazy fetch is therefore **permitted** here, unlike [`Self::git`].
+    /// It still fetches no blobs (those hydrate on read).
     pub fn build_index(&self) -> Result<()> {
-        let mut cmd = self.git();
+        let mut cmd = Command::new("git");
+        cmd.arg("--git-dir").arg(&self.gitdir);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.args(["read-tree", "HEAD"]);
         run(cmd, "read-tree")?;
         Ok(())
