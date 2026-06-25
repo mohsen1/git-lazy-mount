@@ -249,7 +249,10 @@ fn conversion_attribute_skips_seed_but_stays_correct() {
     let (ok, st) = git(&h.mnt, &["status", "--porcelain"]);
     assert!(ok, "status failed");
     assert!(st.contains("src/f2.txt"), "edit must surface: {st:?}");
-    assert!(!st.contains("f5.txt"), "unedited file must stay clean: {st:?}");
+    assert!(
+        !st.contains("f5.txt"),
+        "unedited file must stay clean: {st:?}"
+    );
 
     h.mount.unmount();
 }

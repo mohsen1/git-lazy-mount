@@ -342,7 +342,10 @@ fn output_bounded(mut cmd: Command, secs: u64) -> Result<std::process::Output> {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(Error::new(ErrorCode::Internal, "command timed out".to_string()));
+                    return Err(Error::new(
+                        ErrorCode::Internal,
+                        "command timed out".to_string(),
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
