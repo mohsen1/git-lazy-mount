@@ -1044,6 +1044,8 @@ mod tests {
             &CloneOptions::default(),
         )
         .unwrap();
+        // tree:0 clone fetches no trees; fault the HEAD trees in before projecting.
+        repo.build_index().unwrap();
         let proj =
             Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap();
         (tmp, remote, proj)
@@ -1146,6 +1148,8 @@ mod tests {
             &CloneOptions::default(),
         )
         .unwrap();
+        // tree:0 clone fetches no trees; fault the HEAD trees in before projecting.
+        repo.build_index().unwrap();
         let p =
             Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap();
         let a = p.lookup(p.root_ino(), b"link").unwrap().unwrap();

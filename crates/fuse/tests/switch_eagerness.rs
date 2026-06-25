@@ -59,10 +59,11 @@ fn switch_eagerness_is_bounded_by_the_delta_not_the_repo() {
         &CloneOptions::default(),
     )
     .unwrap();
+    // Fault HEAD trees into the gitdir (tree:0 fetches none) before projecting.
+    repo.build_index().unwrap();
     let proj = Arc::new(
         Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap(),
     );
-    proj.repo().build_index().unwrap();
     let mount = spawn_mount(Arc::clone(&proj), &mnt).unwrap();
     assert!(wait_until(|| mnt.join(".git").exists()), "mount not ready");
     git(&mnt, &["config", "user.email", "t@e"]);

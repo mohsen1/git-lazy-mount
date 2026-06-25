@@ -455,11 +455,13 @@ mod tests {
         )
         .unwrap();
 
-        // HEAD + baseline tree resolve from the admin gitdir.
+        // HEAD resolves straight from the clone; the baseline trees fault in via
+        // build_index (the default tree:0 clone fetches commits but no trees/blobs).
         assert!(repo.head_commit().unwrap().is_some(), "HEAD resolves");
+        repo.build_index().unwrap();
         let tree = repo.head_tree().unwrap().expect("baseline tree");
-        // The baseline tree is readable without checkout (trees come down, blobs
-        // do not under blob:none).
+        // The baseline tree is readable without a physical checkout (trees fault
+        // in, blobs do not).
         let entries = repo.store().read_tree(&tree, false).unwrap();
         let names: Vec<_> = entries.entries.iter().map(|e| e.name.clone()).collect();
         assert!(names.iter().any(|n| n == b"README.md"));
