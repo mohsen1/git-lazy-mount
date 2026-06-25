@@ -193,44 +193,65 @@ fn first_status_faults_zero_blobs_and_surfaces_edits() {
 }
 
 #[test]
-fn conversion_attributed_files_are_not_seeded() {
-    // A file under a clean/smudge `filter` must NOT be seeded valid — its
-    // working-tree bytes can differ from the blob, so seeding it could hide a real
-    // diff. The carve-out leaves it for git to check while the unattributed
-    // majority are seeded and skipped, and correctness is preserved throughout.
-    const N: usize = 10;
+fn non_conversion_gitattributes_still_seed_zero_fault() {
+    // A `.gitattributes` that declares NO checkout conversion (text / eol=lf /
+    // linguist / binary, e.g. microsoft/TypeScript's `* -text`) must still be
+    // seeded, and must NOT trigger a `check-attr` over every path. The first status
+    // faults zero blobs, the same as a repo with no `.gitattributes` at all.
+    const N: usize = 12;
     let mut files: Vec<(String, Vec<u8>)> = (0..N)
         .map(|i| (format!("src/f{i}.txt"), format!("file {i}\n").into_bytes()))
         .collect();
     files.push((
         ".gitattributes".into(),
-        b"secret.dat filter=redact\n".to_vec(),
+        b"* text=auto\n*.md linguist-documentation\n*.png binary\n".to_vec(),
     ));
-    files.push(("secret.dat".into(), b"top secret\n".to_vec()));
     let refs: Vec<(&str, &[u8])> = files
         .iter()
         .map(|(p, b)| (p.as_str(), b.as_slice()))
         .collect();
     let h = mount_with_seed(&refs);
-    let total = files.len() as u64;
 
     let h0 = h.proj.hydrations();
-    let (ok, _) = git(&h.mnt, &["status", "--porcelain"]);
+    let (ok, st) = git(&h.mnt, &["status", "--porcelain"]);
     assert!(ok, "status failed");
-    let faulted = h.proj.hydrations() - h0;
-    // The seeded majority is skipped: far fewer faults than every tracked file.
-    assert!(
-        faulted < total,
-        "carve-out must still skip the seeded majority: faulted {faulted} of {total}"
+    assert_eq!(st, "", "tree must be clean");
+    assert_eq!(
+        h.proj.hydrations() - h0,
+        0,
+        "a non-conversion .gitattributes must still seed (0-fault first status)"
     );
 
-    // Correctness still holds with attributes present: an edit is surfaced.
+    h.mount.unmount();
+}
+
+#[test]
+fn conversion_attribute_skips_seed_but_stays_correct() {
+    // A repo that declares a clean/smudge `filter` (its working-tree bytes can
+    // differ from the blob) skips the FSMonitor seed entirely, so the first status
+    // falls back to the eager scan. That must stay correct: an edit is surfaced and
+    // an unedited file is not falsely reported.
+    const N: usize = 8;
+    let mut files: Vec<(String, Vec<u8>)> = (0..N)
+        .map(|i| (format!("src/f{i}.txt"), format!("file {i}\n").into_bytes()))
+        .collect();
+    files.push((".gitattributes".into(), b"*.dat filter=redact\n".to_vec()));
+    files.push(("data/blob.dat".into(), b"payload\n".to_vec()));
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    let h = mount_with_seed(&refs);
+
+    // Mount succeeded (no stall on the attributes read), and change detection is
+    // correct even with the seed skipped.
     std::fs::write(h.mnt.join("src/f2.txt"), b"changed\n").unwrap();
+    let (ok, st) = git(&h.mnt, &["status", "--porcelain"]);
+    assert!(ok, "status failed");
+    assert!(st.contains("src/f2.txt"), "edit must surface: {st:?}");
     assert!(
-        git(&h.mnt, &["status", "--porcelain"])
-            .1
-            .contains("src/f2.txt"),
-        "edit must surface even with conversion attributes present"
+        !st.contains("f5.txt"),
+        "unedited file must stay clean: {st:?}"
     );
 
     h.mount.unmount();
