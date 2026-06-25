@@ -1,0 +1,26 @@
+[package]
+name = "sgrep"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Remote code-search grep for git-lazy-mount working trees — searches a cloud index instead of reading (materializing) local files."
+
+[[bin]]
+name = "sgrep"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true, features = ["env"] }
+serde_json.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
