@@ -10,13 +10,18 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use glm_core::{Error, ErrorCode, ObjectId, Result};
 use glm_git_store::GitStore;
+
+/// Cap on reading a `.gitattributes` blob during the FSMonitor seed, so a slow or
+/// throttled promisor fetch cannot stall the mount. On timeout the seed is skipped
+/// and the first status falls back to the eager scan.
+const SEED_ATTR_READ_TIMEOUT_SECS: u64 = 20;
 
 /// Options for the transparent clone.
 #[derive(Debug, Clone)]
@@ -218,15 +223,13 @@ impl AdminRepo {
         if all.is_empty() {
             return Ok(());
         }
-        // Carve out paths whose working-tree bytes can differ from the stored blob
-        // (checkout conversions): seeding those valid could hide a real diff.
-        let converted = self.conversion_attributed_paths(&all)?;
-        let seedable: Vec<&[u8]> = all
-            .iter()
-            .map(Vec::as_slice)
-            .filter(|p| !converted.contains(*p))
-            .collect();
-        if seedable.is_empty() {
+        // A checkout conversion (clean/smudge `filter`, `ident`,
+        // `working-tree-encoding`, or CRLF `eol`) makes a file's working-tree bytes
+        // differ from its stored blob, so seeding it valid could hide a real diff.
+        // If the repo declares any such attribute, skip the seed entirely: the first
+        // status then falls back to the eager scan, which is correct. The common
+        // case (no conversion attribute) seeds every entry.
+        if self.declares_conversion_attributes(&all)? {
             return Ok(());
         }
         let mut child = self
@@ -242,7 +245,7 @@ impl AdminRepo {
                 .stdin
                 .take()
                 .ok_or_else(|| Error::new(ErrorCode::Internal, "update-index stdin".to_string()))?;
-            for p in &seedable {
+            for p in &all {
                 stdin
                     .write_all(p)
                     .and_then(|()| stdin.write_all(&[0]))
@@ -264,96 +267,115 @@ impl AdminRepo {
         Ok(())
     }
 
-    /// A `git` command that **may** lazily fetch missing objects (unlike
-    /// [`Self::git`], which forbids it). Used only to read `.gitattributes` blobs
-    /// for the seed carve-out.
-    fn git_with_fetch(&self) -> Command {
+    /// Whether the repo declares any checkout-conversion attribute (clean/smudge
+    /// `filter`, `ident`, `working-tree-encoding`, or CRLF `eol`) in a tracked
+    /// `.gitattributes`.
+    ///
+    /// Reads the `.gitattributes` blobs directly (a few small objects) rather than
+    /// running `check-attr` over every path: on a huge repo that is needlessly
+    /// expensive and can stall on the attributes fetch. Each read is bounded by a
+    /// timeout, so a slow promisor cannot hang the mount; a read failure or timeout
+    /// errs, and the caller falls back to the eager (unseeded) first status.
+    fn declares_conversion_attributes(&self, all: &[Vec<u8>]) -> Result<bool> {
+        let attrs_files = all
+            .iter()
+            .filter(|p| p.rsplit(|&b| b == b'/').next() == Some(b".gitattributes".as_slice()));
+        for path in attrs_files {
+            if attributes_declare_conversion(&self.read_index_blob(path)?) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Read a tracked blob's contents from the index by path (`:<path>`), fetching
+    /// it if missing. Bounded by [`SEED_ATTR_READ_TIMEOUT_SECS`] so a slow promisor
+    /// fetch cannot stall the caller.
+    fn read_index_blob(&self, path: &[u8]) -> Result<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut spec = Vec::with_capacity(path.len() + 1);
+        spec.push(b':');
+        spec.extend_from_slice(path);
+        // Lazy fetch is permitted here (no `GIT_NO_LAZY_FETCH`) so a missing
+        // `.gitattributes` blob is retrieved, but the timeout bounds it.
         let mut cmd = Command::new("git");
         cmd.arg("--git-dir").arg(&self.gitdir);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
-        cmd
-    }
-
-    /// Tracked paths whose working-tree bytes can differ from the stored blob
-    /// because of a checkout conversion (`filter`, `ident`, `working-tree-encoding`,
-    /// or CRLF `eol`). These must not be seeded fsmonitor-valid, so stock git
-    /// checks them normally and never hides a real difference.
-    ///
-    /// Attributes are read from the index (`check-attr --cached`), populated by
-    /// `read-tree HEAD`, so this works before the worktree is mounted. When the
-    /// repo declares no `.gitattributes` at all (the common case) it returns empty
-    /// without fetching or spawning anything.
-    fn conversion_attributed_paths(&self, all: &[Vec<u8>]) -> Result<HashSet<Vec<u8>>> {
-        let has_attrs = all
-            .iter()
-            .any(|p| p.rsplit(|&b| b == b'/').next() == Some(b".gitattributes".as_slice()));
-        if !has_attrs {
-            return Ok(HashSet::new());
-        }
-        let mut child = self
-            .git_with_fetch()
-            .args([
-                "check-attr",
-                "--cached",
-                "-z",
-                "--stdin",
-                "filter",
-                "ident",
-                "working-tree-encoding",
-                "eol",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn check-attr: {e}")))?;
-        {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| Error::new(ErrorCode::Internal, "check-attr stdin".to_string()))?;
-            for p in all {
-                stdin
-                    .write_all(p)
-                    .and_then(|()| stdin.write_all(&[0]))
-                    .map_err(|e| {
-                        Error::new(ErrorCode::Internal, format!("pipe check-attr: {e}"))
-                    })?;
-            }
-        }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| Error::new(ErrorCode::Internal, format!("check-attr wait: {e}")))?;
+        cmd.arg("cat-file")
+            .arg("-p")
+            .arg(std::ffi::OsStr::from_bytes(&spec));
+        let out = output_bounded(cmd, SEED_ATTR_READ_TIMEOUT_SECS)?;
         if !out.status.success() {
             return Err(Error::new(
                 ErrorCode::Internal,
                 format!(
-                    "check-attr --source: {}",
+                    "read {}: {}",
+                    String::from_utf8_lossy(path),
                     String::from_utf8_lossy(&out.stderr).trim()
                 ),
             ));
         }
-        // Output is NUL-separated `path, attr, value` triples.
-        let mut converted = HashSet::new();
-        let mut it = out.stdout.split(|&b| b == 0);
-        while let (Some(path), Some(attr), Some(value)) = (it.next(), it.next(), it.next()) {
-            if path.is_empty() {
-                continue;
+        Ok(out.stdout)
+    }
+}
+
+/// Run `cmd` to completion, returning its output, but kill it and err if it runs
+/// longer than `secs`. For commands with **small** output only: stdout is drained
+/// after the child exits, not concurrently, so a child that fills the pipe would
+/// hit the timeout rather than complete.
+fn output_bounded(mut cmd: Command, secs: u64) -> Result<std::process::Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn: {e}")))?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| Error::new(ErrorCode::Internal, format!("wait: {e}")));
             }
-            let carve = match attr {
-                b"filter" | b"working-tree-encoding" => {
-                    value != b"unspecified" && value != b"unset"
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(Error::new(ErrorCode::Internal, "command timed out".to_string()));
                 }
-                b"ident" => value == b"set",
-                b"eol" => value == b"crlf",
-                _ => false,
-            };
-            if carve {
-                converted.insert(path.to_vec());
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => return Err(Error::new(ErrorCode::Internal, format!("try_wait: {e}"))),
+        }
+    }
+}
+
+/// Scan `.gitattributes` content for a checkout-conversion attribute: a
+/// clean/smudge `filter=`, `ident`, `working-tree-encoding=`, or CRLF `eol=crlf`.
+/// `text`/`-text`/`eol=lf`/`linguist-*` are not conversions on a Linux mount.
+fn attributes_declare_conversion(content: &[u8]) -> bool {
+    for line in content.split(|&b| b == b'\n') {
+        let line = line.trim_ascii();
+        if line.is_empty() || line[0] == b'#' {
+            continue;
+        }
+        // Tokens after the leading pattern.
+        let mut toks = line
+            .split(|&b| b == b' ' || b == b'\t')
+            .filter(|t| !t.is_empty());
+        let _pattern = toks.next();
+        for t in toks {
+            if t == b"ident"
+                || t == b"eol=crlf"
+                || t.starts_with(b"filter=")
+                || t.starts_with(b"working-tree-encoding=")
+            {
+                return true;
             }
         }
-        Ok(converted)
     }
+    false
 }
 
 fn absolute(p: &Path) -> Result<PathBuf> {
