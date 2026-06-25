@@ -240,15 +240,23 @@ impl Projection {
     /// Record a worktree mutation in the journal (if attached): the path plus its
     /// parent directory. Inclusive — an extra
     /// path only costs git an `lstat`; a missing one would corrupt `status`.
-    fn record_change(&self, path: &RepoPath) {
+    ///
+    /// Propagates the journal write error. Every mutation handler calls this
+    /// **before** applying its mutation (after any validation/early-return), so a
+    /// journal failure fails the FUSE op rather than applying an un-journaled
+    /// (false-negative) mutation. Over-reporting is safe — if the record succeeds
+    /// but the mutation then fails, git just `lstat`s an unchanged path — so
+    /// record-before-mutate is correct.
+    fn record_change(&self, path: &RepoPath) -> Result<()> {
         if let Some(j) = &self.journal {
-            let _ = j.record(path.as_bytes());
+            j.record(path.as_bytes())?;
             if let Some(parent) = path.parent() {
                 if !parent.is_root() {
-                    let _ = j.record(parent.as_bytes());
+                    j.record(parent.as_bytes())?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Number of content hydrations so far (cache-miss blob materializations).
@@ -667,8 +675,10 @@ impl Projection {
         executable: bool,
     ) -> Result<(Attr, std::fs::File)> {
         let path = self.child_path(parent_ino, name)?;
+        // Record before mutating: a journal failure fails the op rather than
+        // creating an un-journaled file (a false negative for `git status`).
+        self.record_change(&path)?;
         let file = self.overlay.create_file(&path, executable, None)?;
-        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok((
             Attr {
@@ -687,7 +697,7 @@ impl Projection {
     /// baseline fetch.
     pub fn open_write(&self, ino: u64, truncate: bool) -> Result<std::fs::File> {
         let path = self.path_of(ino)?;
-        self.record_change(&path); // write intent — inclusive
+        self.record_change(&path)?; // write intent — inclusive
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             let f = self.overlay.open_content(&path)?;
             if truncate {
@@ -716,28 +726,35 @@ impl Projection {
     /// needed. `size == 0` never fetches the old blob.
     pub fn truncate(&self, ino: u64, size: u64) -> Result<()> {
         let path = self.path_of(ino)?;
-        let f = if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
-            self.overlay.open_content(&path)?
+        let is_overlay_file = matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. }));
+        // Validate before any mutation: a non-file is rejected here, so the record
+        // below never over-reports on a rejected op.
+        let baseline = if is_overlay_file {
+            None
         } else {
             match self.resolve(&path)? {
                 Some(Resolved::File {
                     source: FileSource::Baseline(oid),
                     executable,
-                }) => {
-                    let seed = if size == 0 {
-                        None
-                    } else {
-                        Some(self.materialize_path(&oid)?)
-                    };
-                    self.overlay
-                        .create_file(&path, executable, seed.as_deref())?
-                }
+                }) => Some((oid, executable)),
                 _ => return Err(Error::new(ErrorCode::Internal, "not a file")),
             }
         };
+        // Record before mutating (copy-up / set_len). Over-reporting is safe.
+        self.record_change(&path)?;
+        let f = if let Some((oid, executable)) = baseline {
+            let seed = if size == 0 {
+                None
+            } else {
+                Some(self.materialize_path(&oid)?)
+            };
+            self.overlay
+                .create_file(&path, executable, seed.as_deref())?
+        } else {
+            self.overlay.open_content(&path)?
+        };
         f.set_len(size)
             .map_err(|e| Error::new(ErrorCode::Internal, format!("set_len: {e}")))?;
-        self.record_change(&path);
         Ok(())
     }
 
@@ -745,14 +762,19 @@ impl Projection {
     /// drop the overlay-only entry.
     pub fn unlink(&self, parent_ino: u64, name: &[u8]) -> Result<()> {
         let path = self.child_path(parent_ino, name)?;
-        if self.baseline_resolve(&path)?.is_some() {
-            self.overlay.tombstone(&path)?;
-        } else if self.overlay.lookup(&path).is_some() {
-            self.overlay.clear(&path)?;
-        } else {
+        // Validate existence before any mutation so the record below never
+        // over-reports on a rejected (no-such-file) op.
+        let on_baseline = self.baseline_resolve(&path)?.is_some();
+        if !on_baseline && self.overlay.lookup(&path).is_none() {
             return Err(Error::new(ErrorCode::NotFound, "no such file"));
         }
-        self.record_change(&path);
+        // Record before mutating. Over-reporting is safe.
+        self.record_change(&path)?;
+        if on_baseline {
+            self.overlay.tombstone(&path)?;
+        } else {
+            self.overlay.clear(&path)?;
+        }
         // Drop the name→inode mapping so a later recreate gets a fresh inode and
         // the unlinked inode enters open-unlinked retention.
         self.inodes.unlink(&path);
@@ -765,8 +787,11 @@ impl Projection {
         if self.resolve(&path)?.is_some() {
             return Err(Error::new(ErrorCode::AlreadyExists, "exists"));
         }
+        // Record before mutating (after the exists-check rejection). Over-
+        // reporting is safe; a journal failure must fail the op, not leave an
+        // un-journaled directory.
+        self.record_change(&path)?;
         self.overlay.put_dir(&path)?;
-        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok(Attr {
             ino,
@@ -783,14 +808,19 @@ impl Projection {
         if !self.dir_is_empty(&path)? {
             return Err(Error::new(ErrorCode::DirtyWorkspaceConflict, "not empty"));
         }
-        if self.baseline_tree_at(&path)?.is_some() {
-            self.overlay.tombstone(&path)?;
-        } else if self.overlay.lookup(&path).is_some() {
-            self.overlay.clear(&path)?;
-        } else {
+        // Validate existence before any mutation so the record below never
+        // over-reports on a rejected (no-such-directory) op.
+        let on_baseline = self.baseline_tree_at(&path)?.is_some();
+        if !on_baseline && self.overlay.lookup(&path).is_none() {
             return Err(Error::new(ErrorCode::NotFound, "no such directory"));
         }
-        self.record_change(&path);
+        // Record before mutating. Over-reporting is safe.
+        self.record_change(&path)?;
+        if on_baseline {
+            self.overlay.tombstone(&path)?;
+        } else {
+            self.overlay.clear(&path)?;
+        }
         self.inodes.unlink(&path);
         Ok(())
     }
@@ -817,8 +847,10 @@ impl Projection {
     /// Create a symlink (FUSE `symlink`).
     pub fn symlink(&self, parent_ino: u64, name: &[u8], target: &[u8]) -> Result<Attr> {
         let path = self.child_path(parent_ino, name)?;
+        // Record before mutating: a journal failure fails the op rather than
+        // creating an un-journaled symlink (a false negative for `git status`).
+        self.record_change(&path)?;
         self.overlay.put_symlink(&path, target)?;
-        self.record_change(&path);
         let (ino, generation) = self.inodes.lookup(&path);
         Ok(Attr {
             ino,
@@ -855,8 +887,8 @@ impl Projection {
         if flags & RENAME_NOREPLACE != 0 && self.resolve(&dst)?.is_some() {
             return Err(Error::new(ErrorCode::AlreadyExists, "destination exists"));
         }
-        self.record_change(&src);
-        self.record_change(&dst);
+        self.record_change(&src)?;
+        self.record_change(&dst)?;
         // A directory moves its whole subtree.
         if matches!(self.resolve(&src)?, Some(Resolved::Dir { .. })) {
             return self.rename_dir(&src, &dst);
@@ -989,7 +1021,7 @@ impl Projection {
     /// Set/clear the executable bit (FUSE `setattr` mode), copying up if needed.
     pub fn set_executable(&self, ino: u64, exec: bool) -> Result<()> {
         let path = self.path_of(ino)?;
-        self.record_change(&path);
+        self.record_change(&path)?;
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             return self.overlay.set_executable(&path, exec);
         }
@@ -1047,6 +1079,78 @@ mod tests {
         let proj =
             Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap();
         (tmp, remote, proj)
+    }
+
+    // Like `projection_of` but with an FSMonitor change journal attached, so
+    // worktree mutations are recorded (and a record failure can be injected).
+    fn projection_with_journal_of(
+        files: &[(&str, &[u8])],
+    ) -> (tempfile::TempDir, glm_testkit::SeededRemote, Projection) {
+        let remote = glm_testkit::seed_remote(files);
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = AdminRepo::clone(
+            &remote.url,
+            &tmp.path().join("git"),
+            &tmp.path().join("mnt"),
+            &tmp.path().join("anchor"),
+            &CloneOptions::default(),
+        )
+        .unwrap();
+        let j = journal::ChangeJournal::open(tmp.path().join("journal"), "ws", 1, 0).unwrap();
+        let proj = Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay"))
+            .unwrap()
+            .with_journal(j);
+        (tmp, remote, proj)
+    }
+
+    #[test]
+    fn journal_record_failure_fails_the_mutation_not_silently_succeeds() {
+        // Every mutation handler records BEFORE it mutates, so a journal write
+        // failure must FAIL the FUSE op — the change is never applied un-journaled
+        // (which would be a false negative for the seeded FSMonitor and a missed
+        // `git status`). Covers three reordered handlers: `open_write`, `create`,
+        // and `unlink`. Each checks the un-armed success path returns `Ok` and the
+        // armed path returns `Err` without leaving the mutation behind.
+        let (_t, _r, p) = projection_with_journal_of(&[("f.txt", b"BASE\n"), ("gone.txt", b"x\n")]);
+        let root = p.root_ino();
+        let arm = || p.journal.as_ref().unwrap().fail_next_record();
+
+        // open_write (records write intent, then copies up / truncates).
+        let ino = p.lookup(root, b"f.txt").unwrap().unwrap().ino;
+        assert!(p.open_write(ino, false).is_ok(), "normal open_write is ok");
+        arm();
+        assert!(
+            p.open_write(ino, true).is_err(),
+            "open_write must fail when the journal record fails, not succeed un-journaled"
+        );
+
+        // create (records, then writes the overlay file). The armed create must
+        // fail AND leave no file behind.
+        let (ok, _f) = p.create(root, b"made-ok.txt", false).unwrap();
+        assert!(p.getattr(ok.ino).is_ok(), "normal create is ok");
+        arm();
+        assert!(
+            p.create(root, b"never.txt", false).is_err(),
+            "create must fail when the journal record fails, not create un-journaled"
+        );
+        assert!(
+            p.lookup(root, b"never.txt").unwrap().is_none(),
+            "a failed create must not leave the file behind"
+        );
+
+        // unlink (records, then tombstones / clears). The armed unlink must fail
+        // AND leave the file present.
+        arm();
+        assert!(
+            p.unlink(root, b"gone.txt").is_err(),
+            "unlink must fail when the journal record fails, not remove un-journaled"
+        );
+        assert!(
+            p.lookup(root, b"gone.txt").unwrap().is_some(),
+            "a failed unlink must not remove the file"
+        );
+        assert!(p.unlink(root, b"gone.txt").is_ok(), "normal unlink is ok");
+        assert!(p.lookup(root, b"gone.txt").unwrap().is_none());
     }
 
     #[test]
