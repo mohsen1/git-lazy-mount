@@ -23,11 +23,27 @@ This is aimed at microVMs that spin up to run coding agents against a git reposi
 
 When the agent runs a test or build, only relevant files are downloaded on demand.
 
-### What about Grep?
+### What about Grep? → use `sgrep`
 
-Since files are not materialized, running a Grep command like `git grep` or `rg` would force a lot of files to be materialized on disk. This will defeat the point, and AI agents run the Grep tool a lot.
+A content search reads every file, so on a lazy mount `rg`/`git grep` materializes the **whole repo** — defeating the point, and agents grep a lot. Measured on a lazy-mounted `colinhacks/zod` (581 files), searching `ZodError`:
 
-In a viable implementation, the `Grep` tool of the AI agent should be customized to use remote search tools — something like [Sourcegraph](https://sourcegraph.com). Naturally, this customization should take into account the locally modified files.
+| | materialized | time |
+|---|---|---|
+| `rg` | 11.9 MB | 188 s |
+| `sgrep` | **0 KiB** | **< 1 s** |
+
+[`sgrep`](crates/sgrep) answers from a cloud index ([Sourcegraph](https://sourcegraph.com) by default — pluggable) and overlays your uncommitted edits automatically, with zero faults (it reads the mount's change journal). Build it into the VM image:
+
+```bash
+cargo build --release -p sgrep   # → target/release/sgrep, a self-contained binary
+```
+
+Then point the agent's search at it:
+
+- **Claude Code** — `claude --disallowed-tools Grep`, plus a `CLAUDE.md` line: "search with `sgrep` instead of `rg`/`grep`".
+- **Codex** — the same line in `AGENTS.md` (or put an `sgrep` wrapper ahead of `rg` on `PATH`).
+
+Details in [`crates/sgrep`](crates/sgrep).
 
 ## Platform Support
 

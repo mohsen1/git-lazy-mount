@@ -9,6 +9,7 @@ members = [
     "crates/fuse",
     "crates/testkit",
     "crates/cli",
+    "crates/sgrep",
 ]
 
 [workspace.package]
@@ -34,6 +35,8 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
+ureq = "2"
+regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 hex = "0.4"
