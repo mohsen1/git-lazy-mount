@@ -106,17 +106,21 @@ the daemon writes synchronously, so change detection is correct (no false
 negatives) and git can skip the redundant full-tree stat scan on subsequent
 clean statuses.
 
-The original design hoped to make even the first clean `git status` fetch
-zero blobs by marking index entries FSMonitor-valid at bootstrap. That goal is
-unachievable with stock git on a `blob:none` clone, and the doc
-no longer claims it. Stock git marks each read-tree'd entry clean from the hook's
-empty reply, then immediately re-marks it `fsmonitor_invalid` because the entry
-carries no stat data. Git must populate the index stat, including the file
-size, to skip the content check, and under `blob:none` the size is unknown
-until the blob is fetched. The FSMonitor-valid bit does not override an
-empty-stat entry. So the first clean `status` faults each tracked blob once
-(the same `getattr` size hydration described below); only subsequent clean
-statuses are zero-blob. Notification hooks (post-index-change,
+The first clean `git status` fetches zero blobs by pre-seeding the FSMonitor
+index extension at bootstrap (right after read-tree, in
+`AdminRepo::seed_fsmonitor_valid`): every entry is marked `CE_FSMONITOR_VALID`
+carrying the journal's seq-0 token. A freshly read-tree'd index carries no
+FSMonitor extension, so without the seed git's "mark all entries valid" pass
+never runs on the first status and git stats (and so faults) every entry; the
+seed fixes that bootstrap ordering. With the seed in place, git's
+`refresh_cache_ent` early-returns on `CE_FSMONITOR_VALID` before any `lstat`, so
+the first clean `status` faults zero blobs and the hook answers "nothing
+changed" at the seq-0 token; subsequent clean statuses stay zero-blob. Two
+carve-outs keep this correct: paths under a checkout conversion
+(`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are excluded from the seed
+so git checks them normally and never hides a diff, and the seeded token must
+match the hook's identity (else git safely falls back to the eager scan).
+Notification hooks (post-index-change,
 reference-transaction, post-checkout/merge/commit/rewrite) are *multiplexed* with
 the user's existing hooks, never replacing them.
 
@@ -172,11 +176,13 @@ Genuinely deferred (still future):
 
 - **Whole-directory / subtree rename is metadata-only**: an overlay re-key plus
   baseline base-refs, no blob fetch. (A clean *rename* fetching zero blobs is
-  correct; it is unrelated to the first clean *status*, which is eager.)
+  correct; the first clean *status* is likewise zero-blob via the seeded
+  FSMonitor extension.)
 - **`getattr` size hydration is fundamental to `blob:none`.** The exact size of
-  an unmaterialized blob requires fetching it, so `ls -l` / `stat` and the first
-  clean `git status` fault each blob once. Not closeable without a server-side
-  size manifest.
+  an unmaterialized blob requires fetching it, so `ls -l` / `stat` faults each
+  blob once. (This is separate from `git status`, which no longer stats seeded
+  entries and faults zero blobs.) Not closeable without a server-side size
+  manifest.
 - **Content-file retention is correct via Linux fd survival.** An
   unlinked-but-open inode persists until the last fd closes.
 - **Smudge-side `.gitattributes` / LFS serve the raw baseline blob.** A

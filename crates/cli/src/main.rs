@@ -40,9 +40,13 @@ struct Cli {
     /// Branch to attach to (default: the remote's default).
     #[arg(long)]
     branch: Option<String>,
-    /// Shallow clone depth.
+    /// Shallow clone depth (default: 1, unless --full-history).
     #[arg(long)]
     depth: Option<u32>,
+    /// Keep full history. The default is a shallow depth-1 clone for fast
+    /// startup; `git log`/`blame` then see one commit until `git fetch --unshallow`.
+    #[arg(long)]
+    full_history: bool,
     /// Partial-clone filter (default: blob:none).
     #[arg(long)]
     filter: Option<String>,
@@ -150,9 +154,16 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
     }
 
     // Clone + build the real index (no checkout, no blob fetches).
+    // Shallow by default: a full-history blob:none clone still downloads every
+    // tree from all of history, which on a big repo is slower and larger than a
+    // normal clone. depth-1 fetches only the latest commit's trees.
     let opts = glm_git_repo::CloneOptions {
         branch: cli.branch.clone(),
-        depth: cli.depth,
+        depth: if cli.full_history {
+            None
+        } else {
+            cli.depth.or(Some(1))
+        },
         filter: cli.filter.clone().or_else(|| Some("blob:none".into())),
         allow_full_object_clone: cli.allow_full_object_clone,
     };
@@ -160,26 +171,34 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
         .map_err(|e| format!("clone: {e}"))?;
     repo.build_index()
         .map_err(|e| format!("build index: {e}"))?;
-    // Configure the FSMonitor hook so git learns what changed without statting the
-    // whole tree — the first clean `git status` faults 0 blobs. Best-effort:
-    // if the hook binary isn't found, git status still works (just eager).
-    configure_fsmonitor(&gitdir);
+    // Configure the FSMonitor hook so git learns what changed from the daemon's
+    // journal instead of re-statting the whole tree. Best-effort: if the hook
+    // binary isn't found, git status still works (just eager).
+    if configure_fsmonitor(&gitdir) {
+        // Seed the FSMonitor extension so the FIRST `git status`/`git diff` faults
+        // zero blobs, not just later ones. Without this, the first status has no
+        // extension to trust and stats (faults) every entry before writing it.
+        seed_first_status(&gitdir, &repo);
+    }
     drop(repo);
 
     mount_and_validate(&gitdir, path, &cache, &overlay)
 }
 
 /// Point `core.fsmonitor` at the `git-lazy-mount-fsmonitor` hook installed
-/// alongside this binary, and select hook protocol v2.
-fn configure_fsmonitor(gitdir: &Path) {
+/// alongside this binary, and select hook protocol v2. Returns `true` if the hook
+/// was found and configured.
+fn configure_fsmonitor(gitdir: &Path) -> bool {
     let hook = match std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.join("git-lazy-mount-fsmonitor")))
     {
         Some(h) if h.exists() => h,
-        _ => return,
+        _ => return false,
     };
-    let Some(hook) = hook.to_str() else { return };
+    let Some(hook) = hook.to_str() else {
+        return false;
+    };
     let set = |key: &str, val: &str| {
         let _ = Command::new("git")
             .arg("--git-dir")
@@ -189,6 +208,21 @@ fn configure_fsmonitor(gitdir: &Path) {
     };
     set("core.fsmonitor", hook);
     set("core.fsmonitorHookVersion", "2");
+    true
+}
+
+/// Pre-seed the FSMonitor extension so the first `git status`/`git diff` faults
+/// zero blobs. The hook answers the seq-0 bootstrap query (no changes) only when
+/// the journal exists, so create the empty journal first; the serve daemon reopens
+/// the same log. Best-effort: any failure just leaves the first status eager.
+fn seed_first_status(gitdir: &Path, repo: &glm_git_repo::AdminRepo) {
+    use glm_worktree::journal::{journal_dir, workspace_id, ChangeJournal};
+    if ChangeJournal::open(journal_dir(gitdir), workspace_id(gitdir), 1, 0).is_err() {
+        return;
+    }
+    if let Err(e) = repo.seed_fsmonitor_valid() {
+        eprintln!("git-lazy-mount: fsmonitor seed skipped ({e}); first status will be eager");
+    }
 }
 
 #[cfg(feature = "fuse")]

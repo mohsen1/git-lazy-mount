@@ -975,7 +975,7 @@ Develop a measured bootstrap process that marks initial index entries FSMonitor-
 
 The first clean status and all subsequent clean statuses must fetch zero blob contents.
 
-**Implementation finding:** the *first* clean status proved fundamentally unachievable as zero-blob under `blob:none`. Git must populate the index stat (including each file's size) to skip the content check, and the size requires fetching the blob. The FSMonitor-valid bit does not override an empty-stat entry. So the first clean status faults each tracked blob once; only *subsequent* clean statuses are zero-blob. FSMonitor still delivers correct change detection and skips the redundant stat scan. (Verified with `GIT_TRACE_FSMONITOR`; recorded in the limitations doc.)
+**Implementation finding:** the *first* clean status faults zero blobs, the same as every subsequent clean status. The earlier belief that it was fundamentally unachievable was a bootstrap-ordering bug, not a real limit: a freshly `read-tree`'d index carries no FSMonitor extension, so git's "mark all entries valid" pass never runs on the first status and git stats (and faults) every entry before writing the extension. The fix (shipped) pre-seeds the FSMonitor index extension at mount, right after `read-tree`, marking every entry `CE_FSMONITOR_VALID` via `git update-index --fsmonitor-valid` carrying the journal's seq-0 token. Git's `refresh_cache_ent` then early-returns on `CE_FSMONITOR_VALID` before any `lstat`, so the first status faults zero blobs and the hook answers "nothing changed" at the seq-0 token. Two carve-outs keep it correct: (a) paths under a checkout conversion (`filter`/`ident`/`working-tree-encoding`/CRLF `eol`, read via `check-attr --cached`) are excluded from the seed so git checks them normally and never hides a diff; (b) the seeded token must match the hook's identity (workspace, epoch, seq=0, generation), else git safely falls back to the eager scan. Verified zero-fault on an 81k-file (microsoft/TypeScript) real mount.
 
 ## 12.3 Untracked paths
 
@@ -2278,7 +2278,7 @@ avoid statting every projected file
 
 It may still parse a full index in the correctness profile; measure that separately.
 
-**Implementation finding:** the *first* such status cannot fetch zero blobs. It faults each blob once to populate the index stat, because the FSMonitor bootstrap above cannot make the first status lazy. The zero-blob, no-full-stat-scan behavior holds for *subsequent* clean statuses.
+**Implementation finding:** the *first* such status fetches zero blobs. The FSMonitor bootstrap above pre-seeds the index extension at mount (every entry `CE_FSMONITOR_VALID` at the seq-0 token), so git's `refresh_cache_ent` early-returns before any `lstat` and the first status faults nothing. The zero-blob, no-full-stat-scan behavior holds for both the first and all subsequent clean statuses.
 
 ## 38.5 One file read
 

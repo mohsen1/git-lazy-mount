@@ -341,12 +341,17 @@ Build a **full `$GIT_DIR/index`** from the base tree using the admin gitdir.
 Correctness-first: O(tracked paths), **the index build itself fetches zero
 blobs**. Use `git read-tree <base-tree>` against the admin gitdir (with
 `core.worktree` set to the mountpoint but the mount **not yet live**, so no
-callbacks fire). The `read-tree`'d entries carry no worktree stat data, so the
-*first* clean `git status` after mount cannot be skipped by FSMonitor: stock git
-populates each entry's stat (including the file SIZE) before it will trust the
-content as clean, and under a `blob:none` clone the exact size requires the
-blob. So the first status faults each tracked blob once (the getattr
-size-hydration cost; see [`requirements-checklist.md`](requirements-checklist.md)).
+callbacks fire). A freshly `read-tree`'d index carries no FSMonitor extension, so
+git's "mark all entries valid" pass never runs and the *first* clean `git status`
+would otherwise stat (and so fault) every entry. We avoid that by pre-seeding the
+FSMonitor index extension right after `read-tree`
+(`AdminRepo::seed_fsmonitor_valid`): every entry is marked `CE_FSMONITOR_VALID`
+carrying the journal's seq-0 token, so git's `refresh_cache_ent` early-returns
+before any `lstat`. The first clean status therefore faults **zero** blobs; the
+hook answers "nothing changed" at the bootstrap (seq 0) token. (Paths under a
+checkout conversion, `filter`/`ident`/`working-tree-encoding`/CRLF `eol`, are
+excluded from the seed so git checks them normally and never hides a diff; see
+[`requirements-checklist.md`](requirements-checklist.md).)
 Report honestly (never market as O(1)):
 
 ```rust
@@ -399,11 +404,12 @@ unmount the kernel mount, persist `Failed{HealthCheck}`, **preserve the overlay
 and admin gitdir** (no destructive cleanup of user-reachable state).
 
 **INV-S2.** The health-check `git status` exits 0 and is byte-faithful. It is
-**not** zero-blob: this *first* clean status faults each tracked blob once to
-hydrate the index stat size (a `blob:none` clone cannot know a blob's exact size
-without it, and stock git will not mark an entry clean from FSMonitor without that
-size). Only *subsequent* clean statuses are zero-blob, served from `core.fsmonitor`
-plus the now-populated stat data (REG-S2). **INV-S3.** A crash at any phase leaves
+**zero-blob**: this *first* clean status faults zero tracked blobs because the
+index's FSMonitor extension was pre-seeded at mount (`seed_fsmonitor_valid`), so
+git's `refresh_cache_ent` early-returns on `CE_FSMONITOR_VALID` before any
+`lstat` and the hook answers "nothing changed" at the seq-0 token. Subsequent
+clean statuses are likewise zero-blob, served from `core.fsmonitor` (REG-S2).
+**INV-S3.** A crash at any phase leaves
 the registry in a non-terminal state recoverable by recovery with no
 acknowledged-write loss (crash-injection matrix: after each phase boundary).
 
@@ -584,7 +590,7 @@ quarantined rather than removed. This is the single safety bias of recovery.
 | INV-L2 | non-terminal states ⇒ recover on startup | REG-L2 |
 | INV-L3 | write-ahead state persistence | REG-S3 |
 | INV-S1 | index build fetches 0 blobs | REG-S1 |
-| INV-S2 | health-check status exits 0; first status faults each blob once, subsequent statuses zero-blob | REG-S2 |
+| INV-S2 | health-check status exits 0; first status zero-blob (FSMonitor pre-seed), subsequent statuses zero-blob | REG-S2 |
 | INV-S3 | crash-at-any-phase recoverable, no loss | REG-R8 |
 | INV-R1 | acknowledged writes never deleted | REG-R1 |
 | INV-R2 | recovery never rewrites git state / steals live locks | REG-R3 |

@@ -455,14 +455,21 @@ projects to a different byte count under an `lf` vs `crlf` eol mode.) Therefore:
   approximation. `metadata::MetadataMode::Exact` is the default and
   `workspace.file_size()` enforces "no fake size" today; keep that contract.
 
-Because git records each index entry's stat data (including the file **size**)
-to mark it clean, the **first** clean `git status` after a mount necessarily
-faults each tracked blob once through `getattr` size hydration. That is the same
-fundamental size requirement above. The fsmonitor-valid bit cannot override an
-entry that has no stat data, so a zero-blob *first* status is unachievable with
-stock git over a blob:none clone. Subsequent clean statuses are zero-blob: git
-records the populated stat data and the FSMonitor hook (which replays the
-daemon's durable change journal) lets git skip the redundant full-tree scan.
+The **first** clean `git status` after a mount faults **zero** blobs: the mount
+pre-seeds the FSMonitor index extension right after `read-tree` (marking every
+entry `CE_FSMONITOR_VALID` with the journal's seq-0 token), so git's
+`refresh_cache_ent` early-returns on the valid bit before any `lstat`, and the
+hook answers "nothing changed" at the bootstrap token. The earlier eager-first-status
+behavior was a bootstrap-ordering bug (a freshly `read-tree`'d index carries no
+FSMonitor extension, so git's "mark all entries valid" pass never ran on the first
+status), not a fundamental limit; it is fixed. Paths under a checkout conversion
+(`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are excluded from the seed so
+git checks them normally and never hides a diff. Subsequent clean statuses are also
+zero-blob: git records the populated stat data and the FSMonitor hook (which replays
+the daemon's durable change journal) lets git skip the redundant full-tree scan.
+The `ls -l`/`stat` size fault above is separate: `git status` no longer stats seeded
+entries, but a `getattr` on an unmaterialized file still faults its blob once for the
+size.
 
 ### 6.2 `getattr` size resolution: decision table
 

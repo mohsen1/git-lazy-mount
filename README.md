@@ -27,28 +27,21 @@ When the agent runs a test or build, only relevant files are downloaded on deman
 
 A `git clone` downloads the whole repo before you can start. A lazy mount starts at zero and fetches only the files a task touches. Search is the exception: `rg` and `git grep` read every file, so they pull the whole repo and undo the point. Route search through [`sgrep`](crates/sgrep) instead. It queries a code-search index ([Sourcegraph](https://sourcegraph.com) by default, and pluggable) and overlays your uncommitted edits, fetching nothing.
 
-Here is one real task on a lazily-mounted `colinhacks/zod` (581 files, 12 MB): find the test for `z.string().email()`, add a case, run it. Bytes fetched at each step:
-
-```
-git clone, before any work    ████████████████████████  12 MB   (all 581 files)
-
-lazy mount, then the task:
-  start                       ·                           0
-  sgrep "email"               ·                           0      (searched all 581)
-  read the two files          ▎                           0.07 MB
-  run the test                ██████                      2.8 MB  (the module it imports)
-  ──────────────────────────────────────────────────
-  whole task                                              2.8 MB  of 12 MB
-```
-
-The agent starts instantly, searches the repo for nothing, and the only real cost is the module the test pulls in. The docs site and the other packages are never fetched. (A real Claude Code agent does invoke `sgrep` here; that part is verified.)
-
-Wire the agent's search to `sgrep` (`cargo build --release -p sgrep`):
-
-- **Claude Code**: `claude --disallowed-tools Grep`, plus a `CLAUDE.md` line, "search with `sgrep`".
-- **Codex**: the same line in `AGENTS.md`, or an `sgrep` wrapper ahead of `rg` on `PATH`.
-
 More in [`crates/sgrep`](crates/sgrep).
+
+## Performance in real world
+
+Measured cold in a Linux container, with one real `claude` prompt per repo:
+
+| repo | files | `clone --depth 1` | `lazy-mount` | prompt |
+|---|---|---|---|---|
+| facebook/react | 7,244 | 3 s, 72 MB | 1 s, 1.5 MB | "where does `useState` resolve its initial state?" |
+| microsoft/vscode | 16,001 | 6 s, 301 MB | 1 s, 3.1 MB | "where is the toggle-word-wrap command registered?" |
+| microsoft/TypeScript | 81,370 | 10 s, 652 MB | 2 s, 14 MB | "what does `createTypeChecker` return?" |
+
+### `git status` and `git diff` are free
+
+On a cold mount, `git status` and `git diff` fault **zero** blobs. At mount time the tool seeds git's FSMonitor index extension, so git trusts the daemon's change journal instead of reading every file to compare it; it only checks the files you actually edit. Run them as much as you like. (`ls -l` on a file you haven't read still fetches that one file to report its size, the one thing a `blob:none` mount can't answer for free.)
 
 ## Platform Support
 
