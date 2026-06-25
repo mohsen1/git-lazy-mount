@@ -1,7 +1,7 @@
 # Feasibility: partial-clone strategies
 
-**Question.** Can partial clone serve as our object substrate — trees available
-for instant listing, blobs fetched on demand — and how does it behave over the
+**Question.** Can partial clone serve as our object substrate (trees available
+for instant listing, blobs fetched on demand), and how does it behave over the
 transports we test?
 
 ## Experiment
@@ -25,8 +25,8 @@ Inspect what is local before/after touching a blob.
   blobs are present.** Listing the root and nested directories needs zero blob
   fetches (verified: `git-store` and `cli` tests).
 * `object_exists(blob)` is `false` after the clone; reading it cache-only fails;
-  after `fetch_objects([blob])` it is present and reads correctly; **a sibling
-  blob remains absent** — we fetch exactly what is asked for.
+  after `fetch_objects([blob])` it is present and reads correctly. A sibling
+  blob stays absent, so we fetch exactly what is asked for.
 * Fetching a single missing object is done by accessing it with lazy-fetch
   enabled (`cat-file --batch-check`), which faults it into the local store.
 
@@ -49,5 +49,5 @@ Inspect what is local before/after touching a blob.
 Use `blob:none` as the default substrate; keep all missing-object access behind
 the provider. Implemented: filtered clone, single-object faulting, offline
 classification, filter-capability fallback messaging. Not yet exercised in tests:
-`tree:0` tree-lazy mode and configurable shallow depth (the options exist;
-dedicated tests are future).
+`tree:0` tree-lazy mode and configurable shallow depth. The options exist;
+dedicated tests are future work.

@@ -4,17 +4,17 @@ This area of the [specification](design.md) covers deadlock, startup, recovery,
 and lifecycle. Companion docs:
 [`architecture.md`](architecture.md), [`requirements-checklist.md`](requirements-checklist.md).
 
-This is design, not prose. It defines: the Git-inside-mount deadlock invariants
-and how they are enforced in code; the mount **lifecycle** state machine and the
-exact idempotent **startup transaction**; the **recovery** procedure. Every
+This is design, not prose. It defines the Git-inside-mount deadlock invariants
+and how they are enforced in code, the mount lifecycle state machine and the
+exact idempotent startup transaction, and the recovery procedure. Every
 "INV-…" and "REG-…" tag below is a testable invariant that becomes a regression
 test.
 
-Two crates here are **superseded** and must not be reused: the
+Two crates here are superseded and must not be reused. The first is the
 `git lazy-mount git --` bridge in `crates/git-store/src/interop.rs` (it stands up
 a throwaway operational gitdir, routes object I/O via `GIT_OBJECT_DIRECTORY`,
-synthesizes a skip-worktree index, and *adopts* the resulting commit — every one
-of these is an explicit anti-claim) and the custom `stage`/`workspace` branch+commit
+synthesizes a skip-worktree index, and *adopts* the resulting commit, every one
+of these an explicit anti-claim). The second is the custom `stage`/`workspace` branch+commit
 model. The reusable substrate is `crates/git-store/src/proc.rs::harden_fds`,
 `crates/git-store/src/batch.rs::BatchSession`, the `crates/object-provider`
 coalescing scheduler, and the durable `crates/overlay`.
@@ -28,7 +28,7 @@ coalescing scheduler, and the durable `crates/overlay`.
 Git runs **inside** the mounted worktree (that is the whole point), so
 any `git` process can issue kernel VFS calls that become FUSE callbacks served by
 *our* daemon. A callback that, to answer, runs `git` or blocks on Git state the
-requesting process holds is a cycle: **daemon → git → kernel → daemon**.
+requesting process holds is a cycle: `daemon → git → kernel → daemon`.
 
 Three concrete cycles, all observed or latent in the current tree:
 
@@ -49,50 +49,50 @@ Three concrete cycles, all observed or latent in the current tree:
 
 3. **Index-lock self-wait.** A callback that runs Git porcelain (or any command
    that opens `index.lock`) while the requesting `git` process *holds*
-   `index.lock` blocks forever — the holder is itself blocked in the kernel
+   `index.lock` blocks forever. The holder is itself blocked in the kernel
    waiting for our callback to return.
 
 ### 1.2 Invariants (each → a regression test)
 
-These are the deadlock invariants made precise. They are enforced by *construction*
+These are the deadlock invariants made precise. They are enforced by construction
 (typed policies, a single command-builder, fd hardening), not by review.
 
-- **INV-D1 — No porcelain in callbacks.** A FUSE callback never invokes Git
+- **INV-D1, no porcelain in callbacks.** A FUSE callback never invokes Git
   porcelain (`status`, `add`, `checkout`, `commit`, `log`, …). The only `git`
   invocations reachable from a callback are the plumbing whitelist in section 1.3.
-- **INV-D2 — No worktree-scanning commands in callbacks.** Even plumbing that
+- **INV-D2, no worktree-scanning commands in callbacks.** Even plumbing that
   walks the worktree (`git status`, `git diff`, `git ls-files -o`, `git
   add`) is forbidden in a callback; these can recurse into the mount.
-- **INV-D3 — Never wait on the requester's index lock.** No callback path opens,
+- **INV-D3, never wait on the requester's index lock.** No callback path opens,
   waits on, or stats-then-blocks on `$GIT_DIR/index.lock`. Object/attribute
   resolution in a read uses the bare admin gitdir's object DB and tree-ish
-  `.gitattributes` lookups only — never the index.
-- **INV-D4 — Object readers target the native gitdir directly.** Reads go through
+  `.gitattributes` lookups only, never the index.
+- **INV-D4, object readers target the native gitdir directly.** Reads go through
   a long-lived `cat-file --batch-command` against `--git-dir <admin>` with
   `GIT_NO_LAZY_FETCH=1`, serving only locally-present objects
   (`batch.rs:41`). A missing promisor object is reported `missing`, never fetched
   inline.
-- **INV-D5 — Only the fetch scheduler causes network.** Exactly one component may
+- **INV-D5, only the fetch scheduler causes network.** Exactly one component may
   initiate network retrieval: the `object-provider` fetch scheduler via
   `GitStore::fetch_objects` / `fetch` / `push` (`store.rs:142,188,445`), which run
-  with `no_lazy = false` (network allowed) and **off the callback thread**. No
+  with `no_lazy = false` (network allowed) and off the callback thread. No
   callback transitively reaches a network-enabled `git`.
-- **INV-D6 — All session/mount fds are CLOEXEC.** Every long-lived fd the daemon
+- **INV-D6, all session/mount fds are CLOEXEC.** Every long-lived fd the daemon
   holds (the `/dev/fuse` session fd, `cat-file` pipes, overlay/state fds, the
   control socket) is `O_CLOEXEC`. Every spawned child additionally runs
   `harden_fds` (`proc.rs:20`) to mark fds ≥ 3 close-on-exec defensively.
-- **INV-D7 — Children never inherit the FUSE session fd.** The fuser session fd
-  is opened `O_CLOEXEC` and is *not* among the std{in,out,err} of any child;
-  combined with INV-D6 no `git` ever holds the mount fd past `exec`.
-- **INV-D8 — Callbacks never block the dispatch loop.** Every potentially
+- **INV-D7, children never inherit the FUSE session fd.** The fuser session fd
+  is opened `O_CLOEXEC` and is *not* among the std{in,out,err} of any child.
+  Combined with INV-D6, no `git` ever holds the mount fd past `exec`.
+- **INV-D8, callbacks never block the dispatch loop.** Every potentially
   blocking callback dispatches onto a worker and replies from there, so the fuser
   read-loop stays free to service the `FLUSH` from cycle 1 (`fs-fuse/src/adapter.rs`
   module docs + `dispatch()`). The worker pool is bounded.
-- **INV-D9 — No lock held across `git`/network.** No inode, namespace, handle, or
-  state lock is held while a subprocess runs or while the network is touched
-  (`object-provider` already documents and tests this — locks dropped before
-  `fetcher.fetch`, `lib.rs:301`).
-- **INV-D10 — Passive hydration runs no hooks.** A read/getattr never triggers a
+- **INV-D9, no lock held across `git`/network.** No inode, namespace, handle, or
+  state lock is held while a subprocess runs or while the network is touched.
+  (`object-provider` already documents and tests this: locks dropped before
+  `fetcher.fetch`, `lib.rs:301`.)
+- **INV-D10, passive hydration runs no hooks.** A read/getattr never triggers a
   Git hook. Hooks fire only because the user invoked a porcelain command.
   Inspection subprocesses set `core.hooksPath` to an empty/no-op path defensively.
 
@@ -122,7 +122,7 @@ pub enum FetchPolicy {
     /// touch the network. Maps to GIT_NO_LAZY_FETCH=1.
     CacheOnly,
     /// Same, but also asserts the object MUST already be present (debug-panics
-    /// in tests if it is not — surfaces a residency bug).
+    /// in tests if it is not; surfaces a residency bug).
     MustNotFetch,
     /// Only the fetch scheduler / explicit user prefetch may hold this.
     AllowNetwork,
@@ -164,7 +164,7 @@ fuser read-loop (1 thread, never blocks)  ── dispatch() ──▶  callback 
 
 ### 1.5 Testable deadlock regressions (REG-D…)
 
-These run through a **real `/dev/fuse` mount** in Linux CI — mocked
+These run through a **real `/dev/fuse` mount** in Linux CI. Mocked
 callbacks cannot reproduce cycle 1.
 
 - **REG-D1** Open a tracked file on the mount, then run `git status` from inside
@@ -193,12 +193,12 @@ callbacks cannot reproduce cycle 1.
 ## 2. Mount lifecycle state machine
 
 The prior controller created the mountpoint dir and **immediately** wrote
-`MountState::Mounted` (`daemon/src/controller.rs:179` —
+`MountState::Mounted` (`daemon/src/controller.rs:179`:
 `state: MountState::Mounted` with only a `create_dir_all`, *no kernel mount*).
 That is exactly the anti-claim "the mount registry says mounted
 without a kernel mount." The design replaces the coarse
 `registry.rs::MountState` (8 states) with the full lifecycle set and forbids `Mounted`
-before a kernel mount + Git health checks.
+before a kernel mount and Git health checks.
 
 ### 2.1 States
 
@@ -228,7 +228,7 @@ pub enum MountState {
 | From | Event | To | Side effects / guard |
 |---|---|---|---|
 | (none) | `clone <url> <path>` | `Creating` | reserve registry record under workspace lock |
-| `Creating` | preflight OK | `Cloning` | — |
+| `Creating` | preflight OK | `Cloning` | none |
 | `Creating` | preflight fail | `Failed` | actionable error; record never claimed `Mounted` |
 | `Cloning` | clone+fetch OK | `InitializingGit` | base commit/tree resolved |
 | `InitializingGit` | config written | `BuildingIndex` | gitfile + `core.worktree` set |
@@ -293,7 +293,7 @@ acquires the **inter-process workspace lock** (`flock` on
 `workspaces/<id>/lock`) so two `git lazy-mount` invocations cannot race
 (in-process mutexes are insufficient).
 
-### 3.1 Phase 0 — preflight → `Creating`
+### 3.1 Phase 0: preflight → `Creating`
 
 Validate, failing fast with an actionable error (never prompting from a
 callback; auth may be interactive *here* only):
@@ -310,7 +310,7 @@ Reuse `crates/platform/src/validate.rs` for path/case behavior and
 `registry.find_for_path` (`registry.rs:123`) for the nesting check. Preflight
 writes the `Creating` record **first** so a crash leaves a reconcilable marker.
 
-### 3.2 Phase 1 — create the Git repository → `Cloning`
+### 3.2 Phase 1: create the Git repository → `Cloning`
 
 Native partial clone into the admin gitdir **outside** FUSE:
 
@@ -325,17 +325,17 @@ git clone --filter=blob:none --no-checkout --separate-git-dir=<admin> <url> <tem
 (`controller.rs:129`). **A full-object clone still implies no checkout.**
 Resolve and record the **base commit/tree** (the attached branch tip).
 
-### 3.3 Phase 2 — initialize working-tree state
+### 3.3 Phase 2: initialize working-tree state
 
-Record the baseline + empty overlay + first generation + first FSMonitor token —
-no blobs:
+Record the baseline + empty overlay + first generation + first FSMonitor token.
+No blobs:
 
 ```
 baseline = base commit tree          overlay = empty (crates/overlay)
 namespace generation = 1             fsmonitor token = (workspace, epoch=1, seq=0, gen=1)
 ```
 
-### 3.4 Phase 3 — initialize the real index → `BuildingIndex`
+### 3.4 Phase 3: initialize the real index → `BuildingIndex`
 
 Build a **full `$GIT_DIR/index`** from the base tree using the admin gitdir.
 Correctness-first: O(tracked paths), **the index build itself fetches zero
@@ -345,7 +345,7 @@ callbacks fire). The `read-tree`'d entries carry no worktree stat data, so the
 *first* clean `git status` after mount cannot be skipped by FSMonitor: stock git
 populates each entry's stat (including the file SIZE) before it will trust the
 content as clean, and under a `blob:none` clone the exact size requires the
-blob — so the first status faults each tracked blob once (the getattr
+blob. So the first status faults each tracked blob once (the getattr
 size-hydration cost; see [`requirements-checklist.md`](requirements-checklist.md)).
 Report honestly (never market as O(1)):
 
@@ -357,7 +357,7 @@ pub struct IndexBuildStats {
 ```
 **INV-S1.** `blob_objects_fetched == 0` during index build (REG-S1).
 
-### 3.5 Phase 4 — configure Git integration → `InitializingGit`
+### 3.5 Phase 4: configure Git integration → `InitializingGit`
 
 Write the synthetic gitfile and config; preserve user globals (never
 touch identity/signing/editor/pager/aliases/credential-helpers/remote policy):
@@ -375,7 +375,7 @@ it has a reserved stable inode and is protected from
 unlink/rename/replace/chmod/write/mkdir-beneath. A tree entry colliding with
 `.git` fails safely.
 
-### 3.6 Phase 5 — start + validate the mount → `StartingDaemon` → `Mounting` → `Validating` → `Mounted`
+### 3.6 Phase 5: start + validate the mount → `StartingDaemon` → `Mounting` → `Validating` → `Mounted`
 
 Bring up the session (fd `O_CLOEXEC`), persist `Mounting`, issue the kernel mount
 (`fs-fuse::spawn_mount`), persist `Validating`, then run the health checks. These
@@ -414,7 +414,7 @@ acknowledged-write loss (crash-injection matrix: after each phase boundary).
 Runs on daemon startup when the registry shows a non-terminal state (INV-L2), on
 explicit `git lazy-mount recover <mnt>` / `--export <dir>`, and after a detected
 backend/daemon restart (cf. the existing FSKit path
-`crates/fs-fskit/src/recovery.rs` — same *shape*, but the design’s authority is
+`crates/fs-fskit/src/recovery.rs`, same *shape*, but the design's authority is
 the real gitdir + durable overlay, not the oplog). The seven recovery steps, in
 order, each a function returning structured findings:
 
@@ -432,17 +432,17 @@ pub struct RecoveryReport {
 pub fn recover(&self, spec: &MountSpec, export: Option<&Path>) -> Result<RecoveryReport>;
 ```
 
-### 4.1 Step 1 — validate the namespace DB
+### 4.1 Step 1: validate the namespace DB
 
 Open `state.sqlite` (SQLite WAL) read-write; run integrity checks (`PRAGMA
 integrity_check`, foreign-key/parent-index consistency). If the WAL has an
-uncommitted tail, let SQLite recover it. On corruption: do **not** discard —
-snapshot the DB to the quarantine dir, attempt a parent-indexed rebuild from
+uncommitted tail, let SQLite recover it. On corruption, do **not** discard.
+Snapshot the DB to the quarantine dir, attempt a parent-indexed rebuild from
 overlay metadata records (`crates/overlay` already rebuilds its in-memory index
-by scanning persisted `meta/*.json`, ignoring torn temp files — `overlay/src/lib.rs:67`).
+by scanning persisted `meta/*.json`, ignoring torn temp files; `overlay/src/lib.rs:67`).
 Set `fsmonitor_invalidated = true` if the namespace generation can't be trusted.
 
-### 4.2 Step 2 — reconcile temporary content files
+### 4.2 Step 2: reconcile temporary content files
 
 The overlay publishes atomically: content temp → fsync → rename, *then* metadata
 temp → fsync → rename (`overlay/src/lib.rs:147`, `atomic_write` at `:249`).
@@ -456,7 +456,7 @@ Recovery therefore:
 - Torn temp files (`*.tmp`/`NamedTempFile` leftovers) with no rename target ⇒
   remove (they are by construction pre-`ack`).
 
-### 4.3 Step 3 — preserve acknowledged writes — **the cardinal rule**
+### 4.3 Step 3: preserve acknowledged writes (the cardinal rule)
 
 **INV-R1.** No recovery step deletes a file that contains an *acknowledged* user
 write. A write is "acknowledged" once the FUSE callback returned success to the
@@ -468,7 +468,7 @@ quarantine, never to deletion (REG-R1: crash after `write` ack but before
 unmount → byte-exact survival across recovery, cf.
 `fs-fskit/recovery.rs::reattach_recovers_consistent_state_without_data_loss`).
 
-### 4.4 Step 4 — reconcile mounted state with the kernel
+### 4.4 Step 4: reconcile mounted state with the kernel
 
 Determine the **actual** kernel state independent of the registry:
 
@@ -487,7 +487,7 @@ is <mnt> a fuse mount of subtype "glm"?  →  scan /proc/self/mountinfo for the 
 mitigates wedged mounts when permitted (`fs-fuse/src/adapter.rs:425`); recovery
 handles the cases where it was not.
 
-### 4.5 Step 5 — reconcile native gitdir state
+### 4.5 Step 5: reconcile native gitdir state
 
 The gitdir is **authoritative**; the daemon's parses are disposable caches.
 Recovery rebuilds its caches from disk and clears stale native locks left
@@ -500,11 +500,11 @@ re-read HEAD, refs/, packed-refs, ORIG_HEAD, FETCH_HEAD, MERGE_HEAD, CHERRY_PICK
 recompute base commit/tree; if HEAD moved while we were down, advance baseline per the baseline-advance rules
 ```
 
-**INV-R2.** Recovery never *writes* Git refs/index to "fix" them — it reconciles
+**INV-R2.** Recovery never *writes* Git refs/index to "fix" them. It reconciles
 its own caches and clears only locks it can prove are abandoned. (The superseded
 commit-adoption path is gone.)
 
-### 4.6 Step 6 — invalidate FSMonitor continuity if uncertain
+### 4.6 Step 6: invalidate FSMonitor continuity if uncertain
 
 If *any* of these hold, set `fsmonitor_invalidated = true` so the next FSMonitor
 query returns the full-invalidation token `/` (false positives OK, false
@@ -518,21 +518,21 @@ namespace generation bumped during recovery
 
 The FSMonitor token is `(workspace, journal-epoch, monotonic-seq,
 projection-generation)`. FSMonitor is wired to `core.fsmonitor` via the
-`git-lazy-mount-fsmonitor` hook, which reads the durable change journal the daemon
-writes synchronously; the journal is a durable append log that survives restart (and
-when continuity cannot be proven, FSMonitor returns `/`). It delivers correct change
-detection (no false negatives) and lets git
-skip the redundant full-tree stat scan on subsequent clean statuses. Recovery
-**bumps the journal epoch** when it cannot prove continuity; an epoch bump
+`git-lazy-mount-fsmonitor` hook, which reads the change journal the daemon
+writes synchronously. The journal is an append log that survives restart; when
+continuity cannot be proven, FSMonitor returns `/`. This gives git correct change
+detection (no false negatives) while letting it skip the redundant full-tree stat
+scan on subsequent clean statuses. Recovery
+bumps the journal epoch when it cannot prove continuity; an epoch bump
 deterministically forces `/` for any pre-restart token. Wire format of the
 `/`-response: `<new-token>\0/\0`.
 
-### 4.7 Step 7 — quarantine ambiguous files
+### 4.7 Step 7: quarantine ambiguous files
 
 Anything recovery cannot classify as (a) clean baseline, (b) confirmed
 acknowledged write, or (c) provably-incomplete temp goes to
 `workspaces/<id>/quarantine/<ts>/` with a manifest (original path bytes, source,
-reason) — **never deleted**. `recover --export <dir>` copies quarantined +
+reason), **never deleted**. `recover --export <dir>` copies quarantined +
 preserved-but-unmountable content out for the user. Quarantine is also where a
 corrupt namespace DB snapshot and orphaned content land.
 

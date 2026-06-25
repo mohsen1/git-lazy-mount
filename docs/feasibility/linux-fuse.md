@@ -5,10 +5,10 @@ needed for a real kernel mount?
 
 ## Environment finding
 
-This development/CI environment has **`/dev/fuse` present but no libfuse**
+This development/CI environment has `/dev/fuse` present but no libfuse
 installed, so a real kernel mount cannot be linked or exercised here. To keep
 the build and `--all-features` green on all platforms, the `fuser` FFI is **not**
-wired in; the FUSE *callback logic* is implemented and tested independently.
+wired in. The FUSE callback logic is implemented and tested independently.
 
 ## What is implemented and tested
 
@@ -19,8 +19,9 @@ the stable `InodeTable`, and is unit-tested against a real lazy clone
 * `readdir` reads only the directory's own tree (O(entries in that dir));
 * `lookup`/`getattr` return exact sizes (fetching+filtering when needed);
 * `read` lazily hydrates and supports ranged reads;
-* inode identity is stable (numbers never reused, rename preserves identity,
-  open-unlink survives until `forget`) — covered by `glm-fs-common` tests.
+* inode identity is stable: numbers never reused, rename preserves identity,
+  and open-unlink survives until `forget`. This is covered by `glm-fs-common`
+  tests.
 
 ## What remains for a real mount
 
@@ -30,8 +31,8 @@ and a privileged/loopback-capable runner) that:
 * implements `lookup/forget/getattr/setattr/opendir/readdir/releasedir/open/
   read/write/create/flush/fsync/release/mkdir/rmdir/unlink/rename/symlink/
   readlink/access/statfs` plus xattr/lock policy;
-* translates `FileAttr` → `fuser::FileAttr` and `glm_core::Error::errno()` →
-  errno;
+* translates `FileAttr` into `fuser::FileAttr` and `glm_core::Error::errno()`
+  into errno;
 * maintains correct lookup refcounting and bounded attribute caching with
   explicit invalidation, correct negative-entry invalidation, and open-unlinked
   behavior;
@@ -44,6 +45,6 @@ tests; it is the place a real loopback mount test will be added with the adapter
 
 ## Decision
 
-The callback model is viable and the logic is proven; real mounting is a
+The callback model is viable and the logic is proven. Real mounting is a
 well-scoped FFI adapter, deliberately gated so a green default build never
 implies the kernel backend was exercised.

@@ -2,9 +2,9 @@
 
 This area of the [specification](design.md) covers the inode model, the
 namespace, the required FUSE ops, file handles, editor/build semantics, and
-rename. It cross-cuts the prior mistakes turned into invariants, the
-executor/deadlock rules, the provider/filters, overlay durability, and
-hydration budgets.
+rename. It also pulls in the executor/deadlock rules, the provider and
+filters, overlay durability, and the hydration budgets, and turns past
+mistakes into invariants.
 
 This is the design for the `fuse` and `namespace` crates of the design
 workspace. It supersedes the current `glm-fs-fuse` `FuseOps`
@@ -19,7 +19,7 @@ Scope boundary: this doc owns the FUSE callback layer, the inode table, the
 persistent namespace store, and the file-handle state machine. It does **not**
 own index/FSMonitor strategy (`index-strategy.md`, `fsmonitor.md`), object
 fetching/filters (`object-fetching.md`), or the
-baseline+overlay content model itself (`worktree-model.md`) — it consumes them.
+baseline+overlay content model itself (`worktree-model.md`). It consumes them.
 
 ---
 
@@ -33,12 +33,12 @@ this area and map to the release criteria and hydration budgets.
 | FS-INO-1 | Repeated `lookup(parent,name)` for the same logical path returns the same `(ino, generation)` within a projection generation. |
 | FS-INO-2 | `rename` preserves inode identity; open handles keep serving. |
 | FS-INO-3 | `unlink` removes the name but not open handles; storage survives until final `release`+`forget`. |
-| FS-INO-4 | Inode **numbers are never reused**; delete+recreate of a path yields a new number *and* a bumped generation. |
+| FS-INO-4 | Inode **numbers are never reused**; delete+recreate of a path yields a new number and a bumped generation. |
 | FS-INO-5 | `forget` of all kernel references on an unlinked, handle-free inode frees it; never frees a live or open inode. |
 | FS-INO-6 | Root `.git` gitfile has a reserved stable inode (`GITFILE_INO`); it is protected from unlink/rename/replace/chmod/write/mkdir-beneath. |
 | FS-INO-7 | A branch/baseline change bumps the projection generation; new inodes carry the new generation, existing open inodes keep theirs. |
 | FS-NS-1 | `readdir(dir)` costs O(direct Git children + direct overlay children), independent of total dirty paths. |
-| FS-NS-2 | `readdir` returns names + d_type + ino only — never sizes, never blob reads, never smudge filters. |
+| FS-NS-2 | `readdir` returns names + d_type + ino only: never sizes, never blob reads, never smudge filters. |
 | FS-NS-3 | Empty/untracked directories, tombstones, renames, and directory generations survive lookup, readdir, unmount, remount, daemon restart, `git clean -d`. |
 | FS-NS-4 | Case-collision detection answers without a full-namespace scan. |
 | FS-FH-1 | A read of an unmaterialized clean file streams into a verified cache file and serves range reads from an FD; no `Vec<u8>` proportional to blob size. |
@@ -51,7 +51,7 @@ this area and map to the release criteria and hydration budgets.
 | FS-FH-8 | 100 concurrent first-reads of one missing file cause exactly one object retrieval (coalesced in the provider). |
 | FS-RN-1 | A clean file/subtree rename fetches zero blob contents (represented as a base-ref). |
 | FS-RN-2 | `RENAME_NOREPLACE`, `RENAME_EXCHANGE` (or documented `ENOSYS`), and case-only rename behave correctly. |
-| FS-CB-1 | No FUSE callback spawns one OS thread per request; a bounded executor with backpressure serves them. |
+| FS-CB-1 | No FUSE callback spawns one OS thread per request. A bounded executor with backpressure serves them. |
 | FS-CB-2 | No FUSE callback runs Git porcelain, scans the worktree, waits on the caller's index lock, or initiates a network fetch; reads use `GIT_NO_LAZY_FETCH` cat-file against the native gitdir. |
 
 ---
@@ -60,23 +60,23 @@ this area and map to the release criteria and hydration budgets.
 
 ### 1.1 Identity model
 
-Today's `InodeTable` (`crates/fs-common/src/inode.rs`) is **path-keyed**: a
-single `path_to_ino: HashMap<RepoPath,u64>`, lookup/forget/rename/unlink mutate
-in place, never reuses numbers, and carries a per-inode `generation`. That core
-is correct (it already passes FS-INO-1..5) and is **reused as the substrate**.
-Three changes are required for the design:
+Today's `InodeTable` (`crates/fs-common/src/inode.rs`) is path-keyed: one
+`path_to_ino: HashMap<RepoPath,u64>`, with lookup/forget/rename/unlink mutating
+in place. It never reuses numbers and carries a per-inode `generation`. That
+core is correct (it already passes FS-INO-1..5), so it stays as the substrate.
+The design needs three changes:
 
 1. **Generation must be per-inode, surfaced through getattr/lookup/create.** The
    current `FuseOps::getattr` hardcodes `generation = 1` (`fs-fuse/src/lib.rs`
-   line ~101). The kernel uses `(ino, generation)` as NFS-style file identity; a
-   stale handle must never be confused with a recreated path. Fix: `getattr`
+   line ~101). The kernel uses `(ino, generation)` as NFS-style file identity, so
+   a stale handle must never be confused with a recreated path. The fix: `getattr`
    reads the generation from the table.
 2. **Open-handle count** must be tracked alongside lookup count so the
    deleted-but-open lifecycle (FS-FH-5) is driven by the table, not only by
    kernel `forget`.
-3. **Identity is no longer *only* the path.** An inode survives `unlink` with
-   `path = None`; the file-handle layer addresses it by inode, not path — path
-   lookup must never be the only way to service an open handle.
+3. **Identity is no longer only the path.** An inode survives `unlink` with
+   `path = None`, and the file-handle layer addresses it by inode rather than
+   path. Path lookup must never be the only way to service an open handle.
 
 ### 1.2 Record
 
@@ -143,8 +143,8 @@ impl InodeTable {
 == 0 && path.is_none()`. `ROOT_INO` and `GITFILE_INO` are never freed.
 
 **Generation rule (FS-INO-7):** `bump_generation` raises only the table-wide
-counter used at *allocation*. Existing entries keep their generation so open
-handles are unaffected. A baseline/branch transition (`post-checkout` hook →
+counter used at allocation. Existing entries keep their generation, so open
+handles are unaffected. A baseline/branch transition (`post-checkout` hook to
 daemon, see fsmonitor.md) calls `bump_generation` so kernel attr caches for
 changed paths are invalidated on next lookup. The current
 `bump_generation_for_new_allocations_only` test already encodes this.
@@ -156,9 +156,9 @@ changed paths are invalidated on next lookup. The current
 is `ROOT_INO`. The namespace store hard-codes `lookup(ROOT, ".git") =
 GITFILE_INO`. Protection is enforced at the op layer: any `unlink`,
 `rename` (as source or destination), `setattr`, `write`, `create`, or `mkdir`
-that resolves to `GITFILE_INO` returns `EPERM`/`EACCES`. A Git **tree entry**
+that resolves to `GITFILE_INO` returns `EPERM`/`EACCES`. A Git tree entry
 literally named `.git` is rejected at projection time (it can never reach the
-namespace) and reported via `doctor` — the synthetic entry always wins
+namespace) and reported via `doctor`. The synthetic entry always wins
 resolution order.
 
 ---
@@ -174,10 +174,10 @@ paths) per `readdir` and violates FS-NS-1. The overlay's flat
 `children(parent)`, `has_children`, subtree rename, or case collision in better
 than O(N).
 
-The design introduces a dedicated **`namespace` crate**: a persistent,
+The design introduces a dedicated `namespace` crate: a persistent,
 parent-indexed store (SQLite WAL) that is the authority for overlay
-*structure* (the overlay content store keeps owning bytes). It does **not**
-store baseline tree structure — baseline children come from the object provider
+structure. The overlay content store keeps owning bytes. It does **not**
+store baseline tree structure; baseline children come from the object provider
 (`provider.tree`) and are merged at readdir time.
 
 ### 2.1 Schema (SQLite)
@@ -193,7 +193,7 @@ CREATE TABLE ns_node (
   generation    INTEGER NOT NULL,           -- inode generation (FS-INO-4/7)
   dir_gen       INTEGER NOT NULL DEFAULT 0, -- bumped when *direct* children change
   content_id    BLOB,                       -- overlay content backing id (NULL for dir/tombstone)
-  base_oid      BLOB,                       -- BaseRef target blob (clean rename) — no bytes
+  base_oid      BLOB,                       -- BaseRef target blob (clean rename), no bytes
   base_mode     INTEGER,                    -- BaseRef Git mode
   executable    INTEGER NOT NULL DEFAULT 0, -- Git exec bit
   open_unlinked INTEGER NOT NULL DEFAULT 0, -- retained for an open handle
@@ -219,13 +219,13 @@ impl Namespace {
     /// Overlay override for one child, or None to fall through to baseline.
     pub fn lookup(&self, parent_ino: u64, name: &[u8]) -> Result<Option<NsNode>>;
 
-    /// Direct overlay children of a directory — O(direct children) (FS-NS-1).
+    /// Direct overlay children of a directory: O(direct children) (FS-NS-1).
     pub fn children(&self, parent_ino: u64) -> Result<Vec<NsNode>>;
 
     /// Whether a directory has any overlay child (for rmdir emptiness).
     pub fn has_children(&self, parent_ino: u64) -> Result<bool>;
 
-    /// Case/normalization collision among siblings — O(siblings) via ns_fold.
+    /// Case/normalization collision among siblings: O(siblings) via ns_fold.
     pub fn case_collision(&self, parent_ino: u64, name_fold: &[u8]) -> Result<Option<NsNode>>;
 
     /// Atomic subtree rename: rewrite parent_ino+name of the root node, leave
@@ -262,7 +262,7 @@ merge: start from base names; apply each `over` node:
 ```
 
 No `overlay.entries()` full scan. Baseline tree read is one `provider.tree`
-(trees are present under a `blob:none` clone — zero blob fetch). This is
+(trees are present under a `blob:none` clone, so zero blob fetch). This is
 the single biggest behavioral change from `Workspace::list_dir`.
 
 ### 2.4 Persistence & recovery (FS-NS-3)
@@ -281,8 +281,8 @@ rows, so they survive remount and `git clean -d` walks them like any directory
 ## 3. The required FUSE operation set
 
 Implemented in the `fuse` crate. Each potentially-blocking callback runs on the
-bounded executor (FS-CB-1), never one thread per request as the current
-`adapter.rs::dispatch` (`std::thread::spawn` per call) does — that
+bounded executor (FS-CB-1), never one thread per request the way the current
+`adapter.rs::dispatch` (`std::thread::spawn` per call) does. That
 `spawn`-per-callback is explicitly replaced. The `fuser::Filesystem` adapter
 (`crates/fs-fuse/src/adapter.rs`) is reused for FFI shape (errno mapping,
 `ReplyDirectory` paging, CLOEXEC mount options) but rewired onto the executor +
@@ -294,7 +294,7 @@ handle table.
 | `destroy` | Drain executor, flush dirty handles, checkpoint namespace WAL. |
 | `lookup` | Resolve via the resolution order; allocate inode; +1 lookup ref; return attr+generation. |
 | `forget` / `batch_forget` | Drop kernel refs; may free inode (FS-INO-5). |
-| `getattr` | Exact size; generation from inode table. The exact size of an unmaterialized clean blob requires fetching it (no server-side size manifest under `blob:none`), so `getattr` faults that blob once — this is fundamental to a `blob:none` clone, not a TODO. It is also why the FIRST clean `git status` faults each tracked blob once (git must populate the index stat size to skip the content check); only SUBSEQUENT clean statuses are zero-blob. |
+| `getattr` | Exact size; generation from inode table. The exact size of an unmaterialized clean blob requires fetching it (no server-side size manifest under `blob:none`), so `getattr` faults that blob once. This is fundamental to a `blob:none` clone, not a TODO. It is also why the FIRST clean `git status` faults each tracked blob once (git must populate the index stat size to skip the content check); only SUBSEQUENT clean statuses are zero-blob. |
 | `setattr` | size→`truncate` handle/inode op; mode→exec bit only (Git tracks no other bits); time/uid/gid accepted+ignored. |
 | `open` | Allocate a real handle; choose source state. |
 | `create` | Create overlay file + handle in one step; `O_EXCL` honored. |
@@ -302,14 +302,14 @@ handle table.
 | `write` | In-place write into handle's overlay FD (FS-FH-3); `O_APPEND` atomic (FS-FH-4). |
 | `flush` | Per-`close()` flush; not durability. Idempotent; may be called many times. |
 | `fsync` / `fdatasync` | `fsync` = data+metadata; `fdatasync` = data only; on overlay FD. |
-| `release` | Last handle ref → `open_dec`; if `deleted_but_open` and refs 0, reclaim storage. |
+| `release` | Last handle ref triggers `open_dec`; if `deleted_but_open` and refs 0, reclaim storage. |
 | `opendir` | Allocate dir handle; snapshot listing for stable offsets. |
 | `readdir` | Names+d_type+ino only (FS-NS-2); O(direct children) (FS-NS-1). |
 | `releasedir` | Free dir handle + snapshot. |
 | `mkdir` | Persist an empty dir node; not a transient inode. |
 | `rmdir` | Refuse non-empty (baseline OR overlay children via `has_children`); tombstone if baseline-backed. |
 | `unlink` | Tombstone (baseline) / clear (overlay-only); inode survives open (FS-FH-5). |
-| `rename` / `rename2` | `RENAME_NOREPLACE`, `RENAME_EXCHANGE`(or `ENOSYS`), case-only; clean rename = base-ref, no fetch (FS-RN-1). |
+| `rename` / `rename2` | `RENAME_NOREPLACE`, `RENAME_EXCHANGE`(or `ENOSYS`), case-only; clean rename writes a base-ref, no fetch (FS-RN-1). |
 | `symlink` | Overlay symlink (raw target bytes; never followed for overlay writes). |
 | `readlink` | Raw target bytes from overlay or baseline blob (raw, unfiltered). |
 | `link` | Overlay-only hard link until commit, else documented `EPERM` (choose+document). |
@@ -332,19 +332,19 @@ gitdir**; only the fetch scheduler causes network; mount/session FDs are CLOEXEC
 
 A guard at the op-layer entry of every mutating op: if the target inode is
 `GITFILE_INO`, or `mkdir`/`create` would place a child under it, return `EPERM`
-(`rename` with `.git` as src or dst → `EPERM`; `setattr`/`write` → `EACCES`).
+(`rename` with `.git` as src or dst gives `EPERM`; `setattr`/`write` gives `EACCES`).
 
 ---
 
 ## 4. The file-handle state machine
 
-This is the heart of the design and the largest departure from the current
+This is the largest departure from the current
 code, where `open`/`opendir` return `fh = 0` (`adapter.rs` lines 160–166) and
-`read`/`write` re-resolve by **inode→path→buffer the whole file**
-(`fs-fuse/src/lib.rs::read` calls `ws.read_file` → `Vec<u8>`;
+`read`/`write` re-resolve by inode, then path, then buffer the whole file
+(`fs-fuse/src/lib.rs::read` calls `ws.read_file` and gets a `Vec<u8>`;
 `workspace/src/lib.rs::write_at` reads the entire file, mutates, rewrites). That
-buffers whole blobs and cannot do open-unlink/rename-while-open
-(FS-FH-5/6). The design allocates a **real handle per successful open** and
+buffers whole blobs and cannot do open-unlink or rename-while-open
+(FS-FH-5/6). The design allocates a real handle per successful open and
 services I/O from a file descriptor.
 
 ### 4.1 Handle record
@@ -380,14 +380,14 @@ pub enum HandleSource {
 
 `HandleTable` is `Mutex<Slab<FileHandle>>` (or sharded for write-concurrency);
 `Fh` is the slab key. The kernel passes `fh` to every `read`/`write`/`flush`/
-`fsync`/`release`, so I/O **never** needs a path lookup — a file may have no
+`fsync`/`release`, so I/O never needs a path lookup. A file may have no
 path after unlink.
 
 ### 4.2 `open` decision table
 
 | Trigger (flags) | Inode source | Action | Fetch? |
 |-----------------|--------------|--------|--------|
-| `O_RDONLY`, clean baseline file | `Baseline{oid}` | Resolve filter context; ensure object present; stream working-tree representation into a **verified** `filtered-cache` file; open FD read-only; `HandleSource::CacheFile`. | blob (once, coalesced — FS-FH-8) |
+| `O_RDONLY`, clean baseline file | `Baseline{oid}` | Resolve filter context; ensure object present; stream working-tree representation into a **verified** `filtered-cache` file; open FD read-only; `HandleSource::CacheFile`. | blob (once, coalesced, FS-FH-8) |
 | `O_RDONLY`, already overlay | `Overlay` | Open overlay FD read-only; `OverlayFile`. | none |
 | `O_WRONLY\|O_TRUNC` or `create` | any | Seed an **empty** overlay file; namespace `put_file`; open FD; `OverlayFile`; `dirty=true`. **No baseline fetch** (FS-FH-2). | **none** |
 | `O_WRONLY`/`O_RDWR`, partial (no `O_TRUNC`), clean baseline | `Baseline{oid}` | Copy-up: materialize working-tree representation **once** (reflink/copy into overlay file), `put_file`, open FD; `OverlayFile`. Subsequent writes in place (FS-FH-3). | blob (once) |
@@ -396,7 +396,7 @@ path after unlink.
 
 `open_inc(ino)` on success. The "materialize once, then write in place" rule is
 the FS-FH-3 fix: copy-up happens at most once per writable open, and
-writes are `pwrite` into the FD, never read-modify-rewrite of the whole file.
+writes are `pwrite` into the FD, never a read-modify-rewrite of the whole file.
 
 ### 4.3 `read` / `write`
 
@@ -409,9 +409,9 @@ write(fh, off, data):
 ```
 
 Reads of a `CacheFile` whose object is missing locally and policy forbids
-network return a bounded error (`EIO`/offline) — never a hang, never an
+network return a bounded error (`EIO`/offline), never a hang, never an
 interactive prompt. The provider coalesces concurrent first-reads
-(FS-FH-8), so 100 readers of one missing blob → one fetch (existing
+(FS-FH-8), so 100 readers of one missing blob cause one fetch (existing
 `GitObjectProvider::ensure_objects` already does this).
 
 ### 4.4 The state machine (per inode, across handles)
@@ -434,7 +434,7 @@ DELETED_OPEN   --last release+forget-->  REAPED        (delete overlay/cache bac
 MATERIALIZED   --release, clean-equal--> UNMATERIALIZED (dematerialize under guard)
 ```
 
-Dematerialization on `release` is allowed **only** under the dematerialize guard:
+Dematerialization on `release` is allowed only under the dematerialize guard:
 content+mode match the baseline, no writable handle remains, no pending fsync, no
 concurrent rename. Never on timestamp alone.
 
@@ -442,8 +442,8 @@ concurrent rename. Never on timestamp alone.
 
 `unlink` of an open file: namespace `tombstone`/`clear` removes the name;
 `InodeTable::unlink` sets `path = None`, `deleted_but_open = true`. The overlay
-backing file is **not** deleted (it is renamed into a `reaped/` holding area
-keyed by inode, so a new file at the same path gets a fresh `content_id`).
+backing file is **not** deleted. It is renamed into a `reaped/` holding area
+keyed by inode, so a new file at the same path gets a fresh `content_id`.
 Existing handles keep their FD and serve read/write. On final `release` with
 `open_handles == 0`, the backing is deleted and the inode reaped (FS-INO-5). A
 clean baseline file unlinked while open keeps serving from its `CacheFile` FD
@@ -453,9 +453,9 @@ even though its tombstone hides the name.
 
 `rename` moves the namespace row(s) and calls `InodeTable::rename` (identity
 preserved). Open handles reference the inode + FD, not the path, so they are
-untouched. A **clean** file/subtree rename writes a `BaseRef` node (no descendant
-reads, FS-RN-1) — exactly the existing `Overlay::put_base_ref` mechanism, now in
-the namespace. `rename2` flags:
+untouched. A clean file/subtree rename writes a `BaseRef` node (no descendant
+reads, FS-RN-1), which is exactly the existing `Overlay::put_base_ref` mechanism,
+now in the namespace. `rename2` flags:
 
 - `RENAME_NOREPLACE`: fail `EEXIST` if dst resolves to anything.
 - `RENAME_EXCHANGE`: swap two namespace nodes atomically, or documented
@@ -466,7 +466,7 @@ the namespace. `rename2` flags:
 
 | Callback | When | Effect | Durability claim |
 |----------|------|--------|------------------|
-| `flush` | every `close()` of a dup'd fd; possibly many times | flush userspace buffers to the overlay FD; cheap; errors surface the last write error | **none** — not a sync point |
+| `flush` | every `close()` of a dup'd fd; possibly many times | flush userspace buffers to the overlay FD; cheap; errors surface the last write error | **none**, not a sync point |
 | `fdatasync` | app `fdatasync()` | `fdatasync(overlay_fd)` (data only) | data persisted |
 | `fsync` | app `fsync()` | `fsync(overlay_fd)` (data+metadata) | data+metadata persisted |
 | directory fsync | app fsyncs a dir fd (editor save) | checkpoint namespace WAL for that dir's pending nodes | directory entry persisted |
@@ -474,7 +474,7 @@ the namespace. `rename2` flags:
 
 We never claim crash durability for bytes the app never fsynced beyond ordinary
 filesystem guarantees. The overlay's existing atomic-publish path
-(`overlay/src/lib.rs::atomic_write`: temp→fsync→rename→dir-fsync) is the
+(`overlay/src/lib.rs::atomic_write`: temp, fsync, rename, dir-fsync) is the
 durability primitive when the app *does* fsync, and for namespace-row publish.
 
 ---
@@ -541,14 +541,14 @@ plus ripgrep/Cargo/Make/Ninja as readers (must hit FS-NS-1/2 budgets).
 | `crates/fs-fuse/src/lib.rs` `FuseOps` (fh=0, buffer-whole-file read/write) | **Replaced** by the handle table + FD-served I/O. |
 | `crates/overlay/src/lib.rs` content store + `BaseRef`/tombstone/atomic_write | **Reused** for bytes; its flat `HashMap` *structure* role moves into the `namespace` crate. |
 | `crates/workspace/src/lib.rs::list_dir` (full overlay scan) | **Replaced** by `Namespace::children` (O(direct children)). |
-| `crates/object-provider/src/lib.rs` (coalescing, `GIT_NO_LAZY_FETCH`, presence authority) | **Reused** verbatim — already satisfies FS-FH-8, FS-CB-2. |
+| `crates/object-provider/src/lib.rs` (coalescing, `GIT_NO_LAZY_FETCH`, presence authority) | **Reused** verbatim; already satisfies FS-FH-8, FS-CB-2. |
 | `crates/git-store/src/batch.rs` (`cat-file --batch-command`), `proc.rs::harden_fds` | **Reused** verbatim for streaming reads and CLOEXEC. |
 | `crates/workspace` stage/commit/branch/`adopt_commit`, `crates/stage`, git-interop bridge | **Superseded**; not part of this layer. |
 
 Streaming caveat: the current provider returns `Vec<u8>`
 (`raw_blob`/`filtered_blob`/`smudge_blob` in `git-store/src/store.rs`). For
-FS-FH-1 the read path must gain a streaming form — `open_worktree_file(...) ->
+FS-FH-1 the read path must gain a streaming form, `open_worktree_file(...) ->
 ContentHandle` (a provider trait) that writes the filtered representation into a
-verified cache file and hands back an FD — so large files never allocate a full
+verified cache file and hands back an FD, so large files never allocate a full
 `Vec`. That is owned by `object-fetching.md`; this layer
 *consumes* the resulting cache-file FD as `HandleSource::CacheFile`.
