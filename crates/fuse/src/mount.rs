@@ -94,6 +94,11 @@ impl Handle {
     }
 }
 
+/// A directory listing snapshotted at `opendir`. Paged `readdir` calls serve
+/// slices of this instead of re-reading the whole directory each time (which is
+/// O(entries²) over the kernel's paging).
+type DirListing = Arc<Vec<(u64, FileType, Vec<u8>)>>;
+
 /// The transparent mount: the projection, a real handle table, and **two**
 /// bounded worker pools. `pool` runs object-IO callbacks that may block on
 /// `git`/the network (read, open, write, lookup, getattr, …); `meta_pool` runs
@@ -103,6 +108,8 @@ impl Handle {
 struct TransparentFs {
     proj: Arc<Projection>,
     handles: Arc<Mutex<HashMap<u64, Handle>>>,
+    /// Open-directory listings, keyed by the fh returned from `opendir`.
+    dir_handles: Arc<Mutex<HashMap<u64, DirListing>>>,
     next_fh: Arc<AtomicU64>,
     pool: Pool,
     meta_pool: Pool,
@@ -113,6 +120,7 @@ impl TransparentFs {
         TransparentFs {
             proj,
             handles: Arc::new(Mutex::new(HashMap::new())),
+            dir_handles: Arc::new(Mutex::new(HashMap::new())),
             next_fh: Arc::new(AtomicU64::new(1)),
             pool: Pool::new(POOL_THREADS),
             meta_pool: Pool::new(META_THREADS),
@@ -482,33 +490,59 @@ impl Filesystem for TransparentFs {
             });
     }
 
-    fn opendir(&mut self, _req: &Request<'_>, _ino: u64, _flags: i32, reply: ReplyOpen) {
-        reply.opened(0, 0);
-    }
-
-    fn releasedir(
-        &mut self,
-        _req: &Request<'_>,
-        _ino: u64,
-        _fh: u64,
-        _flags: i32,
-        reply: ReplyEmpty,
-    ) {
-        reply.ok();
+    fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+        let proj = Arc::clone(&self.proj);
+        let dir_handles = Arc::clone(&self.dir_handles);
+        let next_fh = Arc::clone(&self.next_fh);
+        // Snapshot the whole listing once, here. readdir reads only tree objects
+        // (present under the partial clone) + the overlay, never a blob fault, so
+        // it runs on the fast metadata pool and stays responsive under heavy IO.
+        self.meta_pool.spawn(move || match proj.readdir(ino) {
+            Ok(entries) => {
+                let mut listing: Vec<(u64, FileType, Vec<u8>)> =
+                    Vec::with_capacity(entries.len() + 2);
+                listing.push((ino, FileType::Directory, b".".to_vec()));
+                listing.push((ino, FileType::Directory, b"..".to_vec()));
+                for e in entries {
+                    listing.push((e.ino, file_type(e.kind), e.name));
+                }
+                let fh = next_fh.fetch_add(1, Ordering::Relaxed);
+                dir_handles.lock().unwrap().insert(fh, Arc::new(listing));
+                reply.opened(fh, 0);
+            }
+            Err(e) => reply.error(errno(&e)),
+        });
     }
 
     fn readdir(
         &mut self,
         _req: &Request<'_>,
         ino: u64,
-        _fh: u64,
+        fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        let off = offset.max(0) as usize;
+        // Serve a slice of the snapshot taken at `opendir`. This makes paging a
+        // large directory O(entries) instead of O(entries²) (a `readdir` per page,
+        // each re-reading the whole directory). A client that skips `opendir`
+        // falls back to reading the directory once below.
+        let cached = self.dir_handles.lock().unwrap().get(&fh).cloned();
+        if let Some(listing) = cached {
+            for (i, (eino, kind, name)) in listing.iter().enumerate().skip(off) {
+                if reply.add(
+                    *eino,
+                    (i + 1) as i64,
+                    *kind,
+                    std::ffi::OsStr::from_bytes(name),
+                ) {
+                    break;
+                }
+            }
+            reply.ok();
+            return;
+        }
         let proj = Arc::clone(&self.proj);
-        // readdir reads only tree objects (present under blob:none) + the overlay
-        // — it never faults a blob — so it runs on the fast metadata pool and
-        // stays responsive even when every object-IO thread is hydrating.
         self.meta_pool.spawn(move || {
             let entries = match proj.readdir(ino) {
                 Ok(e) => e,
@@ -523,9 +557,7 @@ impl Filesystem for TransparentFs {
             for e in entries {
                 listing.push((e.ino, file_type(e.kind), e.name));
             }
-            for (i, (eino, kind, name)) in
-                listing.into_iter().enumerate().skip(offset.max(0) as usize)
-            {
+            for (i, (eino, kind, name)) in listing.into_iter().enumerate().skip(off) {
                 if reply.add(
                     eino,
                     (i + 1) as i64,
@@ -537,6 +569,18 @@ impl Filesystem for TransparentFs {
             }
             reply.ok();
         });
+    }
+
+    fn releasedir(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        fh: u64,
+        _flags: i32,
+        reply: ReplyEmpty,
+    ) {
+        self.dir_handles.lock().unwrap().remove(&fh);
+        reply.ok();
     }
 
     fn access(&mut self, _req: &Request<'_>, _ino: u64, _mask: i32, reply: ReplyEmpty) {
