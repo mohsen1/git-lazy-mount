@@ -4,7 +4,8 @@
 //!
 //! Each scenario gets its OWN fresh mount (so blob-fault counts don't carry
 //! over via the cache) and we read the projection's `hydrations()` blob-fault
-//! counter around an external command run over the real `/dev/fuse` mount.
+//! counter around an external command run over the real `/dev/fuse` mount. Tools
+//! that aren't installed (e.g. `rg` in a minimal CI image) are skipped.
 //!
 //! Run with: `cargo test -p glm-fuse --features fuse --test grep_materialization -- --nocapture`
 #![cfg(feature = "fuse")]
@@ -50,8 +51,8 @@ fn du_kb(p: &Path) -> u64 {
 }
 
 /// Mount a fresh lazy copy of the corpus, run `make_cmd(mnt)` over it, and return
-/// (blobs faulted, wall time, cache KiB on disk after).
-fn measure<F>(make_cmd: F) -> (u64, Duration, u64)
+/// (blobs faulted, wall time, cache KiB). `None` if the command isn't installed.
+fn measure<F>(make_cmd: F) -> Option<(u64, Duration, u64)>
 where
     F: FnOnce(&Path) -> Command,
 {
@@ -95,73 +96,98 @@ where
 
     let h0 = proj.hydrations();
     let t = Instant::now();
-    let _ = make_cmd(&mnt).output().expect("command ran");
+    let ran = make_cmd(&mnt).output();
     let dt = t.elapsed();
     let faults = proj.hydrations() - h0;
     let kb = du_kb(&cache);
     mount.unmount();
     let _ = remote;
-    (faults, dt, kb)
+    ran.ok().map(|_| (faults, dt, kb))
+}
+
+fn report(label: &str, m: Option<(u64, Duration, u64)>) -> Option<u64> {
+    match m {
+        Some((f, t, kb)) => {
+            eprintln!("{label:<28} {f:>5} blobs faulted, {t:?}, {kb} KiB cached");
+            Some(f)
+        }
+        None => {
+            eprintln!("{label:<28} (command not installed — skipped)");
+            None
+        }
+    }
 }
 
 #[test]
 fn grep_over_lazy_mount_materializes_every_file() {
     eprintln!("\n=== GREP MATERIALIZATION EXPERIMENT (repo = {N} files) ===");
 
-    // Control 1: listing the whole tree fetches nothing.
-    let (find_f, find_t, find_kb) = measure(|mnt| {
-        let mut c = Command::new("find");
-        c.arg(mnt).args(["-type", "f"]);
-        c
-    });
-    eprintln!(
-        "find -type f (readdir all):  {find_f:>5} blobs faulted, {find_t:?}, {find_kb} KiB cached"
+    // Controls: listing fetches nothing; reading one file fetches one blob.
+    let find = report(
+        "find -type f (readdir all):",
+        measure(|mnt| {
+            let mut c = Command::new("find");
+            c.arg(mnt).args(["-type", "f"]);
+            c
+        }),
+    );
+    let cat = report(
+        "cat one file:",
+        measure(|mnt| {
+            let mut c = Command::new("cat");
+            c.arg(mnt.join("src/pkg00/mod0.rs"));
+            c
+        }),
     );
 
-    // Control 2: reading one file fetches exactly one blob.
-    let (one_f, one_t, _) = measure(|mnt| {
-        let mut c = Command::new("cat");
-        c.arg(mnt.join("src/pkg00/mod0.rs"));
-        c
-    });
-    eprintln!("cat one file:                {one_f:>5} blobs faulted, {one_t:?}");
-
-    // The question: ripgrep (the typical AI-agent Grep tool).
-    let (rg_f, rg_t, rg_kb) = measure(|mnt| {
-        let mut c = Command::new("rg");
-        c.args(["--no-ignore", "--no-messages", "NEEDLE"]).arg(mnt);
-        c
-    });
-    eprintln!("rg NEEDLE:                   {rg_f:>5} blobs faulted, {rg_t:?}, {rg_kb} KiB cached");
-
-    // The README's other example: `git grep` over the working tree.
-    let (gg_f, gg_t, gg_kb) = measure(|mnt| {
-        let mut c = Command::new("git");
-        c.arg("-C")
-            .arg(mnt)
-            .args(["grep", "--no-index", "NEEDLE", ":/"]);
-        c
-    });
-    eprintln!("git grep NEEDLE:             {gg_f:>5} blobs faulted, {gg_t:?}, {gg_kb} KiB cached");
-
-    // POSIX grep -r, for completeness.
-    let (gr_f, gr_t, _) = measure(|mnt| {
-        let mut c = Command::new("grep");
-        c.args(["-rl", "NEEDLE"]).arg(mnt);
-        c
-    });
-    eprintln!("grep -rl NEEDLE:             {gr_f:>5} blobs faulted, {gr_t:?}");
+    // Content searches — each must read (and so fault) every file.
+    let rg = report(
+        "rg NEEDLE:",
+        measure(|mnt| {
+            let mut c = Command::new("rg");
+            c.args(["--no-ignore", "--no-messages", "NEEDLE"]).arg(mnt);
+            c
+        }),
+    );
+    let git_grep = report(
+        "git grep NEEDLE:",
+        measure(|mnt| {
+            let mut c = Command::new("git");
+            c.arg("-C")
+                .arg(mnt)
+                .args(["grep", "--no-index", "NEEDLE", ":/"]);
+            c
+        }),
+    );
+    let grep_r = report(
+        "grep -rl NEEDLE:",
+        measure(|mnt| {
+            let mut c = Command::new("grep");
+            c.args(["-rl", "NEEDLE"]).arg(mnt);
+            c
+        }),
+    );
     eprintln!("=== END (repo has {N} files) ===\n");
 
-    // The claims, as assertions.
-    assert_eq!(find_f, 0, "readdir must fault zero blobs");
-    assert_eq!(one_f, 1, "reading one file must fault exactly one blob");
+    // Controls (find/cat are always present).
+    if let Some(f) = find {
+        assert_eq!(f, 0, "readdir must fault zero blobs");
+    }
+    if let Some(f) = cat {
+        assert_eq!(f, 1, "reading one file must fault exactly one blob");
+    }
+
+    // At least one content-search tool runs; every one that does must
+    // materialize ~the whole repo.
+    let content: Vec<u64> = [rg, git_grep, grep_r].into_iter().flatten().collect();
     assert!(
-        rg_f as f64 >= 0.9 * N as f64,
-        "ripgrep must materialize ~every file: {rg_f} of {N}"
+        !content.is_empty(),
+        "no content-search tool available to measure"
     );
-    assert!(
-        gr_f as f64 >= 0.9 * N as f64,
-        "grep -r must materialize ~every file: {gr_f} of {N}"
-    );
+    for f in content {
+        assert!(
+            f as f64 >= 0.9 * N as f64,
+            "a content search must materialize ~every file: {f} of {N}"
+        );
+    }
 }
