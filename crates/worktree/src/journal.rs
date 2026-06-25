@@ -128,6 +128,10 @@ pub struct ChangeJournal {
     generation: u64,
     log_path: PathBuf,
     state: Mutex<State>,
+    /// Test-only failure-injection seam: when set, the next [`record`] returns an
+    /// error before touching the log, simulating a journal write/fsync failure.
+    #[cfg(test)]
+    fail_next: std::sync::atomic::AtomicBool,
 }
 
 struct State {
@@ -173,7 +177,18 @@ impl ChangeJournal {
             generation,
             log_path,
             state: Mutex::new(State { log, paths }),
+            #[cfg(test)]
+            fail_next: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Test-only: arm the next [`record`] call to fail before any write, so a
+    /// caller can verify it fails the operation rather than applying an
+    /// un-journaled mutation.
+    #[cfg(test)]
+    pub fn fail_next_record(&self) {
+        self.fail_next
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn token_at(&self, seq: u64) -> Token {
@@ -199,6 +214,13 @@ impl ChangeJournal {
     /// Record that `path` changed (durably appended; fsynced). Inclusive — over-
     /// reporting is safe.
     pub fn record(&self, path: &[u8]) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(Error::new(ErrorCode::Internal, "injected journal failure"));
+        }
         let mut st = self
             .state
             .lock()
