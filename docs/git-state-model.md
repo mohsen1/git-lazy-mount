@@ -1,14 +1,14 @@
 # Git state model: what Git owns, what the daemon caches
 
-This is part of the broader [specification](design.md). It rests primarily
-on the principles that Git is authoritative for repository state and that
-stock Git index behavior is preserved, with a baseline+overlay working tree,
-no second stage/branch/commit model, and observation of the gitdir without
-replacing Git. Overview: [`architecture.md`](./architecture.md). This doc is
-the two-source-of-truth analysis and the real-index integration plan.
+This is part of the broader [specification](design.md). It rests on two
+principles: Git is authoritative for repository state, and stock Git index
+behavior is preserved. That means a baseline+overlay working tree, no second
+stage/branch/commit model, and observation of the gitdir without replacing
+Git. Overview: [`architecture.md`](./architecture.md). This doc is the
+two-source-of-truth analysis and the real-index integration plan.
 
 This is a *design*, not a refactor. The mechanisms this doc replaces are
-named explicitly in [What this supersedes](#9-what-this-supersedes-in-the-existing-tree); do
+named explicitly in [What this supersedes](#9-what-this-supersedes-in-the-existing-tree). Do
 not preserve them.
 
 ---
@@ -34,8 +34,8 @@ Three corollaries, each an anti-claim and a regression test:
   commit` writes it and advances its branch. There is no post-Git "adopt the
   commit" step.
 
-The gitdir is a **normal native directory outside FUSE**, so Git uses
-its ordinary `index.lock`, `packed-refs`, ref locks, reflogs, sequencer and
+The gitdir is a normal native directory outside FUSE, so Git uses its
+ordinary `index.lock`, `packed-refs`, ref locks, reflogs, sequencer and
 rebase state, and atomic renames. The daemon never synthesizes `.git`
 contents through FUSE; only the root `.git` *gitfile* is synthetic.
 
@@ -55,29 +55,29 @@ always disposable and rebuilt from disk; an empty cache is always valid.
 | Reflogs | `logs/**` | *not cached* (read on demand via `git reflog`) | n/a |
 | Pseudorefs | `ORIG_HEAD`, `FETCH_HEAD`, `MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `AUTO_MERGE`, `BISECT_*` | `OpState` (enum) | watch gitdir top-level + post-* hooks |
 | **The index** (stage 0 + unmerged 1/2/3, modes, oids, flags) | `$GIT_DIR/index` (+ `sharedindex.*`) | `IndexCache` | atomic-replace watch on `index`; `post-index-change` hook |
-| Commit creation / amend | objects + branch ref update | *none* | n/a — Git writes objects + advances refs itself |
+| Commit creation / amend | objects + branch ref update | *none* | n/a (Git writes objects + advances refs itself) |
 | History rewrite | refs + reflogs + objects | invalidate `RefSnapshot` | `post-rewrite` hook |
 | Merge / rebase / cherry-pick / revert / stash / bisect | `MERGE_HEAD`, `MERGE_MSG`, `rebase-merge/`, `rebase-apply/`, `sequencer/`, `BISECT_*`, `refs/stash` | `OpState` | gitdir watch + post-* hooks |
 | Push / fetch config, partial-clone filter, promisor | `config`, `remote.*` | read on demand | n/a |
 | Object database | `objects/**` (+ promisor) | object/tree/filtered caches (separate docs) | content-addressed; immutable |
 
-**Reflogs and reflog-derived answers are never cached** — they change on
+**Reflogs and reflog-derived answers are never cached.** They change on
 every ref move and the daemon has no reason to mirror them. When a
 diagnostic needs them it shells `git reflog` against the gitdir.
 
-What the daemon owns and Git does **not** (for contrast — out of scope
-here, see `worktree-model.md`): the projected baseline tree id, the
-overlay namespace/content, tombstones, rename mappings, synthetic entries,
-the inode/handle tables, the FSMonitor journal, fetch scheduling, and the
+What the daemon owns and Git does **not** (out of scope here, see
+`worktree-model.md`): the projected baseline tree id, the overlay
+namespace/content, tombstones, rename mappings, synthetic entries, the
+inode/handle tables, the FSMonitor journal, fetch scheduling, and the
 filtered-content cache. None of these answer "what is staged / what is HEAD
-/ what branch" — those answers come only from Git.
+/ what branch". Those answers come only from Git.
 
 ---
 
 ## 3. Reading Git state safely
 
 All Git-state reads obey the deadlock invariants: a read issued from a
-FUSE callback must **never** run porcelain, never scan the worktree, never
+FUSE callback must never run porcelain, never scan the worktree, and never
 wait on the requesting process's `index.lock`. The daemon reads Git state on
 two paths:
 
@@ -93,21 +93,21 @@ two paths:
 
 `GIT_OPTIONAL_LOCKS=0` ensures a daemon-side inspection never *takes* the
 index lock and never races a user's in-flight Git command. The daemon reads
-the index only when it is **not** locked (no sibling `index.lock`); if a
-lock is present the previous cache stays valid until the replacement lands.
+the index only when it is not locked (no sibling `index.lock`). If a lock is
+present the previous cache stays valid until the replacement lands.
 
 ---
 
 ## 4. The index cache: disposable parse of `$GIT_DIR/index`
 
 The real index is authoritative. The daemon parses it after each atomic
-replacement and keeps a **read-only** cache. **The daemon never writes the
+replacement and keeps a read-only cache. **The daemon never writes the
 index to mirror its own state** (INV-OWNERSHIP). `git add`, `add -p`,
 `reset`, `restore --staged`, `rm`, `rm --cached`, `mv`, and all
 merge/rebase conflict-stage manipulation are performed by stock Git on that
-file; the daemon observes the result.
+file. The daemon observes the result.
 
-There is **no index parser in the tree today** — this section defines the
+There is no index parser in the tree today, so this section defines the
 one to build (new module, e.g. `crates/git-repo/src/index.rs`). It grounds
 in existing core types: [`ObjectId`](../../crates/core/src/object_id.rs),
 [`GitMode`](../../crates/core/src/mode.rs),
@@ -141,20 +141,20 @@ Per-entry flags the daemon extracts (the load-bearing ones):
   `xflags`).
 - `FSMONITOR_VALID` per-entry bit (paired with the `FSMN` extension's token
   + bitmap). This is how a *subsequent* clean status skips the redundant
-  full-tree stat scan. Note that the fsmonitor-valid bit does **not** let an
-  entry with empty stat data skip the content check: git still requires the
-  index stat (including the file size) to mark an entry clean, and under a
-  `blob:none` clone the size requires faulting the blob. So the *first* clean
-  status after a `read-tree` faults each tracked blob once to populate its
-  size; only later clean statuses are zero-blob. A zero-blob *first* status is
-  not achievable with stock Git over a `blob:none` clone.
+  full-tree stat scan. The fsmonitor-valid bit does not let an entry with
+  empty stat data skip the content check: git still requires the index stat
+  (including the file size) to mark an entry clean, and under a `blob:none`
+  clone the size requires faulting the blob. So the *first* clean status
+  after a `read-tree` faults each tracked blob once to populate its size;
+  only later clean statuses are zero-blob. A zero-blob *first* status is not
+  achievable with stock Git over a `blob:none` clone.
 - `extended` bit (selects v3 16-bit `xflags`).
 
 **v4 path compression** (`index.version=4`) is decoded by carrying
 the previous entry's path and applying the varint strip-length + suffix.
-Paths are emitted as raw bytes into `RepoPath::from_bytes` — **never** lossy
-UTF-8. A path that fails `RepoPath` validation is surfaced as a
-structured parse error, not silently dropped.
+Paths are emitted as raw bytes into `RepoPath::from_bytes`, never lossy
+UTF-8. A path that fails `RepoPath` validation is surfaced as a structured
+parse error, not silently dropped.
 
 **Split index** (`link` extension): when present, the parser also
 reads `$GIT_DIR/sharedindex.<oid>`, applies the replace/delete bitmaps over
@@ -164,9 +164,9 @@ the shared-index oid and the top index checksum.
 **Sparse directory entries** (`index.sparse`): an entry with
 `GitMode::Tree` and a trailing-`/` path is a collapsed subtree (a sparse
 *directory* in a sparse index). The cache keeps it verbatim as an
-`IndexEntryKind::SparseDir { tree_oid }`; it is **not** expanded into
-children. (The product does not assume sparse-checkout rules fit, but the
-parser must represent what Git wrote.)
+`IndexEntryKind::SparseDir { tree_oid }` and does not expand it into
+children. The product does not assume sparse-checkout rules apply, but the
+parser must represent what Git wrote.
 
 ### 4.2 Cached types
 
@@ -178,7 +178,7 @@ pub struct IndexEntry {
     pub mode: GitMode,         // from the entry mode word
     pub oid: ObjectId,         // staged object (format-tagged)
     pub flags: IndexFlags,     // skip-worktree, assume-valid, intent-to-add, fsmonitor-valid
-    pub stat: CachedStat,      // ctime/mtime/dev/ino/size — for racy-clean reasoning only
+    pub stat: CachedStat,      // ctime/mtime/dev/ino/size, for racy-clean reasoning only
     pub kind: IndexEntryKind,  // Regular | SparseDir { tree_oid }
 }
 
@@ -196,7 +196,7 @@ pub struct IndexCache {
     pub version: u8,                   // 2 | 3 | 4
     pub format: ObjectFormat,
     pub entries: Vec<IndexEntry>,      // sorted by (path, stage), Git order
-    pub by_path: BTreeMap<RepoPath, SmallVec<[usize; 1]>>, // path -> stage indices
+    pub by_path: BTreeMap<RepoPath, SmallVec<[usize; 1]>>, // path to stage indices
     pub unmerged: BTreeMap<RepoPath, [Option<usize>; 3]>,  // conflicts: stages 1/2/3
     pub split: Option<SplitIndexRef>,  // shared index oid + applied bitmaps
     pub fsmonitor_token: Option<Vec<u8>>, // FSMN extension token, opaque bytes
@@ -213,7 +213,7 @@ Signatures the rest of the daemon depends on:
 ```rust
 impl IndexCache {
     /// Parse the index file at `git_dir/index` from disk. The sole constructor.
-    /// Returns Err(IndexParseError) on malformed bytes — never a partial cache.
+    /// Returns Err(IndexParseError) on malformed bytes, never a partial cache.
     pub fn from_disk(git_dir: &Path, format: &ObjectFormat) -> Result<IndexCache>;
 
     /// Cheap freshness check: re-parse only if the trailer checksum changed.
@@ -232,10 +232,10 @@ The **index checksum** (trailer hash) is the cache's identity. Freshness
 protocol on any read:
 
 1. If no `index.lock` exists and the `index` file mtime/size is unchanged
-   since the last parse, the cache is fresh — return it (no I/O of the body).
+   since the last parse, the cache is fresh. Return it (no I/O of the body).
 2. Else read the trailer via `checksum_of`; if it equals
    `cache.checksum`, the cache is fresh.
-3. Else `from_disk` → bump `generation` → publish the new `IndexCache`
+3. Else `from_disk`, bump `generation`, publish the new `IndexCache`
    atomically (single `arc-swap`/`RwLock` store). The old cache is dropped.
 
 `generation` is daemon-local (it counts parses, not Git operations) and is
@@ -252,17 +252,17 @@ trigger a continuity decision.
   `FSMONITOR_VALID` note above); every clean status after that is zero-blob.
 - **conflict projection**: the `unmerged` map tells the projection
   which paths are conflicted so the overlay's conflict-marker files line up
-  with the real stages 1/2/3. The index is the *source of truth*; any
-  structured conflict metadata the daemon keeps is a **reconstructable
-  diagnostic cache**, never the authority.
+  with the real stages 1/2/3. The index is the *source of truth*. Any
+  structured conflict metadata the daemon keeps is a reconstructable
+  diagnostic cache, never the authority.
 - **baseline-advance gate**: an index change *alone* never advances
   the baseline. The cache participates only as one input to the
   worktree-update detection that runs after a known checkout-like command.
 
-### 4.5 The index-only-update rule — INV-INDEX-ONLY
+### 4.5 The index-only-update rule (INV-INDEX-ONLY)
 
-> **INV-INDEX-ONLY.** When Git changes the index **without** updating the
-> worktree, the daemon's baseline and overlay are **untouched**. Only the
+> **INV-INDEX-ONLY.** When Git changes the index without updating the
+> worktree, the daemon's baseline and overlay are untouched. Only the
 > `IndexCache` is re-parsed.
 
 Canonical commands and their effect on each store:
@@ -270,26 +270,26 @@ Canonical commands and their effect on each store:
 | Command | `.git/index` | `HEAD`/refs | baseline (daemon) | overlay (daemon) |
 |---|---|---|---|---|
 | `git reset --mixed <c>` | reset to `<c>` tree | HEAD moves | **unchanged** | **unchanged** |
-| `git restore --staged <p>` | entry → HEAD blob | — | **unchanged** | **unchanged** |
-| `git rm --cached <p>` | entry removed | — | **unchanged** | **unchanged** |
-| `git update-index --cacheinfo` | entry rewritten | — | **unchanged** | **unchanged** |
-| `git add <p>` | entry → worktree blob | — | **unchanged** | **unchanged** (worktree bytes already in overlay) |
+| `git restore --staged <p>` | entry to HEAD blob | none | **unchanged** | **unchanged** |
+| `git rm --cached <p>` | entry removed | none | **unchanged** | **unchanged** |
+| `git update-index --cacheinfo` | entry rewritten | none | **unchanged** | **unchanged** |
+| `git add <p>` | entry to worktree blob | none | **unchanged** | **unchanged** (worktree bytes already in overlay) |
 | `git reset --soft <c>` | **unchanged** | HEAD moves | **unchanged** | **unchanged** |
 | `git commit` | stage→HEAD (no path change) | HEAD moves | **unchanged** | **unchanged** |
 
 The rationale: if the projection sourced content from the *index*,
 `reset --mixed` / `restore --staged` / `rm --cached` would corrupt or delete
 working-tree files that the user never changed. The baseline answers "what
-would this unmaterialized path contain in the working tree" — and that is
+would this unmaterialized path contain in the working tree", and that is
 unaffected by index-only edits. Worktree bytes change **only** when Git
-writes/unlinks/renames through FUSE, which the overlay records as
-ordinary filesystem operations. **The daemon never infers a worktree update
-from a changed index**.
+writes/unlinks/renames through FUSE, which the overlay records as ordinary
+filesystem operations. The daemon never infers a worktree update from a
+changed index.
 
-The complement: the baseline advances **only** after a command known
-to have updated the worktree (a successful checkout/switch/reset
---hard/merge that wrote files), detected from the post-checkout/post-merge
-hooks + the overlay write stream — never from the index alone.
+The complement: the baseline advances **only** after a command known to
+have updated the worktree (a successful checkout/switch/reset --hard/merge
+that wrote files), detected from the post-checkout/post-merge hooks plus the
+overlay write stream. Never from the index alone.
 
 ---
 
@@ -304,19 +304,18 @@ During merge / rebase / cherry-pick / revert:
   exposing a conflicted path's three stages, but their *source of truth* is
   now the parsed index, not a `merge-tree` invocation.
 - **Conflict-marker files exist in the overlay**, written by stock Git
-  through FUSE during the merge. The daemon does not synthesize
-  them.
+  through FUSE during the merge. The daemon does not synthesize them.
 - **`MERGE_HEAD`, `MERGE_MSG`, sequencer/rebase state remain in the
   gitdir** (`OpState`).
 
 > **INV-CONFLICT.** The unmerged index + overlay marker files +
 > gitdir op-state are the only authority for an in-progress conflict. Any
 > structured conflict record the daemon caches must be fully reconstructable
-> from those three. There is **no** custom conflict database as a
-> source of truth.
+> from those three. There is no custom conflict database as a source of
+> truth.
 
 `merge --abort` / `rebase --abort` / `cherry-pick --abort` are stock Git:
-they rewrite the index back to stage 0 and clear the op-state; the daemon
+they rewrite the index back to stage 0 and clear the op-state. The daemon
 re-parses and drops its conflict view. The daemon never aborts on Git's
 behalf.
 
@@ -325,9 +324,9 @@ behalf.
 ## 6. In-progress operation state (`OpState`)
 
 A small enum mirroring (caching) which sequenced operation is live, derived
-from gitdir top-level files. It is advisory — used for diagnostics
+from gitdir top-level files. It is advisory, used for diagnostics
 (`git lazy-mount doctor`/`stats`) and for deciding when baseline advancement
-is plausible — and is rebuilt by scanning the gitdir.
+is plausible, and is rebuilt by scanning the gitdir.
 
 ```rust
 pub enum OpState {
@@ -372,7 +371,7 @@ pub struct RefSnapshot {
 pub enum HeadState { Attached { branch: String, tip: Option<ObjectId> }, Detached(ObjectId), Unborn }
 ```
 
-The daemon **never** writes refs, never holds a private head ref, never
+The daemon never writes refs, never holds a private head ref, never
 performs ref CAS to "publish" a workspace commit, and never adopts a commit
 created elsewhere. Plain `git commit` / `rebase` / `push` update refs
 directly; the daemon learns via the `reference-transaction` hook and
@@ -388,16 +387,16 @@ re-snapshots. Refresh is also triggered by mtime watches on
 
 ## 8. Synchronization with Git
 
-Caches are kept warm by two cooperating mechanisms; **neither is required
-for correctness** — on any gap the daemon reconciles from disk.
+Caches are kept warm by two cooperating mechanisms. Neither is required
+for correctness: on any gap the daemon reconciles from disk.
 
 1. **Notification hooks** (multiplexed with user hooks):
-   `post-index-change` → re-parse `IndexCache`; `reference-transaction`,
-   `post-checkout`, `post-merge`, `post-commit`, `post-rewrite`,
-   `post-applypatch` → refresh `RefSnapshot`/`OpState` and feed
+   `post-index-change` re-parses `IndexCache`; `reference-transaction`,
+   `post-checkout`, `post-merge`, `post-commit`, `post-rewrite`, and
+   `post-applypatch` refresh `RefSnapshot`/`OpState` and feed
    baseline-advance detection. Hooks send a *bounded* notification to the
-   daemon over IPC and then run the user's previous hook unchanged;
-   they never hold daemon locks while the user hook runs and never alter the
+   daemon over IPC and then run the user's previous hook unchanged. They
+   never hold daemon locks while the user hook runs and never alter the
    user hook's exit status.
 2. **Gitdir watcher**: mtime/inotify on `index`, `index.lock`, `HEAD`,
    `packed-refs`, `refs/`, `logs/`, and the op-state files. Catches
@@ -414,28 +413,27 @@ returns the FSMonitor full-invalidation path.
 The design removes these mechanisms. They are listed so they are not
 reused:
 
-- **Custom stage.** [`crates/stage/src/lib.rs`](../../crates/stage/src/lib.rs)
-  — a JSON `index.json` of `StagedChange::{Set,Remove,IntentToAdd}`. This is
+- **Custom stage.** [`crates/stage/src/lib.rs`](../../crates/stage/src/lib.rs),
+  a JSON `index.json` of `StagedChange::{Set,Remove,IntentToAdd}`. This is
   the "second staging database" the design forbids. **Replaced by**
   read-only `IndexCache` over the real `$GIT_DIR/index`.
 - **The `git lazy-mount git --` bridge.**
   [`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs)
-  — stands up a throwaway operational gitdir, routes object I/O via
+  stands up a throwaway operational gitdir, routes object I/O via
   `GIT_OBJECT_DIRECTORY`, synthesizes an index from the staged tree with
-  **every entry marked skip-worktree**, and reads back `bridge_head` to
-  *adopt* the commit. This is exactly the per-command disposable gitdir,
-  the commit-adoption step, and the skip-worktree-as-universal-trick the
-  design forbids. **Replaced by** stock Git operating directly on the real
-  worktree via the synthetic `.git` gitfile; the daemon only *observes* the
-  resulting index/refs.
+  every entry marked skip-worktree, and reads back `bridge_head` to *adopt*
+  the commit. This is exactly the per-command disposable gitdir, the
+  commit-adoption step, and the skip-worktree-as-universal-trick the design
+  forbids. **Replaced by** stock Git operating directly on the real worktree
+  via the synthetic `.git` gitfile; the daemon only *observes* the resulting
+  index/refs.
 - **Custom branch/merge state in the workspace.**
-  [`crates/workspace/src/lib.rs`](../../crates/workspace/src/lib.rs) —
+  [`crates/workspace/src/lib.rs`](../../crates/workspace/src/lib.rs):
   `WorkspaceConfig.workspace_head_ref`, `attached_branch`, the
   `base`/`attached_expected`/`merge_head` mutexes, and the `commit_tree`+CAS
   publish path. This is the second authoritative branch model and the
-  in-process merge state. **Replaced by** the read-only
-  `RefSnapshot` + `OpState`; Git owns HEAD, branches, and
-  `MERGE_HEAD`.
+  in-process merge state. **Replaced by** the read-only `RefSnapshot` +
+  `OpState`; Git owns HEAD, branches, and `MERGE_HEAD`.
 
 Reusable as-is: [`GitStore`](../../crates/git-store/src/store.rs) and its
 `BatchSession` (long-lived `cat-file --batch`), the core types
@@ -444,8 +442,8 @@ Reusable as-is: [`GitStore`](../../crates/git-store/src/store.rs) and its
 `merge-tree`). The original in-memory `Mutex<Vec<_>>` `glm-fsmonitor`
 ([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) has been
 replaced by a durable change journal that the daemon writes synchronously and
-the `git-lazy-mount-fsmonitor` hook reads — wired to `core.fsmonitor` and
-covered in `fsmonitor.md`. It delivers correct change detection (no false
+the `git-lazy-mount-fsmonitor` hook reads. It is wired to `core.fsmonitor`
+and covered in `fsmonitor.md`. It delivers correct change detection (no false
 negatives) and lets a subsequent clean status skip the full-tree stat scan.
 
 ---

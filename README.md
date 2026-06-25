@@ -6,7 +6,7 @@
 git lazy-mount https://github.com/example/huge-repo ~/huge-repo
 ```
 
-After it returns, **your ordinary `git` and tools just work**
+After it returns, **your ordinary `git` and tools just work**:
 
 ```bash
 cd ~/huge-repo
@@ -23,27 +23,32 @@ This is aimed at microVMs that spin up to run coding agents against a git reposi
 
 When the agent runs a test or build, only relevant files are downloaded on demand.
 
-### What about Grep? → use `sgrep`
+### What about Grep?
 
-A content search reads every file, so on a lazy mount `rg`/`git grep` materializes the **whole repo** — defeating the point, and agents grep a lot. Measured on a lazy-mounted `colinhacks/zod` (581 files), searching `ZodError`:
+A `git clone` downloads the whole repo before you can start. A lazy mount starts at zero and fetches only the files a task touches. Search is the exception: `rg` and `git grep` read every file, so they pull the whole repo and undo the point. Route search through [`sgrep`](crates/sgrep) instead. It queries a code-search index ([Sourcegraph](https://sourcegraph.com) by default, and pluggable) and overlays your uncommitted edits, fetching nothing.
 
-| | materialized | time |
-|---|---|---|
-| `rg` | 11.9 MB | 188 s |
-| `sgrep` | **0 KiB** | **< 1 s** |
+Here is one real task on a lazily-mounted `colinhacks/zod` (581 files, 12 MB): find the test for `z.string().email()`, add a case, run it. Bytes fetched at each step:
 
-[`sgrep`](crates/sgrep) answers from a cloud index ([Sourcegraph](https://sourcegraph.com) by default — pluggable) and overlays your uncommitted edits automatically, with zero faults (it reads the mount's change journal). Build it into the VM image:
+```
+git clone, before any work    ████████████████████████  12 MB   (all 581 files)
 
-```bash
-cargo build --release -p sgrep   # → target/release/sgrep, a self-contained binary
+lazy mount, then the task:
+  start                       ·                           0
+  sgrep "email"               ·                           0      (searched all 581)
+  read the two files          ▎                           0.07 MB
+  run the test                ██████                      2.8 MB  (the module it imports)
+  ──────────────────────────────────────────────────
+  whole task                                              2.8 MB  of 12 MB
 ```
 
-Then point the agent's search at it:
+The agent starts instantly, searches the repo for nothing, and the only real cost is the module the test pulls in. The docs site and the other packages are never fetched. (A real Claude Code agent does invoke `sgrep` here; that part is verified.)
 
-- **Claude Code** — `claude --disallowed-tools Grep`, plus a `CLAUDE.md` line: "search with `sgrep` instead of `rg`/`grep`".
-- **Codex** — the same line in `AGENTS.md` (or put an `sgrep` wrapper ahead of `rg` on `PATH`).
+Wire the agent's search to `sgrep` (`cargo build --release -p sgrep`):
 
-Details in [`crates/sgrep`](crates/sgrep).
+- **Claude Code**: `claude --disallowed-tools Grep`, plus a `CLAUDE.md` line, "search with `sgrep`".
+- **Codex**: the same line in `AGENTS.md`, or an `sgrep` wrapper ahead of `rg` on `PATH`.
+
+More in [`crates/sgrep`](crates/sgrep).
 
 ## Platform Support
 
@@ -67,6 +72,6 @@ cargo build --release -p glm-cli --features fuse   # produces `git-lazy-mount`
 
 Everything is in [`docs/`](docs/) ([index](docs/README.md)):
 
-* **Using it** — [compatibility](docs/compatibility.md) (which `git` commands work, and how lazily) and [limitations](docs/limitations.md) (what's deferred, and why).
-* **How it works** — the [architecture overview](docs/architecture.md), then deep-dives into the [worktree model](docs/worktree-model.md), [FUSE semantics](docs/fuse-semantics.md), and [object fetching](docs/object-fetching.md).
-* **Reference** — the full [specification](docs/design.md) and the [decision records](docs/adr/).
+* **Using it**: [compatibility](docs/compatibility.md) (which `git` commands work, and how lazily) and [limitations](docs/limitations.md) (what's deferred, and why).
+* **How it works**: the [architecture overview](docs/architecture.md), then deep-dives into the [worktree model](docs/worktree-model.md), [FUSE semantics](docs/fuse-semantics.md), and [object fetching](docs/object-fetching.md).
+* **Reference**: the full [specification](docs/design.md) and the [decision records](docs/adr/).

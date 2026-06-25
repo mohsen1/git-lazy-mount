@@ -1,11 +1,11 @@
 # Git compatibility report
 
 Which `git` commands work through the mount, and how lazily. Each command gets
-two verdicts: a **compatibility** verdict (correct / partial / unsupported) and a
-**laziness** verdict — how many blobs it has to fetch (fully lazy / bounded /
+two verdicts: a compatibility verdict (correct / partial / unsupported) and a
+laziness verdict counting how many blobs it has to fetch (fully lazy / bounded /
 potentially eager).
 
-This matrix is generated from the real-mount tests (Docker + the CI `design
+This matrix is generated from the real-mount tests (Docker plus the CI `design
 linux mount` job). "Correct" means the command's exit status, refs, index,
 working-tree bytes, and resulting commits match a normal checkout for the cases
 exercised. Laziness is the *measured* fetch behavior.
@@ -45,35 +45,35 @@ exercised. Laziness is the *measured* fetch behavior.
 | `fsck` / `gc` / `repack` / `maintenance` / `prune` | correct | fully lazy (object store only) | `survey_maintenance` |
 | `worktree add` (linked) | correct | potentially eager (the linked checkout hydrates) | `survey_advanced` |
 | `.gitattributes` clean filter (`text=auto`) | correct | bounded | `survey_advanced` |
-| `.gitattributes` smudge (eol/ident/custom) | partial — raw bytes served; **commits stay correct** (clean filter is the inverse). See limitations R7. | n/a | `survey_advanced` |
-| `submodule` add/status/update | partial — not yet validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
+| `.gitattributes` smudge (eol/ident/custom) | partial: raw bytes served, but commits stay correct because the clean filter is the inverse. See limitations R7. | n/a | `survey_advanced` |
+| `submodule` add/status/update | partial: not yet validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
 
-In-place edits of the **same byte size** are detected correctly: overlay files
-report their real on-disk mtime, so git's racy-clean logic re-checks content
-— a constant mtime would have hidden such edits.
+In-place edits of the same byte size are detected correctly. Overlay files
+report their real on-disk mtime, so git's racy-clean logic re-checks content.
+A constant mtime would have hidden such edits.
 
 ## Newly classified
 
 `cherry` (range), `am`/`apply` of mailbox patches, `notes`, `replace`,
 `cherry-pick` ranges, `tag`/`describe`/`archive`, and `bisect` are all now
-**correct** through real mounts. The remaining gaps are genuinely deferred:
-deep **LFS** end-to-end (an external `filter=lfs` driver, bounded by R7 — needs
-a separate git-lfs/server integration) and full **submodule** workflows
-(partial, test `#[ignore]`'d).
+correct through real mounts. The remaining gaps are genuinely deferred. Deep
+**LFS** end-to-end (an external `filter=lfs` driver, bounded by R7) needs
+a separate git-lfs/server integration, and full **submodule** workflows are
+still partial (test `#[ignore]`'d).
 
 ## The eagerness headline
 
 Branch-changing commands (`switch`/`checkout`/`reset --hard`/`merge`/`rebase`)
-are **correct but potentially eager**: unmodified Git materializes and writes
+are correct but potentially eager. Unmodified Git materializes and writes
 every changed path through the FUSE write path. This is the design-sanctioned
-M-stage behavior — we do **not** claim google3-style lazy branch switching.
-The switch eagerness is now *measured* — it is bounded by the delta, not the
+M-stage behavior, and we do **not** claim google3-style lazy branch switching.
+The switch eagerness is now measured: it's bounded by the delta, not the
 repo (`switch_eagerness`, P3).
 
-The **first** clean `git status` faults each tracked blob once and is
-**fundamentally eager** under `blob:none`: git must populate the index stat
+The first clean `git status` faults each tracked blob once and is
+fundamentally eager under `blob:none`. Git must populate the index stat
 (including size) to skip the content check, and the size requires fetching the
-blob (R6). FSMonitor is wired (`core.fsmonitor` → `git-lazy-mount-fsmonitor`) and
-gives correct change detection plus a faster *repeat* status (no redundant stat
-scan), but it **cannot** make the first status zero-blob — verified via
+blob (R6). FSMonitor is wired (`core.fsmonitor` to `git-lazy-mount-fsmonitor`) and
+gives correct change detection plus a faster repeat status (no redundant stat
+scan), but it cannot make the first status zero-blob. Verified via
 `GIT_TRACE_FSMONITOR` (see limitations P1/R6).

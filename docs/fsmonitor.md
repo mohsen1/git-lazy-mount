@@ -1,7 +1,7 @@
 # Durable FSMonitor v2 protocol + hook multiplexing
 
-This area of the [specification](design.md) covers FSMonitor v2 and observing the
-gitdir without replacing Git, with supporting context from config, the real index,
+This part of the [specification](design.md) covers FSMonitor v2 and how the daemon
+observes the gitdir without replacing Git. It draws on config, the real index,
 durability, and synthetic metadata. This is the M0/M3 design doc for the FSMonitor
 durability protocol.
 
@@ -9,13 +9,13 @@ This shipped: FSMonitor is wired to `core.fsmonitor` via the
 `git-lazy-mount-fsmonitor` hook, which reads the durable change journal the
 daemon writes synchronously. The old
 [`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs) was a
-process-local `Mutex<Vec<ChangeRecord>>` journal — exactly the non-durable shape
+process-local `Mutex<Vec<ChangeRecord>>` journal, exactly the non-durable shape
 the design forbids ("A process-local `Mutex<Vec<ChangeRecord>>` is not a sufficient
 FSMonitor implementation"). It was superseded wholesale. The
 `git lazy-mount git --` interop bridge in
 [`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs) is
-also superseded: there is no wrapper, so FSMonitor serves **stock
-`git`** invoked directly inside the mount.
+also gone. There is no wrapper, so FSMonitor serves stock `git` invoked
+directly inside the mount.
 
 ## 0. Where this fits
 
@@ -35,9 +35,9 @@ core.untrackedCache   = true                               # after capability te
 core.hooksPath        = <abs path to glm-hooks-dir>        # multiplexer dir
 ```
 
-`core.fsmonitor` points at our **client binary**, never at a long script. The
-binary does one round-trip to the daemon and prints the response: the hook should
-remain a tiny IPC client. Heavy work belongs in the daemon.
+`core.fsmonitor` points at our client binary, never at a long script. The
+binary does one round-trip to the daemon and prints the response. The hook stays
+a tiny IPC client; heavy work belongs in the daemon.
 
 ---
 
@@ -47,7 +47,7 @@ Git's FSMonitor v2 hook contract (the protocol our client implements toward
 Git):
 
 **Request** (argv to the hook): `argv[1] = "2"` (version), `argv[2] = <prev
-token>` — an opaque string we minted on a previous query, or empty/`""` on first
+token>`, an opaque string we minted on a previous query, or empty/`""` on first
 use.
 
 **Response** (hook stdout, exactly):
@@ -58,16 +58,16 @@ use.
 
 - The leading token is everything up to the **first NUL**.
 - After it, zero or more **NUL-separated, repo-root-relative** paths.
-- Paths use `/`; bytes are emitted **verbatim** — never lossy-UTF-8.
+- Paths use `/`; bytes are emitted verbatim, never lossy-UTF-8.
   The daemon stores `RepoPath`
   ([`crates/core/src/path.rs`](../../crates/core/src/path.rs)) and writes
   `as_bytes()` directly to the pipe.
 - The set is **inclusive**: it must contain every path that *might* have changed
-  since `prev token`. **False positives are acceptable; false negatives are
-  never acceptable**. A returned path that did not actually change only
-  costs Git an extra `lstat`; a missing path corrupts `git status`.
+  since `prev token`. False positives are acceptable; false negatives are
+  never acceptable. A returned path that did not actually change only
+  costs Git an extra `lstat`. A missing path corrupts `git status`.
 - Directory paths in the response invalidate Git's untracked cache for that
-  directory; the daemon includes a path's **parent directory** whenever
+  directory. The daemon includes a path's parent directory whenever
   a child is created/removed/renamed so directory mtime staleness cannot hide an
   untracked-cache entry.
 
@@ -80,9 +80,9 @@ is a single path `/`:
 <new-token> NUL / NUL
 ```
 
-`/` tells Git to treat **the entire worktree** as possibly-changed and rescan
+`/` tells Git to treat the entire worktree as possibly-changed and rescan
 (it clears all FSMonitor-valid bits and statts everything). This is always
-**correct but eager** — it is the safety valve, never a steady state.
+correct but eager. It is the safety valve, never a steady state.
 
 ### 1.2 Client binary (`glm-fsmonitor-hook`)
 
@@ -113,7 +113,7 @@ fn main() -> ExitCode {
 
 Invariants: the client **never** blocks indefinitely (bounded timeout, default
 2 s; on timeout → full invalidation), **never** returns nonzero with garbage on
-stdout, and is **CLOEXEC-clean** — it must not inherit the FUSE session fd (the
+stdout, and is **CLOEXEC-clean**. It must not inherit the FUSE session fd (the
 deadlock hazard in
 [`crates/git-store/src/proc.rs::harden_fds`](../../crates/git-store/src/proc.rs)).
 Because Git spawns it from inside the mount, the client must **not** touch
@@ -147,7 +147,7 @@ pub struct FsmonToken {
 }
 ```
 
-Wire form (the bytes Git stores and replays — fixed, parseable, version-tagged):
+Wire form (the bytes Git stores and replays; fixed, parseable, version-tagged):
 
 ```
 glm1:<workspace-id>:<epoch>:<seq>:<projection>
@@ -163,17 +163,17 @@ glm1:<workspace-id>:<epoch>:<seq>:<projection>
   whenever the durable journal cannot serve continuity from `seq 0` of the new
   incarnation (rebuild, compaction past the floor, corruption recovery). A token
   whose `epoch` ≠ current → full invalidation.
-- `seq` is the journal's monotonic record sequence — the analogue of the
-  existing `ChangedPathJournal::capture_sequence`, but now durable.
+- `seq` is the journal's monotonic record sequence, the analogue of the
+  existing `ChangedPathJournal::capture_sequence` but now durable.
 - `projection` is [`MountGeneration`](../../crates/core/src/ids.rs), bumped on
   baseline advancement / projection rebuild. A token from a **future**
   projection (`> current`) → full invalidation (token from a future
-  generation); a token from a strictly older projection is acceptable **only**
+  generation). A token from a strictly older projection is acceptable **only**
   if every path that differs between the old and new projection has been
   journaled; otherwise full invalidation.
 
 `epoch` strictly dominates `seq`: `seq` is only comparable **within** the same
-`(workspace, epoch)`. This prevents a stale `seq` from a previous incarnation
+`(workspace, epoch)`. This stops a stale `seq` from a previous incarnation
 being read as "recent".
 
 ---
@@ -204,36 +204,36 @@ fn serve_fsmon(prev: Vec<u8>) -> FsmonResponse:
 
 The daemon returns `/` for **any** of:
 
-1. **Journal loss / rebuild** — the durable journal file was missing, truncated,
+1. **Journal loss / rebuild**: the durable journal file was missing, truncated,
    or failed checksum on open (epoch bumped).
-2. **Database rollback** — SQLite WAL rolled back below the last acked `seq`
+2. **Database rollback**: SQLite WAL rolled back below the last acked `seq`
    (detected: on-open `seq` < persisted high-water).
-3. **Token from another workspace** — `token.workspace != current`.
-4. **Token from a future generation** — `token.projection > current` (or
+3. **Token from another workspace**: `token.workspace != current`.
+4. **Token from a future generation**: `token.projection > current` (or
    `token.epoch`/`token.seq` ahead of durable state).
-5. **Journal compaction beyond the requested token** — `token.seq <
+5. **Journal compaction beyond the requested token**: `token.seq <
    compaction_floor`.
-6. **Unreconciled daemon crash** — daemon restarted and the crash-recovery
+6. **Unreconciled daemon crash**: daemon restarted and the crash-recovery
    reconciliation has not yet completed; queries during recovery return
    `/`.
-7. **Backend event overflow** — the OS gitdir watcher (`inotify`/`fanotify`)
-   reported a queue overflow (`IN_Q_OVERFLOW`) → we may have missed gitdir
-   events → epoch is **not** bumped (worktree journal is intact) but the next
+7. **Backend event overflow**: the OS gitdir watcher (`inotify`/`fanotify`)
+   reported a queue overflow (`IN_Q_OVERFLOW`), so we may have missed gitdir
+   events. Epoch is **not** bumped (the worktree journal is intact) but the next
    query returns `/` once, then resumes (we mark a one-shot `overflow_pending`).
-8. **External overlay modification** — the overlay store
+8. **External overlay modification**: the overlay store
    ([`crates/overlay/src/lib.rs`](../../crates/overlay/src/lib.rs)) was mutated
    out-of-band (mtime/inode of `overlay/` changed without a corresponding daemon
-   write) — we cannot trust the journal's completeness.
-9. **Unparseable / wrong-tag token** — any `prev` that does not start with
+   write), so we cannot trust the journal's completeness.
+9. **Unparseable / wrong-tag token**: any `prev` that does not start with
    `glm1:` or fails to parse.
-10. **Version mismatch** — Git requested a protocol version we do not serve.
+10. **Version mismatch**: Git requested a protocol version we do not serve.
 
-Every trigger is a **named, testable** branch (see the invariants below).
+Every trigger is a named, testable branch (see the invariants below).
 
 ### 3.2 What gets journaled
 
 The journal records exactly the mutation classes the protocol enumerates, sourced from
-**FUSE callbacks** (the authoritative incremental feed — the daemon *sees* every
+**FUSE callbacks** (the authoritative incremental feed; the daemon *sees* every
 worktree write because it serves the filesystem) and from the
 **gitdir watchers + notification hooks** for Git-driven worktree changes:
 
@@ -245,12 +245,11 @@ chmod affecting Git mode      directory deletion
 symlink creation/replacement  directory rename: old and new subtree roots
 ```
 
-For a **rename**, journal both endpoints. For a **directory rename**, journal
-the old and new directory paths *and* (inclusively) it is acceptable — and
-cheaper — to journal just the two subtree roots and let Git rescan beneath them;
-the response stays correct because Git treats a returned directory as
-"everything under here might have changed". For any create/remove/rename, also
-journal the **parent directory** (untracked-cache).
+For a **rename**, journal both endpoints. For a **directory rename**, it is
+acceptable (and cheaper) to journal just the two subtree roots and let Git
+rescan beneath them. The response stays correct because Git treats a returned
+directory as "everything under here might have changed". For any
+create/remove/rename, also journal the **parent directory** (untracked-cache).
 
 ### 3.3 Record shape (replaces the in-memory `ChangeRecord`)
 
@@ -278,8 +277,8 @@ client holding an old-`projection` token gets those paths (not a silent
 false-negative). The daemon computes this delta via `git diff-tree` against the
 **native gitdir** (`GIT_NO_LAZY_FETCH=1`, never porcelain) at hook time
 (`post-checkout`/`post-merge`). If the delta cannot be computed cheaply
-(huge delta), the daemon **bumps epoch** instead → next query is `/`. This keeps
-branch switches "correct but possibly eager", never wrong.
+(huge delta), the daemon **bumps epoch** instead, and the next query is `/`. This
+keeps branch switches "correct but possibly eager", never wrong.
 
 ### 3.5 Testable invariants (→ regression tests)
 
@@ -301,7 +300,7 @@ branch switches "correct but possibly eager", never wrong.
 - **I-RAW-PATHS**: A changed path containing invalid UTF-8 / newline / tab is
   emitted byte-exact and NUL-delimited.
 - **I-SUBSEQUENT-ZERO-BLOB**: Once the index carries stat data, a subsequent
-  clean `git status` fetches **zero** blob contents — the hook's empty reply
+  clean `git status` fetches **zero** blob contents. The hook's empty reply
   lets Git skip the full-tree stat scan (see the bootstrap section below). The
   **first** clean status is necessarily eager: it faults each tracked blob once
   to populate the index stat (including size), which under a `blob:none` clone
@@ -317,17 +316,17 @@ empty reply. That is **fundamentally unachievable** with stock Git on a
 `blob:none` clone, and was verified so via `GIT_TRACE_FSMONITOR`: Git marks each
 read-tree'd entry clean from the empty reply, then immediately marks it
 `fsmonitor_invalid` because the entry has **no stat data**. To skip the content
-check Git must populate the index stat — including the file **size** — and under
+check Git must populate the index stat, including the file **size**, and under
 `blob:none` the exact size of an unmaterialized blob requires fetching the blob.
 The FSMonitor-valid bit does **not** override an empty-stat entry. So the
 **first** clean `git status` faults each tracked blob **once** (the getattr
 size-hydration cost), and only **subsequent** statuses are zero-blob.
 
 What FSMonitor *does* deliver: correct change detection with no false negatives,
-and — once the index carries stat data — skipping the redundant full-tree stat
-scan on later clean statuses. The mechanism:
+plus skipping the redundant full-tree stat scan on later clean statuses once the
+index carries stat data. The mechanism:
 
-1. After `init real index` — a full index built from the initial tree — the
+1. After `init real index` (a full index built from the initial tree) the
    index entries are valid-by-construction: every path equals its committed blob
    (overlay is empty in the initial state). The first clean `git status` then
    populates each entry's stat, faulting each blob once for its size.
@@ -337,17 +336,17 @@ scan on later clean statuses. The mechanism:
    stamped, it returns an **empty path list** with a fresh token, asserting
    "nothing changed". Git then trusts the stat-populated entries as
    FSMonitor-clean and skips the stat scan (it only stats paths *returned* as
-   changed — here, none), fetching **zero** blobs.
+   changed, here none), fetching **zero** blobs.
 4. An **empty** `prev` (a token Git never minted, e.g. a brand-new index) still
    means `/`: the daemon cannot prove continuity from a token it did not issue.
 
 This is sound because the daemon **owns the filesystem** and **knows** no
 worktree write has occurred since the stat was stamped (any write would have
-incremented `seq`); if any FUSE write or hook notification has advanced `seq`,
+incremented `seq`). If any FUSE write or hook notification has advanced `seq`,
 the response includes the affected paths.
 
 Invariant **I-SUBSEQUENT-ZERO-BLOB** above gates the zero-blob subsequent-status
-behavior; the eager first status is a property of `blob:none` size hydration, not
+behavior. The eager first status is a property of `blob:none` size hydration, not
 a defect to close (closing it would require a server-side size manifest).
 
 ---
@@ -379,7 +378,7 @@ The three modes from the legacy `SyncMode` map onto Git's needs:
 
 Git's FSMonitor query always uses `Barrier`: a `git status` issued *after* an
 editor's `write()+fsync()` returned must see that change. The barrier waits on
-the **journal**, not on fsync of file data — FSMonitor continuity needs the
+the **journal**, not on fsync of file data. FSMonitor continuity needs the
 *namespace/seq* durable, not the bytes (durability separates these; an un-fsynced byte
 write that was acked is still journaled).
 
@@ -403,7 +402,7 @@ overwrite** the user's hooks.
 ### 6.1 Layout
 
 We set `core.hooksPath = <managed-hooks-dir>` (per workspace). Each managed hook
-is the **same tiny multiplexer binary** (`glm-hook`), hard-linked/symlinked under
+is the same tiny multiplexer binary (`glm-hook`), hard-linked/symlinked under
 every hook name we care about. The user's original hooks are discovered (not
 moved) at multiplex time:
 
@@ -431,7 +430,7 @@ fn main() -> ExitCode {
     let args: Vec<OsString> = argv[1..];
     let stdin = read_all(stdin());              // buffered once; replayed to user hook
 
-    // (1) bounded, fire-and-forget notification to the daemon — never blocks Git
+    // (1) bounded, fire-and-forget notification to the daemon; never blocks Git
     if std::env::var_os("GLM_HOOK_REENTRANT").is_none() {
         let _ = notify_daemon(HookEvent {        // best-effort, bounded timeout
             hook: hook_name, args: &args, stdin: &stdin, cwd: cwd(),
@@ -456,25 +455,25 @@ fn main() -> ExitCode {
             // (4) propagate the USER hook's exit status verbatim
             ExitCode::from(status.code().unwrap_or(1) as u8)
         }
-        None => ExitCode::SUCCESS,  // no user hook → success
+        None => ExitCode::SUCCESS,  // no user hook -> success
     }
 }
 ```
 
 ### 6.3 The four hook-chaining requirements, mapped
 
-1. **Bounded notification to the daemon** — `notify_daemon` has a bounded
+1. **Bounded notification to the daemon**: `notify_daemon` has a bounded
    timeout and is fire-and-forget; a slow/absent daemon never delays Git.
-2. **Invoke the user hook with original args/stdin/env/exit semantics** —
-   captured `stdin` replayed; `argv[1..]` forwarded; environment inherited;
+2. **Invoke the user hook with original args/stdin/env/exit semantics**:
+   captured `stdin` replayed, `argv[1..]` forwarded, environment inherited,
    user hook's exit code propagated **verbatim**.
-3. **Prevent recursive invocation** — `GLM_HOOK_REENTRANT=1` is set across the
+3. **Prevent recursive invocation**: `GLM_HOOK_REENTRANT=1` is set across the
    user-hook child. If the user hook itself runs `git` (which re-fires hooks
    from inside the mount), the inner `glm-hook` sees the env var, skips both the
    daemon notify and the user-hook invocation, and exits 0. This also stops the
    FUSE→git→hook→git cycle.
-4. **No daemon locks held while the user hook runs** — the notification is a
-   single bounded request that **returns before** the user hook is spawned; the
+4. **No daemon locks held while the user hook runs**: the notification is a
+   single bounded request that **returns before** the user hook is spawned. The
    daemon processes the event on its own threads and releases any journal lock
    immediately. `glm-hook` holds nothing.
 
@@ -488,7 +487,7 @@ unchanged, even on daemon-notify failure.
 
 | Hook | Daemon action |
 |------|---------------|
-| `post-index-change` | re-parse the real index: stage-0/1/2/3, skip-worktree, FSMonitor-valid bits, checksum — a **disposable cache** rebuild, never authoritative |
+| `post-index-change` | re-parse the real index: stage-0/1/2/3, skip-worktree, FSMonitor-valid bits, checksum. A **disposable cache** rebuild, never authoritative |
 | `reference-transaction` | invalidate cached `HEAD`/refs parse; arrives at `prepared` and `committed` phases (read on `committed`) |
 | `post-checkout` | baseline may have advanced: compute the projection delta, bump `MountGeneration`, journal the delta |
 | `post-merge` | merge completed: baseline advanced; same delta handling |
@@ -496,9 +495,9 @@ unchanged, even on daemon-notify failure.
 | `post-rewrite` (amend/rebase) | history rewrite; refs + possibly worktree changed |
 | `post-applypatch` | worktree updated by `am` |
 
-These are **optimizations and synchronization aids, not the only correctness
-mechanism** — if a hook is missed, the gitdir watchers + reconcile-on-
-restart and the `/` safety valve still keep FSMonitor sound.
+These are optimizations and synchronization aids, not the only correctness
+mechanism. If a hook is missed, the gitdir watchers + reconcile-on-restart
+and the `/` safety valve still keep FSMonitor sound.
 
 ### 6.5 Testable invariants
 
@@ -545,7 +544,7 @@ whichever fires, the daemon re-parses once (debounced by index checksum).
 
 ### 7.2 Reconcile-on-restart
 
-On daemon startup (before serving any FSMonitor query — queries return `/` until
+On daemon startup (before serving any FSMonitor query; queries return `/` until
 this completes, trigger #6):
 
 ```
@@ -563,7 +562,7 @@ After reconciliation, the daemon **cannot** prove which worktree mutations
 happened while it was dead, so the **first** post-restart query returns `/`
 (I-FULL-ON-RESTART). The journal's `epoch` is preserved across a *clean*
 shutdown (so a quiesce/remount can serve a precise window), and bumped only on
-*detected* loss — this is the distinction between "tokens must survive
+*detected* loss. That is the distinction between "tokens must survive
 daemon restarts" (clean) and "or the daemon must return a full-invalidation
 response" (crash).
 
@@ -582,7 +581,7 @@ response" (crash).
 
 ## 8. Durability
 
-The journal is **durable** — the central fix vs. the legacy in-memory `Vec`.
+The journal is **durable**. That is the central fix versus the legacy in-memory `Vec`.
 
 ### 8.1 Storage
 
@@ -603,16 +602,16 @@ CREATE TABLE fsmon_meta (
 ); -- holds: epoch, high_water_seq, compaction_floor, projection_gen, overlay_mtime_hwm
 ```
 
-- `path`/`also` are **BLOB** so arbitrary bytes round-trip — no UTF-8
+- `path`/`also` are **BLOB** so arbitrary bytes round-trip with no UTF-8
   coercion (the bug class the design forbids).
-- `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;` — WAL gives append-like
+- `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`. WAL gives append-like
   durability; `NORMAL` is sufficient because FSMonitor continuity tolerates
   losing the *tail* of un-checkpointed records **as long as we detect it**: on
   open, if `MAX(seq)` < persisted `high_water_seq`, that is a **rollback**
   (trigger #2) → bump epoch. We never silently serve a short journal.
-- A single-writer discipline: the **daemon** is the only writer; hooks
-  and the CLI go through IPC, never open the journal DB directly. Interprocess
-  lock (the workspace lock) guards epoch bumps and compaction.
+- A single-writer discipline: the **daemon** is the only writer. Hooks
+  and the CLI go through IPC, never open the journal DB directly. The
+  interprocess lock (the workspace lock) guards epoch bumps and compaction.
 
 ### 8.2 Append + barrier ordering
 
@@ -620,7 +619,7 @@ A FUSE mutation's journal append is committed (WAL frame durable) **before** the
 FUSE reply is sent for operations whose acknowledgment implies durability
 (`fsync`, atomic rename publish), so the barrier can guarantee
 `await_journaled`. For ordinary buffered writes, the append is committed before
-the corresponding `seq` is reported as journaled; the barrier waits on that.
+the corresponding `seq` is reported as journaled, and the barrier waits on that.
 
 ### 8.3 Compaction
 
@@ -661,7 +660,7 @@ floor to `fsmon_meta` in the same transaction that deletes the rows.
   [`crates/git-store/src/proc.rs`](../../crates/git-store/src/proc.rs)).
 - Notification payloads (hook stdin can carry ref names / commit data) are
   size-bounded before sending; oversized stdin is truncated for the *daemon
-  notification* only — the **user hook always receives the full original stdin**.
+  notification* only. The **user hook always receives the full original stdin**.
 - Passive hydration **never** runs hooks: hooks run only because the user
   invoked a Git command. The FSMonitor query path runs **no** `git` and touches
   **no** worktree content, so it cannot trigger hydration or filters.
@@ -685,5 +684,5 @@ floor to `fsmon_meta` in the same transaction that deletes the rows.
 Superseded and removed: legacy `ChangedPathJournal`
 ([`crates/fsmonitor/src/lib.rs`](../../crates/fsmonitor/src/lib.rs)) and the
 interop bridge
-([`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs)) —
-neither survived the no-wrapper, durable-FSMonitor design.
+([`crates/git-store/src/interop.rs`](../../crates/git-store/src/interop.rs)).
+Neither survived the no-wrapper, durable-FSMonitor design.

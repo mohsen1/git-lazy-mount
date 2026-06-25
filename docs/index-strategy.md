@@ -32,10 +32,10 @@ Three independent costs must each be bounded or measured:
 | **Checkout eagerness** | `O(changed paths)` blob fetch + FUSE write | every `switch`/`reset --hard`/`merge` |
 
 Profiles A–D attack these costs differently. The non-negotiable invariant: a
-`blob:none` mount fetches **zero working-file blobs** to project the tree.
-The **first** clean `status` after bootstrap is *eager* — it faults each tracked
-blob exactly once for size hydration (see below) — but every **subsequent** clean
-`status` fetches **zero blobs and runs zero smudge filters**. The worktree scan and
+`blob:none` mount fetches zero working-file blobs to project the tree.
+The first clean `status` after bootstrap is eager. It faults each tracked
+blob once for size hydration (see below). But every subsequent clean
+`status` fetches zero blobs and runs zero smudge filters. The worktree scan and
 checkout-eagerness costs are what the profiles trade against compatibility.
 
 ---
@@ -45,19 +45,19 @@ checkout-eagerness costs are what the profiles trade against compatibility.
 These types/sessions already exist and are **reusable as-is**; the profiles
 differ only in *how the index is built and which bits are set*.
 
-- `glm_core::RepoPath` (`crates/core/src/path.rs`) — byte-exact path identity, no
+- `glm_core::RepoPath` (`crates/core/src/path.rs`): byte-exact path identity, no
   lossy UTF-8. All index entry paths flow through this.
 - `glm_core::{ObjectId, GitMode, TreeEntry, TreeObject}` (`crates/core/src/`).
-- `glm_git_store::GitStore` (`crates/git-store/src/store.rs`) — `read_tree`,
+- `glm_git_store::GitStore` (`crates/git-store/src/store.rs`): `read_tree`,
   `smudge_blob` (with `--attr-source`), `hash_blob_clean`, all hardened with
   `GIT_NO_LAZY_FETCH` / `GIT_OPTIONAL_LOCKS=0`.
-- `glm_git_store::BatchSession` (`crates/git-store/src/batch.rs`) — long-lived
+- `glm_git_store::BatchSession` (`crates/git-store/src/batch.rs`): long-lived
   `cat-file --batch-command`, CLOEXEC-hardened. The residency authority for
   tree/blob presence checks during index build.
-- `glm_object_provider::GitObjectProvider` (`crates/object-provider/src/lib.rs`) —
+- `glm_object_provider::GitObjectProvider` (`crates/object-provider/src/lib.rs`):
   coalescing fetch + presence cache; its metrics back the budget assertions.
 
-**Index I/O is stock-Git plumbing, never a re-implementation.**
+Index I/O is stock-Git plumbing, never a re-implementation.
 The daemon writes the index by driving `git read-tree`, `git update-index`, and
 `git -c core.fsmonitor… status`, then *parses* the result read-only into a
 disposable cache. It never hand-encodes the index binary format except
@@ -85,7 +85,7 @@ pub struct IndexEntryView {
     pub stage: u8,                   // 0 normal; 1/2/3 conflict
     pub skip_worktree: bool,         // CE_SKIP_WORKTREE (Profile B)
     pub fsmonitor_valid: bool,       // CE_FSMONITOR_VALID
-    pub assume_unchanged: bool,      // CE_VALID — must be false
+    pub assume_unchanged: bool,      // CE_VALID; must be false
 }
 
 pub trait IndexReader {
@@ -103,7 +103,7 @@ and FSMonitor-valid bits. Profile-specific builders below set those bits.
 
 ---
 
-## 2. Profile A — full index + FSMonitor (the correctness baseline)
+## 2. Profile A: full index + FSMonitor (the correctness baseline)
 
 **Status: REQUIRED. Must work without skip-worktree. Ships first.**
 
@@ -111,12 +111,12 @@ and FSMonitor-valid bits. Profile-specific builders below set those bits.
 
 - Normal index semantics; maximum stock-Git compatibility.
 - `O(N)` index construction at mount; possibly `O(N)` index parse per command.
-- **No redundant full-tree stat scan on subsequent clean `status`** — FSMonitor
+- No redundant full-tree stat scan on subsequent clean `status`. FSMonitor
   (wired via `core.fsmonitor` and the `git-lazy-mount-fsmonitor` hook reading the
   daemon's durable change journal) lets Git skip the worktree scan once the index
-  carries stat data. This is what makes *repeat* clean `status` cheap despite the
+  carries stat data. This is what makes a repeat clean `status` cheap despite the
   full index.
-- Branch transitions are **measured lazy**: a switch over an M-of-N delta touches
+- Branch transitions are measured lazy: a switch over an M-of-N delta touches
   `O(M)` blobs, bounded by the delta, not the repo (`O(N)`).
 
 ### 2.2 FSMonitor-valid bootstrap (skips the redundant scan on repeat status)
@@ -125,13 +125,13 @@ The naïve full-index mount would make Git `lstat` every projected path on *ever
 `status`. FSMonitor cuts the *redundant* scan: once the index carries stat data,
 Git trusts the monitor's "nothing changed" reply and skips re-scanning the tree.
 
-**What this does NOT achieve — verified, and a hard limit of stock Git under
-`blob:none`:** the FSMonitor-valid bit cannot make the *first* clean `status`
+**What this does NOT achieve (verified, and a hard limit of stock Git under
+`blob:none`):** the FSMonitor-valid bit cannot make the *first* clean `status`
 zero-blob. Traced via `GIT_TRACE_FSMONITOR`, Git marks each `read-tree`'d entry
 clean from the hook's empty reply, then *immediately* marks it `fsmonitor_invalid`
 because the entry has no stat data: to skip the content check Git must populate the
-index stat — including the file **size** — and under `blob:none` the exact size of
-an unmaterialized blob requires fetching it. The fsmonitor-valid bit does **not**
+index stat, including the file size, and under `blob:none` the exact size of
+an unmaterialized blob requires fetching it. The fsmonitor-valid bit does not
 override an empty-stat entry. So the first clean `status` faults each tracked blob
 exactly once (the root cause is getattr size hydration, R6); only subsequent
 statuses are zero-blob. There is no way to pre-seed correct sizes without fetching,
@@ -151,7 +151,7 @@ fn bootstrap_index_profile_a(
 
 Procedure (exact commands to prove this):
 
-1. `git read-tree <tree>` — populates `N` stage-0 entries, **0 blob fetches**
+1. `git read-tree <tree>` populates `N` stage-0 entries, **0 blob fetches**
    (trees are present under `blob:none`, see `feasibility/partial-clone.md`).
 2. Configure `core.fsmonitor=<hook>`, `core.fsmonitorHookVersion=2`,
    `core.untrackedCache=true`, `index.version=4`, `feature.manyFiles=true`.
@@ -159,8 +159,8 @@ Procedure (exact commands to prove this):
    behavior.
 3. Run the **first** `git status` with the FSMonitor hook returning token0 and an
    empty changed-path set. Git trusts the monitor's "nothing changed" but, having
-   no stat data for the entries, must populate each entry's stat — including the
-   file size — which under `blob:none` faults each tracked blob once (R6). This
+   no stat data for the entries, must populate each entry's stat (including the
+   file size) which under `blob:none` faults each tracked blob once (R6). This
    first status is therefore eager by construction; it writes the index back with
    stat data so the monitor can short-circuit later.
 4. **Subsequent** `git status` runs read token0 (unchanged) from the journal and,
@@ -193,14 +193,14 @@ Each row is a measured A/B, not a default-on assumption.
 - `profile_a_mount_zero_blobs`: mount of a `blob:none` repo fetches 0 working
   blobs; index build reads only trees.
 - `profile_a_index_only_ops_preserve_worktree`: `reset --mixed`, `restore
-  --staged`, `rm --cached` change the index but **not** baseline+overlay bytes
-  — projection unchanged, `cat path` still yields the old bytes.
+  --staged`, `rm --cached` change the index but **not** baseline+overlay bytes.
+  Projection unchanged, `cat path` still yields the old bytes.
 - `profile_a_differential_status`: mounted `status/diff/ls-files --stage` byte-
   identical to a conventional checkout at the same commit.
 
 ---
 
-## 3. Profile B — dynamic skip-worktree (experimental)
+## 3. Profile B: dynamic skip-worktree (experimental)
 
 **Status: investigate ONLY after A works. Must prove every command.**
 
@@ -286,14 +286,15 @@ Hard failure conditions (each becomes a `profile_b_reject_*` test):
 Skip-worktree semantics are an *implementation detail of sparse-checkout*, not a
 contract; behavior varies across Git versions ("do not assume normal
 sparse-checkout rules fit this product"). Profile B therefore pins a minimum Git
-version and re-runs the command and rejection checks above in CI against each supported Git. The win it buys:
+version and re-runs the command checks and rejection checks above in CI against
+each supported Git. The win it buys:
 clean `status` and ref-moving commands can skip the worktree for unmaterialized
 paths *and* let us avoid materializing on `switch`. The risk: a Git upgrade
 silently changes a bit's meaning. Hence A must stand alone.
 
 ---
 
-## 4. Profile C — sparse index
+## 4. Profile C: sparse index
 
 **Status: measure whether a sparse index can represent unmaterialized subtrees
 while the FS still exposes them. Do not assume sparse-checkout rules fit.**
@@ -313,7 +314,7 @@ index entry kinds:
 ```
 
 The FUSE projection still exposes every path inside a collapsed subtree (the
-baseline tree answers `lookup`/`readdir`) — the sparseness is *only* in
+baseline tree answers `lookup`/`readdir`). The sparseness is *only* in
 the index, not in the namespace. This is the load-bearing difference from normal
 sparse-checkout, where collapsed subtrees are absent from the worktree.
 
@@ -330,7 +331,7 @@ sparse-checkout, where collapsed subtrees are absent from the worktree.
   user views/edits via FUSE are correctly promoted (dir expanded, file entry
   added) without the index reporting them deleted.
 - `profile_c_full_index_commands`: commands Git force-expands (`command_requires
-  _full_index` list, e.g. some `merge`/`stash` paths) still complete — measure the
+  _full_index` list, e.g. some `merge`/`stash` paths) still complete. Measure the
   expansion cost; if it is `O(N)`, that command falls back to Profile A cost.
 
 Profile C composes with B (sparse-dir entries *are* skip-worktree). C without B
@@ -339,13 +340,13 @@ measurement matrix runs A, B, C, and B+C.
 
 ---
 
-## 5. Profile D — minimal upstreamable Git provider extension
+## 5. Profile D: minimal upstreamable Git provider extension
 
 **Status: only if A–C cannot meet large-repo perf. NOT a wrapper.**
 
-If stock Git remains correct-but-eager — fetching and writing every changed blob
-on `switch`/`reset --hard`/`merge` — and B/C cannot prevent it, the answer
-is a **minimal, upstreamable, explicitly-advertised** Git extension, not a command
+If stock Git remains correct-but-eager (fetching and writing every changed blob
+on `switch`/`reset --hard`/`merge`) and B/C cannot prevent it, the answer
+is a minimal, upstreamable, explicitly-advertised Git extension, not a command
 wrapper and not a private fork shipped silently (the design forbids `git
 lazy-mount git --`).
 
@@ -364,8 +365,8 @@ invalidate(paths)     -> drop projected paths
 Concretely: a `git switch` would, instead of `checkout_entry()` writing every
 changed blob, call `update_baseline(new_tree)` + `materialize(conflicts ∪
 locally_modified)`. The daemon advances its baseline and the index is
-rewritten to point at the new tree with clean paths still skip-worktree/virtual —
-**zero blob writes for clean paths**. This is the google3-style lazy branch
+rewritten to point at the new tree with clean paths still skip-worktree/virtual:
+zero blob writes for clean paths. This is the google3-style lazy branch
 switch we must not *claim* until demonstrated.
 
 ### 5.2 Requirements for the extension (all mandatory)
@@ -390,12 +391,12 @@ recorded in an ADR.
 
 ---
 
-## 6. Checkout / switch / rebase eagerness — measured
+## 6. Checkout / switch / rebase eagerness, measured
 
 This is the experiment that *selected* among A–D, now run. Over a branch delta
 of **100,000 files**, for `switch`, `checkout`, `reset --hard`, `merge`, and
 `rebase`, the measured result is that a transition over an M-of-N delta touches
-`O(M)` blobs — bounded by the delta, not the repo (`O(N)`). The eagerness vector
+`O(M)` blobs, bounded by the delta, not the repo (`O(N)`). The eagerness vector
 each run records:
 
 ```rust
@@ -449,13 +450,13 @@ Milestone 6:
 2. **No assume-unchanged.** No profile uses `CE_VALID` as a skip substitute.
    Test: index parse asserts `assume_unchanged == false` everywhere.
 3. **Index-only ops are projection-invisible.** `reset --mixed`, `restore
-   --staged`, `rm --cached` change the index, never baseline+overlay bytes
-   — projection unchanged.
+   --staged`, `rm --cached` change the index, never baseline+overlay bytes;
+   projection unchanged.
 4. **Mount fetches zero working blobs** to project the tree; index build
    reads trees only.
 5. **Subsequent clean status fetches zero blobs, runs zero smudge filters, and
    does not re-scan every projected file.** The *first* clean status after
-   bootstrap is eager — it faults each tracked blob once for size hydration (R6),
+   bootstrap is eager. It faults each tracked blob once for size hydration (R6),
    a fundamental limit of stock Git under `blob:none`, not a missing optimization.
 6. **Differential equality.** Mounted `status`/`diff`/`ls-files --stage`/resulting
    trees match a conventional checkout at the same commit.
@@ -467,7 +468,7 @@ Milestone 6:
 9. **Eagerness is reported, not hidden.** Every branch-transition test emits an
    `EagernessSample`; the compatibility report carries the laziness dimension.
 10. **Profile A stands alone.** All of 1–9 pass with Profile A and **no**
-    skip-worktree/sparse/extension — the correctness baseline.
+    skip-worktree/sparse/extension. That is the correctness baseline.
 
 ---
 
@@ -475,14 +476,14 @@ Milestone 6:
 
 | Existing code | Disposition |
 |---------------|-------------|
-| `crates/core/src/path.rs` `RepoPath` | **reuse** — byte-exact index entry paths |
-| `crates/git-store/src/store.rs` `GitStore` | **reuse** — drives `read-tree`/`update-index`/`status`; add `bootstrap_index_profile_a`, `IndexReader` |
-| `crates/git-store/src/batch.rs` `BatchSession` | **reuse** — residency authority during index build |
-| `crates/object-provider` metrics | **reuse** — backs `EagernessSample` + budget asserts |
-| `crates/git-store/src/interop.rs` (skip-worktree bridge, commit adoption) | **superseded** — delete; D replaces its intent properly |
-| `crates/stage` (JSON staged delta) | **superseded** — delete; the real index is the only stage |
-| `crates/fsmonitor` (durable change journal) | **shipped** — daemon writes a durable journal synchronously; wired to `core.fsmonitor` via the `git-lazy-mount-fsmonitor` hook with real tokens |
-| `crates/workspace/src/status.rs` (three-tree XY) | **rework** — status comes from stock Git porcelain, not a re-implementation |
+| `crates/core/src/path.rs` `RepoPath` | **reuse**: byte-exact index entry paths |
+| `crates/git-store/src/store.rs` `GitStore` | **reuse**: drives `read-tree`/`update-index`/`status`; add `bootstrap_index_profile_a`, `IndexReader` |
+| `crates/git-store/src/batch.rs` `BatchSession` | **reuse**: residency authority during index build |
+| `crates/object-provider` metrics | **reuse**: backs `EagernessSample` + budget asserts |
+| `crates/git-store/src/interop.rs` (skip-worktree bridge, commit adoption) | **superseded**: delete; D replaces its intent properly |
+| `crates/stage` (JSON staged delta) | **superseded**: delete; the real index is the only stage |
+| `crates/fsmonitor` (durable change journal) | **shipped**: daemon writes a durable journal synchronously; wired to `core.fsmonitor` via the `git-lazy-mount-fsmonitor` hook with real tokens |
+| `crates/workspace/src/status.rs` (three-tree XY) | **rework**: status comes from stock Git porcelain, not a re-implementation |
 
 Detailed FSMonitor durability/token design is out of scope here; see
 `docs/design/fsmonitor.md`. This doc owns only the index strategy and the

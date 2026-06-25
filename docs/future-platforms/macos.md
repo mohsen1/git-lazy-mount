@@ -1,19 +1,19 @@
 # Platform: macOS (FSKit)
 
-> **Status — BACKEND LOGIC BUILT; ON-DEVICE MOUNT NOT YET VALIDATED.**
+> **Status: BACKEND LOGIC BUILT; ON-DEVICE MOUNT NOT YET VALIDATED.**
 > The backend-independent macOS logic is implemented and unit-tested on every
 > platform: the FSKit `FSVolume` callback bridge (`FskitOps`), runtime capability
 > detection + diagnostics, APFS collision handling, the macOS metadata commit
 > policy, the coordination/recovery models, and the on-device validation harness.
 > `glm-fs-fskit::backend_available()` now *probes* the host instead of returning a
-> hardcoded `false`. **What remains is on-device:** the signed FSKit system
-> extension + the Swift `FSVolume` adapter, validated on real Apple hardware via
+> hardcoded `false`. What remains is on-device: the signed FSKit system
+> extension and the Swift `FSVolume` adapter, validated on real Apple hardware via
 > the manual CI job (issue #12). Until that lands and is run, macOS is **not**
-> labeled supported — a green default CI never implies a working macOS mount.
+> labeled supported. A green default CI never implies a working macOS mount.
 
 The intended backend is an **FSKit** file-system extension. On macOS versions
-without usable FSKit, an **isolated macFUSE** backend may be offered instead —
-as an explicit, separate backend, never by silently changing semantics.
+without usable FSKit, an isolated macFUSE backend may be offered as a separate,
+explicitly chosen backend. It is never substituted by silently changing semantics.
 
 The cross-platform callback surface is the same one
 [`FuseOps`](../crates/fs-fuse/src/lib.rs) exposes; the macOS work is the bridge
@@ -22,32 +22,32 @@ concerns below.
 
 ## What is required before macOS can be labeled supported
 
-### FSKit extension (or isolated macFUSE) — issue #5
+### FSKit extension (or isolated macFUSE): issue #5
 
 * **Built:** `FskitOps` (`crates/fs-fskit/src/bridge.rs`) is the FSKit `FSVolume`
-  callback logic — the macOS analog of `FuseOps` — over the same `Workspace` and
+  callback logic, the macOS analog of `FuseOps`, over the same `Workspace` and
   `InodeTable`: `lookup`, `getattr`, `enumerate`, `read`, `readlink`, `forget`,
   and the write callbacks (`create`, `write`, `truncate`, `set_executable`,
   `remove`, `rename`, `symlink`). Every write routes through the shared overlay →
-  stage → operation-log path; there are **no macOS-only write semantics**.
+  stage → operation-log path. There are **no macOS-only write semantics**.
 * **Built:** `MacBackend` is the explicit FSKit-vs-macFUSE selection. The two are
   distinct backend boundaries; macFUSE is only ever chosen explicitly, never by
   silently changing semantics.
 * **On-device (issue #12):** the Swift `FSUnaryFileSystem`/`FSVolume` adapter that
   calls into `FskitOps`, plus its signed system extension.
 
-### Runtime capability detection + diagnostics — issue #6
+### Runtime capability detection + diagnostics: issue #6
 
 * **Built:** `Capability::detect` (`crates/fs-fskit/src/capability.rs`) probes the
-  host — macOS version (third-party FSKit needs ≥ 15.4), whether our system
-  extension is installed and *approved*, and whether macFUSE is present — and
-  selects a backend (or none). `backend_available()` is now this probe, not a
+  host (macOS version, since third-party FSKit needs ≥ 15.4, whether our system
+  extension is installed and *approved*, and whether macFUSE is present) and
+  selects a backend, or none. `backend_available()` is now this probe, not a
   hardcoded `false`.
 * **Built:** when no backend is available, `mount()` and `git lazy-mount doctor`
   emit concrete, ordered install/approval steps (and point at the headless
   fallback) instead of "not implemented yet".
 
-### APFS case-sensitivity and Unicode normalization — issue #7
+### APFS case-sensitivity and Unicode normalization: issue #7
 
 * **Built:** `glm_platform::validate::macos_collision_key` folds names per a
   concrete volume (`AppleVolume::CaseInsensitive` / `CaseSensitive`); both APFS
@@ -67,49 +67,49 @@ concerns below.
 * **On-device (issue #12):** end-to-end validation through a real FSKit mount on
   both case-insensitive and case-sensitive APFS volumes.
 
-### Resource forks, Finder metadata, xattrs, file flags — issue #8
+### Resource forks, Finder metadata, xattrs, file flags: issue #8
 
-* **Built:** `glm_platform::metadata` is the single, documented **policy table**
+* **Built:** `glm_platform::metadata` is the single, documented policy table
   (`.DS_Store` / `._*` → `Ignored`; xattrs incl. resource forks / Finder info /
   quarantine → `OverlayOnly`; BSD file flags → `OverlayOnly`).
 * **Enforced:** the workspace staging path screens `Ignored` paths
   (`is_never_committed_path`), so `.DS_Store` / `._*` can never reach a staged
-  tree or commit — on `add`, `add -A`, **or** the git-interop bridge. xattrs /
+  tree or commit, whether on `add`, `add -A`, or the git-interop bridge. xattrs /
   resource forks / file flags have no Git commit channel at all, so they are
   structurally never committed. A workspace integration test verifies this
   directly against the committed tree (root and nested).
 
-### File coordination — issue #9
+### File coordination: issue #9
 
 Cooperate with NSFileCoordination so coordinated readers/writers (Finder,
 document-based apps) see consistent state and the backend honors coordination
 intents.
 
-* **Built:** `crates/fs-fskit/src/coordination.rs` — a per-path reader/writer
+* **Built:** `crates/fs-fskit/src/coordination.rs` is a per-path reader/writer
   `Coordinator` modeling the `NSFileCoordinator` intents the adapter receives:
   coordinated writes to a path are mutually exclusive and no coordinated read
   overlaps an in-flight write (concurrency tests assert both). The on-device
   adapter wraps each `FskitOps` callback in `coordinate(path, intent, …)`.
 * **On-device (issue #12):** wiring to the real `NSFileCoordinator` and
-  validation with Finder + a document-based app.
+  validation with Finder and a document-based app.
 
-### Case-only rename — issue #7
+### Case-only rename: issue #7
 
 * **Built:** `a.txt` → `A.txt` on a case-insensitive volume targets a name that
   "already exists" by the volume's comparison, but the bridge recognizes the
   folding-only rename (`collision::is_case_only_rename`) and performs it,
-  preserving identity via the inode table. A bridge test covers
-  identity + content preservation.
+  preserving identity via the inode table. A bridge test covers both identity and
+  content preservation.
 * **On-device (issue #12):** validation through a real FSKit mount.
 
-### System-extension lifecycle + signing/entitlements — issue #10
+### System-extension lifecycle + signing/entitlements: issue #10
 
-* **Built:** `crates/fs-fskit/extension/` carries the full Swift FSKit module —
+* **Built:** `crates/fs-fskit/extension/` carries the full Swift FSKit module:
   the `@main` `UnaryFileSystemExtension`, the `FSUnaryFileSystem`/`FSVolume`
   implementation driving the engine through the `glm-fskit-ffi` C ABI, a SwiftUI
   host app, entitlements (`com.apple.developer.fskit.fsmodule`), an xcodegen
   project, and `build.sh`. It **builds, signs, links the engine, and registers**
-  with FSKit on macOS 26.4.1 (verified); the on-device runbook + the current
+  with FSKit on macOS 26.4.1 (verified). The on-device runbook and the current
   enablement blocker are in `docs/platform-macos-fskit-ondevice.md` (issue #19).
 * **Built:** `crates/fs-fskit/src/lifecycle.rs` derives an `ExtensionState`
   (`unsupported` / `not_installed` / `awaiting_approval` / `activated`) from the
@@ -118,33 +118,33 @@ intents.
 * **On-device (issue #12):** a reproducible signed build and the live
   activation/approval flow on Apple hardware with a Developer identity.
 
-### Recovery after extension or daemon restart — issue #11
+### Recovery after extension or daemon restart: issue #11
 
 If the FSKit extension (or the controlling daemon) restarts, mounts must recover
 to a consistent state. This rides on the engine's crash-safe operation log and
 the daemon lifecycle states (`Recovering`, etc.; `glm-daemon`).
 
-* **Built:** `crates/fs-fskit/src/recovery.rs` — `reattach(ws, volume)` replays
+* **Built:** in `crates/fs-fskit/src/recovery.rs`, `reattach(ws, volume)` replays
   the operation log and drives the FSKit re-attach through `Recovering → Mounted`
-  (or `Failed`), returning a fresh `FskitOps` (the kernel re-issues `lookup`, so
-  inode identity is rebuilt on demand; numbers are never reused). Tests simulate
+  (or `Failed`), returning a fresh `FskitOps`. The kernel re-issues `lookup`, so
+  inode identity is rebuilt on demand and numbers are never reused. Tests simulate
   an extension/daemon restart by re-opening from the same on-disk state and
   assert **no data loss**: an uncommitted overlay edit survives, and a committed
   base is preserved.
 * **On-device (issue #12):** induced extension/daemon restarts against a live
   FSKit mount.
 
-### On-device validation harness + manual CI job — issue #12
+### On-device validation harness + manual CI job: issue #12
 
-* **Built:** `crates/fs-fskit/tests/on_device.rs` — `#[ignore]` tests that are the
-  on-device gate. They **self-skip** the real-mount assertions when no
-  signed+approved FSKit backend is present (printing a clear `SKIP` + the
+* **Built:** `crates/fs-fskit/tests/on_device.rs` holds `#[ignore]` tests that are
+  the on-device gate. They **self-skip** the real-mount assertions when no
+  signed+approved FSKit backend is present (printing a clear `SKIP` and the
   diagnostics), so a green run never produces a false "supported" signal; they
   assert real behavior only on a provisioned Apple host.
 * **Built:** a manual `macos fskit backend (manual)` job
   (`.github/workflows/ci.yml`, `workflow_dispatch`) mirroring the existing
-  `linux fuse backend (manual)` job: it runs the backend-logic tests + the
-  harness (`--include-ignored`) and the capability probe. A GitHub-hosted runner
+  `linux fuse backend (manual)` job: it runs the backend-logic tests, the
+  harness (`--include-ignored`), and the capability probe. A GitHub-hosted runner
   cannot load a system extension, so a real mount needs a **self-hosted** Apple
   host (`runs-on: [self-hosted, macOS]`). The **default PR CI is unchanged** and
   independent of macOS mount support.
@@ -175,7 +175,7 @@ platform**; what remains is the on-device run of the harness above. macOS is
 under `~/Library/Application Support/git-lazy-mount` and caches under
 `~/Library/Caches/git-lazy-mount`.
 
-## Tracking — on-device findings
+## Tracking: on-device findings
 
 Real FSKit behavior must be validated **on-device** before macOS is labeled
 supported. Record each run of the manual `macos fskit backend
@@ -183,4 +183,4 @@ supported. Record each run of the manual `macos fskit backend
 
 | Date | Host (OS / volume) | Extension state | Result | Notes |
 |------|--------------------|-----------------|--------|-------|
-| _(pending)_ | — | — | — | No on-device run yet; harness self-skips real-mount assertions until a signed+approved extension is present. |
+| _(pending)_ | n/a | n/a | n/a | No on-device run yet; harness self-skips real-mount assertions until a signed+approved extension is present. |
