@@ -1,6 +1,10 @@
-//! Measure `git status` hydration through the mount: how many working-file
-//! blobs does a clean status fault in, the first time and on repeat? Real
-//! `/dev/fuse` mount — runs under `--features fuse`.
+//! Measure `git status` hydration through the mount **without** the FSMonitor
+//! seed (the eager fallback): how many working-file blobs does a clean status
+//! fault, the first time and on repeat? The product seeds the FSMonitor extension
+//! at mount so even the *first* status faults zero (proven by the `fsmonitor`
+//! test in the `cli` crate, which can reference the hook binary); this test
+//! characterizes the un-seeded baseline and the repeat-status invariant. Real
+//! `/dev/fuse` mount, runs under `--features fuse`.
 #![cfg(feature = "fuse")]
 
 use std::process::Command;

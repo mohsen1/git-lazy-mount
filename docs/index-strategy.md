@@ -33,10 +33,10 @@ Three independent costs must each be bounded or measured:
 
 Profiles A–D attack these costs differently. The non-negotiable invariant: a
 `blob:none` mount fetches zero working-file blobs to project the tree.
-The first clean `status` after bootstrap is eager. It faults each tracked
-blob once for size hydration (see below). But every subsequent clean
-`status` fetches zero blobs and runs zero smudge filters. The worktree scan and
-checkout-eagerness costs are what the profiles trade against compatibility.
+The first clean `status` fetches zero blobs: the FSMonitor extension is pre-seeded
+at mount so git trusts the journal instead of statting every entry (see below).
+Every clean `status` fetches zero blobs and runs zero smudge filters. The worktree
+scan and checkout-eagerness costs are what the profiles trade against compatibility.
 
 ---
 
@@ -111,37 +111,36 @@ and FSMonitor-valid bits. Profile-specific builders below set those bits.
 
 - Normal index semantics; maximum stock-Git compatibility.
 - `O(N)` index construction at mount; possibly `O(N)` index parse per command.
-- No redundant full-tree stat scan on subsequent clean `status`. FSMonitor
-  (wired via `core.fsmonitor` and the `git-lazy-mount-fsmonitor` hook reading the
-  daemon's durable change journal) lets Git skip the worktree scan once the index
-  carries stat data. This is what makes a repeat clean `status` cheap despite the
-  full index.
+- No redundant full-tree stat scan on any clean `status`, including the first.
+  FSMonitor (wired via `core.fsmonitor` and the `git-lazy-mount-fsmonitor` hook
+  reading the daemon's durable change journal), with its extension pre-seeded at
+  mount, lets Git skip the worktree scan and trust the journal. This is what makes
+  every clean `status` cheap despite the full index.
 - Branch transitions are measured lazy: a switch over an M-of-N delta touches
   `O(M)` blobs, bounded by the delta, not the repo (`O(N)`).
 
-### 2.2 FSMonitor-valid bootstrap (skips the redundant scan on repeat status)
+### 2.2 FSMonitor-valid bootstrap (skips the redundant scan on every status)
 
 The naïve full-index mount would make Git `lstat` every projected path on *every*
-`status`. FSMonitor cuts the *redundant* scan: once the index carries stat data,
+`status`. FSMonitor cuts the *redundant* scan: with the extension seeded at mount,
 Git trusts the monitor's "nothing changed" reply and skips re-scanning the tree.
 
-**What this does NOT achieve (verified, and a hard limit of stock Git under
-`blob:none`):** the FSMonitor-valid bit cannot make the *first* clean `status`
-zero-blob. Traced via `GIT_TRACE_FSMONITOR`, Git marks each `read-tree`'d entry
-clean from the hook's empty reply, then *immediately* marks it `fsmonitor_invalid`
-because the entry has no stat data: to skip the content check Git must populate the
-index stat, including the file size, and under `blob:none` the exact size of
-an unmaterialized blob requires fetching it. The fsmonitor-valid bit does not
-override an empty-stat entry. So the first clean `status` faults each tracked blob
-exactly once (the root cause is getattr size hydration, R6); only subsequent
-statuses are zero-blob. There is no way to pre-seed correct sizes without fetching,
-so this first-run eagerness is fundamental, not a missing optimization.
+**The first clean `status` is also zero-blob.** A freshly `read-tree`'d index has
+no FSMonitor extension, so Git's "mark all valid" pass never runs and it stats
+(and so faults) every entry before writing one (an early `GIT_TRACE_FSMONITOR`
+reading mistook this bootstrap-ordering bug for a hard limit). Pre-seeding the
+extension at mount (every entry `CE_FSMONITOR_VALID` plus the seq-0 token) fixes
+it: Git's `refresh_cache_ent` early-returns on the valid bit *before* any `lstat`,
+so the first `status` faults zero blobs (see [`fsmonitor.md` §4](fsmonitor.md)).
+Paths under a checkout conversion (`filter`/`ident`/`working-tree-encoding`/CRLF
+`eol`) are carved out of the seed and checked normally. (`ls -l`/`stat` still
+faults each blob once for its size, R6, a `getattr` cost separate from `status`.)
 
 ```rust
-/// Build $GIT_DIR/index from `tree` and wire core.fsmonitor so subsequent
-/// clean statuses skip the redundant full-tree scan. The build hashes ZERO
-/// working-tree contents; the first clean status still faults each blob once
-/// for size (R6), but every status after that is zero-blob.
+/// Build $GIT_DIR/index from `tree` and wire core.fsmonitor, then pre-seed the
+/// FSMonitor extension so clean statuses skip the full-tree scan. The build hashes
+/// ZERO working-tree contents; every clean status, including the first, is
+/// zero-blob (`ls -l`/`stat` still faults each blob once for size, R6).
 fn bootstrap_index_profile_a(
     store: &GitStore,
     tree: &ObjectId,          // initial checked-out commit tree (baseline)
@@ -157,21 +156,27 @@ Procedure (exact commands to prove this):
    `core.untrackedCache=true`, `index.version=4`, `feature.manyFiles=true`.
    `core.fileMode`/`core.symlinks`/`core.ignoreCase` from probed mount
    behavior.
-3. Run the **first** `git status` with the FSMonitor hook returning token0 and an
-   empty changed-path set. Git trusts the monitor's "nothing changed" but, having
-   no stat data for the entries, must populate each entry's stat (including the
-   file size) which under `blob:none` faults each tracked blob once (R6). This
-   first status is therefore eager by construction; it writes the index back with
-   stat data so the monitor can short-circuit later.
-4. **Subsequent** `git status` runs read token0 (unchanged) from the journal and,
-   with stat data now present, skip the full-tree scan and fetch **0 blobs**. The
-   daemon writes the durable journal synchronously, so change detection has no
-   false negatives across these runs.
+3. Pre-seed the FSMonitor index extension right after read-tree: mark every entry
+   `CE_FSMONITOR_VALID` carrying token0, so the extension is present going into the
+   first status. Git's `refresh_cache_ent` then early-returns on the valid bit
+   *before* any `lstat`. Paths under a checkout conversion
+   (`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are carved out of the seed
+   (attributes read via `check-attr --cached`) and checked normally.
+4. Run the **first** `git status` with the FSMonitor hook returning token0 and an
+   empty changed-path set. Git trusts the monitor's "nothing changed", and because
+   the seeded valid bits short-circuit `refresh_cache_ent`, it never stats the
+   seeded entries and fetches **0 blobs**.
+5. **Subsequent** `git status` runs read token0 (unchanged) from the journal and
+   likewise skip the full-tree scan and fetch **0 blobs**. The daemon writes the
+   durable journal synchronously, so change detection has no false negatives across
+   these runs.
 
 **Invariant (regression test `profile_a_subsequent_status_zero_blobs`):** the
-*first* clean `status --porcelain=v2` faults each tracked blob exactly once (size
-hydration); every **subsequent** clean status fetches **0 blobs**, runs **0 smudge
-filters**, and does not re-scan every projected path.
+*first* clean `status --porcelain=v2` fetches **0 blobs** (the seeded FSMonitor
+valid bits short-circuit the stat pass); every **subsequent** clean status also
+fetches **0 blobs**, runs **0 smudge filters**, and does not re-scan every
+projected path. (`ls -l`/`stat` of an unmaterialized path still faults its blob
+once for the size, R6, a `getattr` cost separate from `status`.)
 
 ### 2.3 Features to evaluate and their decision criteria
 
@@ -180,7 +185,7 @@ filters**, and does not re-scan every projected path.
 | index v4 | `index.version=4` | prefix-compression shrinks index, parse OK | index size, parse ms |
 | split index | `core.splitIndex` | incremental writes cut `add` cost without breaking FSMonitor-valid | write ms, share-index churn |
 | untracked cache | `core.untrackedCache=true` | dir-mtime invalidation works through FUSE | untracked scan count |
-| FSMonitor-valid | bootstrap (2.2) | shipped: skips redundant scan on repeat `status` | subsequent clean `status` scan count |
+| FSMonitor-valid | bootstrap (2.2) | shipped: skips redundant scan on every `status`, including the first | clean `status` scan count |
 | `feature.manyFiles` | sets v4+untracked+fsmonitor | net win on large N | aggregate |
 | preload-index | `core.preloadIndex` | threads help or hurt under FUSE latency | `status` wall time |
 
@@ -454,10 +459,12 @@ Milestone 6:
    projection unchanged.
 4. **Mount fetches zero working blobs** to project the tree; index build
    reads trees only.
-5. **Subsequent clean status fetches zero blobs, runs zero smudge filters, and
+5. **Every clean status fetches zero blobs, runs zero smudge filters, and
    does not re-scan every projected file.** The *first* clean status after
-   bootstrap is eager. It faults each tracked blob once for size hydration (R6),
-   a fundamental limit of stock Git under `blob:none`, not a missing optimization.
+   bootstrap is also zero-blob: the FSMonitor extension is pre-seeded at mount, so
+   Git's `refresh_cache_ent` early-returns on the valid bit before any `lstat`.
+   (`ls -l`/`stat` of an unmaterialized path still faults its blob once for the
+   size, R6, a `getattr` cost separate from `status`.)
 6. **Differential equality.** Mounted `status`/`diff`/`ls-files --stage`/resulting
    trees match a conventional checkout at the same commit.
 7. **Conflict stages live in the real index.** Stages 1/2/3 are read from

@@ -299,55 +299,63 @@ keeps branch switches "correct but possibly eager", never wrong.
   comparison).
 - **I-RAW-PATHS**: A changed path containing invalid UTF-8 / newline / tab is
   emitted byte-exact and NUL-delimited.
-- **I-SUBSEQUENT-ZERO-BLOB**: Once the index carries stat data, a subsequent
-  clean `git status` fetches **zero** blob contents. The hook's empty reply
-  lets Git skip the full-tree stat scan (see the bootstrap section below). The
-  **first** clean status is necessarily eager: it faults each tracked blob once
-  to populate the index stat (including size), which under a `blob:none` clone
-  requires fetching the blob.
+- **I-FIRST-STATUS-ZERO-BLOB**: With the FSMonitor extension pre-seeded at mount
+  (every entry `CE_FSMONITOR_VALID` plus the seq-0 token), the **first** clean
+  `git status`/`git diff` fetches **zero** blob contents: git's `refresh_cache_ent`
+  early-returns on the valid bit before any `lstat`, and the hook's empty reply
+  confirms nothing changed. Subsequent clean statuses stay zero-blob the same way.
 
 ---
 
-## 4. Bootstrap: the first status is eager, subsequent statuses are zero-blob
+## 4. Bootstrap: the first status is zero-blob
 
-The original design hoped the **first** clean `git status` could fetch zero
-blobs by marking the read-tree'd index entries FSMonitor-valid from the hook's
-empty reply. That is **fundamentally unachievable** with stock Git on a
-`blob:none` clone, and was verified so via `GIT_TRACE_FSMONITOR`: Git marks each
-read-tree'd entry clean from the empty reply, then immediately marks it
-`fsmonitor_invalid` because the entry has **no stat data**. To skip the content
-check Git must populate the index stat, including the file **size**, and under
-`blob:none` the exact size of an unmaterialized blob requires fetching the blob.
-The FSMonitor-valid bit does **not** override an empty-stat entry. So the
-**first** clean `git status` faults each tracked blob **once** (the getattr
-size-hydration cost), and only **subsequent** statuses are zero-blob.
+The **first** clean `git status` can fetch zero blobs by marking the read-tree'd
+index entries FSMonitor-valid. The original wiring did not achieve it, and an
+early `GIT_TRACE_FSMONITOR` reading was misread as a fundamental limit. It is not:
+it was a **bootstrap-ordering** bug.
 
-What FSMonitor *does* deliver: correct change detection with no false negatives,
-plus skipping the redundant full-tree stat scan on later clean statuses once the
-index carries stat data. The mechanism:
+A freshly `read-tree`'d index carries **no FSMonitor extension**, so git's
+"mark every entry valid" pass (which runs only when the extension is read from
+disk) never runs on the first status. Git therefore stats every entry (and under
+`blob:none`, `getattr` faults each blob for its size), and only *then* writes the
+extension. The hook's "nothing changed" reply cannot help, because the valid bits
+were never set going in.
 
-1. After `init real index` (a full index built from the initial tree) the
-   index entries are valid-by-construction: every path equals its committed blob
-   (overlay is empty in the initial state). The first clean `git status` then
-   populates each entry's stat, faulting each blob once for its size.
-2. The daemon mints the **initial token** `glm1:<ws>:<epoch0>:<seq0=0>:<gen0>`.
-3. On a subsequent `git status`, Git calls the hook with the prior token. The
-   daemon answers from the journal: when nothing has changed since the index was
-   stamped, it returns an **empty path list** with a fresh token, asserting
-   "nothing changed". Git then trusts the stat-populated entries as
-   FSMonitor-clean and skips the stat scan (it only stats paths *returned* as
-   changed, here none), fetching **zero** blobs.
-4. An **empty** `prev` (a token Git never minted, e.g. a brand-new index) still
-   means `/`: the daemon cannot prove continuity from a token it did not issue.
+The fix is to **pre-seed** the extension at mount, right after `read-tree`
+([`AdminRepo::seed_fsmonitor_valid`](../../crates/git-repo/src/lib.rs)): set every
+entry's `CE_FSMONITOR_VALID` bit (via `git update-index --fsmonitor-valid`) with
+the journal's seq-0 token. Then on the first status:
 
-This is sound because the daemon **owns the filesystem** and **knows** no
-worktree write has occurred since the stat was stamped (any write would have
-incremented `seq`). If any FUSE write or hook notification has advanced `seq`,
-the response includes the affected paths.
+1. Git loads the extension and marks every entry valid.
+2. Git calls the hook with the seeded token; the daemon answers from the journal:
+   nothing has changed since the index was built (`seq` is still 0), so an
+   **empty** path list with a fresh token.
+3. `refresh_cache_ent` early-returns on `CE_FSMONITOR_VALID` for every entry,
+   **before** any `lstat`/size/content check (verified in git's `read-cache.c`).
+   Zero `lstat`, **zero** blob faults.
 
-Invariant **I-SUBSEQUENT-ZERO-BLOB** above gates the zero-blob subsequent-status
-behavior. The eager first status is a property of `blob:none` size hydration, not
-a defect to close (closing it would require a server-side size manifest).
+Git writes real stat data lazily only for paths it later touches. This is sound
+because the daemon **owns the filesystem** and **knows** no worktree write has
+occurred since the index was built (any write increments `seq`). The moment a FUSE
+write advances `seq`, the hook's reply includes the affected paths and git rechecks
+exactly those. An **empty** `prev` once `seq > 0` still means `/`: the daemon
+cannot prove continuity from a token it did not issue.
+
+Two carve-outs keep it correct:
+
+- **Checkout conversions.** A path under a `filter`/`ident`/`working-tree-encoding`
+  or CRLF `eol` attribute (limitations R7) can read through the mount as bytes that
+  differ from a real checkout, so it is **excluded** from the seed (attributes read
+  from the index via `check-attr --cached`). Git checks those paths normally; a
+  real diff is never hidden.
+- **Token identity.** The seeded token must match what the hook mints
+  (`workspace`, `epoch`, `seq=0`, `generation`). A mismatch is not a correctness
+  bug (the hook returns a full invalidation and git falls back to the eager scan),
+  but it would lose the optimization, so it is covered by test.
+
+`ls -l`/`stat` of an unmaterialized file still faults its blob for the size
+(limitations R6, a `getattr` cost separate from `git status`, which no longer
+stats seeded entries at all).
 
 ---
 

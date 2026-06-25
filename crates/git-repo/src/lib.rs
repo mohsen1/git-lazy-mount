@@ -10,8 +10,10 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use glm_core::{Error, ErrorCode, ObjectId, Result};
 use glm_git_store::GitStore;
@@ -194,6 +196,163 @@ impl AdminRepo {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_vec())
             .collect())
+    }
+
+    /// Seed the FSMonitor index extension so the **first** `git status`/`git diff`
+    /// faults zero blobs.
+    ///
+    /// A freshly `read-tree`'d index carries no FSMonitor extension, so on the
+    /// first status git has no valid bits to trust: it stats every entry (and a
+    /// `blob:none` `getattr` faults the blob for its size), populates the
+    /// extension, and only *then* could trust the hook. By marking every entry
+    /// `CE_FSMONITOR_VALID` up front, git trusts the daemon's change journal
+    /// immediately and skips the stat/content check for every unchanged path.
+    ///
+    /// `git update-index --fsmonitor-valid` queries the configured hook for the
+    /// current token and writes the extension, so this requires `core.fsmonitor`
+    /// already set and the (empty) journal present so the hook answers the seq-0
+    /// bootstrap query. Best-effort by contract: callers treat failure as "fall
+    /// back to the eager first status", never as a mount failure.
+    pub fn seed_fsmonitor_valid(&self) -> Result<()> {
+        let all = self.tracked_paths()?;
+        if all.is_empty() {
+            return Ok(());
+        }
+        // Carve out paths whose working-tree bytes can differ from the stored blob
+        // (checkout conversions): seeding those valid could hide a real diff.
+        let converted = self.conversion_attributed_paths(&all)?;
+        let seedable: Vec<&[u8]> = all
+            .iter()
+            .map(Vec::as_slice)
+            .filter(|p| !converted.contains(*p))
+            .collect();
+        if seedable.is_empty() {
+            return Ok(());
+        }
+        let mut child = self
+            .git()
+            .args(["update-index", "-z", "--fsmonitor-valid", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn update-index: {e}")))?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| Error::new(ErrorCode::Internal, "update-index stdin".to_string()))?;
+            for p in &seedable {
+                stdin
+                    .write_all(p)
+                    .and_then(|()| stdin.write_all(&[0]))
+                    .map_err(|e| Error::new(ErrorCode::Internal, format!("pipe paths: {e}")))?;
+            }
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("update-index wait: {e}")))?;
+        if !out.status.success() {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "update-index --fsmonitor-valid: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A `git` command that **may** lazily fetch missing objects (unlike
+    /// [`Self::git`], which forbids it). Used only to read `.gitattributes` blobs
+    /// for the seed carve-out.
+    fn git_with_fetch(&self) -> Command {
+        let mut cmd = Command::new("git");
+        cmd.arg("--git-dir").arg(&self.gitdir);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        cmd
+    }
+
+    /// Tracked paths whose working-tree bytes can differ from the stored blob
+    /// because of a checkout conversion (`filter`, `ident`, `working-tree-encoding`,
+    /// or CRLF `eol`). These must not be seeded fsmonitor-valid, so stock git
+    /// checks them normally and never hides a real difference.
+    ///
+    /// Attributes are read from the index (`check-attr --cached`), populated by
+    /// `read-tree HEAD`, so this works before the worktree is mounted. When the
+    /// repo declares no `.gitattributes` at all (the common case) it returns empty
+    /// without fetching or spawning anything.
+    fn conversion_attributed_paths(&self, all: &[Vec<u8>]) -> Result<HashSet<Vec<u8>>> {
+        let has_attrs = all
+            .iter()
+            .any(|p| p.rsplit(|&b| b == b'/').next() == Some(b".gitattributes".as_slice()));
+        if !has_attrs {
+            return Ok(HashSet::new());
+        }
+        let mut child = self
+            .git_with_fetch()
+            .args([
+                "check-attr",
+                "--cached",
+                "-z",
+                "--stdin",
+                "filter",
+                "ident",
+                "working-tree-encoding",
+                "eol",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn check-attr: {e}")))?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| Error::new(ErrorCode::Internal, "check-attr stdin".to_string()))?;
+            for p in all {
+                stdin
+                    .write_all(p)
+                    .and_then(|()| stdin.write_all(&[0]))
+                    .map_err(|e| {
+                        Error::new(ErrorCode::Internal, format!("pipe check-attr: {e}"))
+                    })?;
+            }
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("check-attr wait: {e}")))?;
+        if !out.status.success() {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                format!(
+                    "check-attr --source: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            ));
+        }
+        // Output is NUL-separated `path, attr, value` triples.
+        let mut converted = HashSet::new();
+        let mut it = out.stdout.split(|&b| b == 0);
+        while let (Some(path), Some(attr), Some(value)) = (it.next(), it.next(), it.next()) {
+            if path.is_empty() {
+                continue;
+            }
+            let carve = match attr {
+                b"filter" | b"working-tree-encoding" => {
+                    value != b"unspecified" && value != b"unset"
+                }
+                b"ident" => value == b"set",
+                b"eol" => value == b"crlf",
+                _ => false,
+            };
+            if carve {
+                converted.insert(path.to_vec());
+            }
+        }
+        Ok(converted)
     }
 }
 
