@@ -140,14 +140,19 @@ Per-entry flags the daemon extracts (the load-bearing ones):
 - `assume-valid` / `skip-worktree` / `intent-to-add` (`flags` + v3
   `xflags`).
 - `FSMONITOR_VALID` per-entry bit (paired with the `FSMN` extension's token
-  + bitmap). This is how a *subsequent* clean status skips the redundant
-  full-tree stat scan. The fsmonitor-valid bit does not let an entry with
-  empty stat data skip the content check: git still requires the index stat
-  (including the file size) to mark an entry clean, and under a `blob:none`
-  clone the size requires faulting the blob. So the *first* clean status
-  after a `read-tree` faults each tracked blob once to populate its size;
-  only later clean statuses are zero-blob. A zero-blob *first* status is not
-  achievable with stock Git over a `blob:none` clone.
+  + bitmap). This is how a clean status skips the redundant full-tree stat
+  scan. Git's `refresh_cache_ent` early-returns on `CE_FSMONITOR_VALID`
+  *before* any `lstat`, so an entry carrying the valid bit needs neither a
+  stat nor a blob fault. A freshly `read-tree`'d index, though, carries no
+  `FSMN` extension, so git's "mark all entries valid" pass never runs on the
+  first status and it would stat (and so fault) every entry. The daemon
+  closes that gap by pre-seeding the `FSMN` extension at mount, right after
+  `read-tree`, marking every entry `CE_FSMONITOR_VALID` with the journal's
+  seq-0 token. With the seed in place the *first* clean status after a
+  `read-tree` faults zero blobs, exactly like every later clean status; a
+  zero-blob first status *is* achievable over a `blob:none` clone. Paths
+  under a checkout conversion (filter / `ident` / `working-tree-encoding` /
+  CRLF `eol`) are excluded from the seed so git checks them normally.
 - `extended` bit (selects v3 16-bit `xflags`).
 
 **v4 path compression** (`index.version=4`) is decoded by carrying
@@ -246,10 +251,10 @@ trigger a continuity decision.
 
 - **status fast path**: combine stage-0 entries + `skip-worktree` /
   `fsmonitor-valid` bits with the FSMonitor journal to answer "what
-  changed" without re-statting every file. The first clean status after a
-  `read-tree` still faults each tracked blob once to populate the index entry
-  sizes git needs to mark entries clean (a `blob:none` consequence, see the
-  `FSMONITOR_VALID` note above); every clean status after that is zero-blob.
+  changed" without re-statting every file. With the `FSMN` extension
+  pre-seeded at mount (see the `FSMONITOR_VALID` note above), the first
+  clean status after a `read-tree` faults zero blobs, the same as every
+  clean status after it.
 - **conflict projection**: the `unmerged` map tells the projection
   which paths are conflicted so the overlay's conflict-marker files line up
   with the real stages 1/2/3. The index is the *source of truth*. Any

@@ -15,7 +15,7 @@ exercised. Laziness is the *measured* fetch behavior.
 | `rev-parse --show-toplevel` | correct | fully lazy | `m3_git`/mount |
 | `ls` / readdir | correct | fully lazy (0 blobs) | `experiment_a_b_c` |
 | `cat` / read | correct | bounded (1 blob, coalesced) | `experiment_a_b_c`, `m2_semantics` |
-| `status` | correct | first eager (reads each file), **repeat 0-blob** (git index refresh) | `m3_git`, `status_hydration` |
+| `status` | correct | **0-blob** (first and repeat; seeded fsmonitor-valid index) | `m3_git`, `status_hydration` |
 | `diff` / `diff --cached` | correct | bounded | `m3_git`, `git_extra` |
 | `add` / `add -A` / `add -u` | correct | bounded | `m3_git` |
 | `add -p` | correct | bounded | `git_extra` |
@@ -70,10 +70,13 @@ M-stage behavior, and we do **not** claim google3-style lazy branch switching.
 The switch eagerness is now measured: it's bounded by the delta, not the
 repo (`switch_eagerness`, P3).
 
-The first clean `git status` faults each tracked blob once and is
-fundamentally eager under `blob:none`. Git must populate the index stat
-(including size) to skip the content check, and the size requires fetching the
-blob (R6). FSMonitor is wired (`core.fsmonitor` to `git-lazy-mount-fsmonitor`) and
-gives correct change detection plus a faster repeat status (no redundant stat
-scan), but it cannot make the first status zero-blob. Verified via
-`GIT_TRACE_FSMONITOR` (see limitations P1/R6).
+The first clean `git status` faults zero blobs, same as every repeat status.
+We pre-seed the FSMonitor index extension at mount (right after `read-tree`,
+in `AdminRepo::seed_fsmonitor_valid`), marking every entry `CE_FSMONITOR_VALID`
+with the journal's seq-0 token. Git's `refresh_cache_ent` then early-returns on
+`CE_FSMONITOR_VALID` before any `lstat`, so no entry is stat'd and no blob is
+faulted for its size. FSMonitor is wired (`core.fsmonitor` to
+`git-lazy-mount-fsmonitor`) and answers "nothing changed" at the bootstrap (seq 0)
+token. Paths under a checkout conversion (`filter`/`ident`/`working-tree-encoding`/
+CRLF `eol`) are excluded from the seed so git checks them normally and never hides
+a diff. Verified zero-fault on an 81k-file real mount (see limitations P1/R6).

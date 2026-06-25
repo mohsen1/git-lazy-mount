@@ -405,8 +405,7 @@ index timestamp; it then re-hashes the file to decide clean-vs-dirty. Two
 hazards:
 
 1. If our synthetic mtime equals the index write time, Git re-hashes the file on
-   the next status → a clean file triggers content hydration on every status,
-   not just the first.
+   the next status → a clean file triggers content hydration on every status.
 2. If we ever move a synthetic mtime *forward* on a passive read, Git flags a
    clean file modified (we must not mark a path modified merely because a
    synthetic timestamp differs).
@@ -417,16 +416,20 @@ Mitigation:
   strictly **earlier** than any index Git writes after mount, so clean
   unmaterialized files are never racy. FSMonitor is wired through
   `core.fsmonitor` (the `git-lazy-mount-fsmonitor` hook reading the daemon's
-  durable change journal): it lets a **subsequent** clean status skip the
-  redundant full-tree stat scan. It does **not** make the *first* clean status
-  zero-blob. Under a `blob:none` clone Git marks each read-tree'd entry clean
-  from the hook's empty reply, then immediately marks it fsmonitor_invalid
-  because the entry has no stat data; Git must populate the index stat
-  (including the file size) to skip the content check, and the exact size of an
-  unmaterialized blob requires fetching it. The fsmonitor-valid bit does
-  not override an empty-stat entry. So the **first** clean status faults each
-  tracked blob once for its size; only **subsequent** clean statuses are
-  zero-blob.
+  durable change journal): it lets every clean status, including the
+  **first**, skip the redundant full-tree stat scan and fault zero blobs.
+  Under a `blob:none` clone a freshly `read-tree`'d index carries no FSMonitor
+  extension, so Git's "mark all entries valid" pass never runs on the first
+  status and Git would stat (and so fault) every entry. The fix is to pre-seed
+  the FSMonitor index extension at mount, right after read-tree
+  (`AdminRepo::seed_fsmonitor_valid`): mark every entry `CE_FSMONITOR_VALID`
+  carrying the journal's seq-0 token. Git's `refresh_cache_ent` then
+  early-returns on `CE_FSMONITOR_VALID` before any `lstat`, so the **first**
+  clean status faults zero blobs and the hook answers "nothing changed" at the
+  seq-0 token. Two carve-outs keep it correct: paths under a checkout
+  conversion (`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are excluded
+  from the seed so Git checks them normally, and the seeded token must match the
+  hook's identity (else Git falls back to the safe eager scan).
 - **RACY-2**: when a file *is* materialized (overlay content), its mtime is the
   real native file mtime (the overlay file's `stat`, like `content_len`,
   overlay/src/lib.rs:215). That is honest, and FSMonitor reports the change so Git
@@ -437,9 +440,9 @@ Mitigation:
   timestamp guess.
 
 Tested against a real `git status --porcelain=v2` differential vs. a normal
-checkout at the same commit: the first clean status faults each tracked blob
-once for its size, every subsequent clean status fetches zero blobs, and
-an edit is reported exactly once.
+checkout at the same commit: the first clean status faults zero blobs, every
+subsequent clean status fetches zero blobs, and an edit is reported exactly
+once.
 
 ---
 
@@ -674,8 +677,7 @@ Synthetic metadata / racy-clean:
 - **STBL-2** directory mtime/`dir_generation` changes on direct-child change only.
 - **STBL-3** size is never fabricated; `readdir` never requests it.
 - **RACY-1** clean unmaterialized files are never racy; the first clean status
-  faults each tracked blob once for its size, every subsequent clean status
-  fetches zero blobs.
+  and every subsequent clean status both fault zero blobs.
 
 Auth / offline:
 - **AUTH-1** read with expired creds returns a bounded errno, never hangs.
