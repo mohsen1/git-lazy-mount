@@ -181,9 +181,8 @@ that path.
 
 ## 4. Bootstrap: the first `git status` is zero-blob
 
-This is the canonical description of the seed. [limitations.md](limitations.md)
-(item P1) and the `query()` doc-comment summarize it; this section is the source
-of truth.
+This is the canonical description of the seed; the `query()` doc-comment
+summarizes it, and this section is the source of truth.
 
 The **first** clean `git status` faults **zero** blobs, the same as every repeat.
 A freshly `read-tree`'d index carries **no FSMonitor extension**, so git's "mark
@@ -226,7 +225,8 @@ microsoft/TypeScript mount (README performance table), not from this test.
 A path under a checkout-conversion attribute — a clean/smudge `filter=`,
 `ident`, `working-tree-encoding=`, or CRLF `eol=crlf` — reads through the mount
 as the raw baseline blob, which can differ from a real checkout, so seeding it
-valid could hide a real diff (this is limitation [R7](limitations.md)).
+valid could hide a real diff (see the smudge-side raw-baseline limitation in
+[limitations.md](limitations.md)).
 
 The carve-out is **all-or-nothing, not per-path**: if any tracked
 `.gitattributes` declares any such attribute (`declares_conversion_attributes`
@@ -236,8 +236,8 @@ seed** and the first status falls back to the eager scan — which is correct, j
 not optimized. The common case (no conversion attribute) seeds every entry.
 
 `ls -l`/`stat` of an unmaterialized file still faults its blob once for the exact
-size — that is limitation [R6](limitations.md), a `getattr` cost separate from
-`git status`, which does not stat seeded entries.
+size — the `getattr` size-fault cost ([limitations.md](limitations.md)), separate
+from `git status`, which does not stat seeded entries.
 
 ---
 
