@@ -11,8 +11,6 @@ This is explanation grounded in code. Each `INV-…` below is an invariant the
 shipped system upholds; where a regression test exists or is intended, it is
 named. The deadlock invariants are the substantive content here — there is **no
 daemon, registry, persisted state machine, recovery command, or namespace DB**.
-A short "Considered / not built" note at the end records the lifecycle and
-recovery machinery that earlier drafts described but that was never built.
 
 The reusable substrate the rest of this doc leans on is real:
 `crates/git-store/src/proc.rs::harden_fds`, the `GIT_NO_LAZY_FETCH` /
@@ -22,7 +20,7 @@ offload in `crates/fuse/src/pool.rs` + `crates/fuse/src/mount.rs`. The interop
 bridge (`GitStore::interop_run`) in `crates/git-store/src/interop.rs` is **not**
 part of the mount hot path, but it is **live** — stock `git status`/`commit` run
 against the shared store through a throwaway operational gitdir it stands up; it
-is exercised by `store_integration.rs`, not superseded.
+is exercised by `store_integration.rs`.
 
 ---
 
@@ -229,57 +227,3 @@ transactional cleanup.
   [`fsmonitor.md`](fsmonitor.md).
 - **INV-S3.** Health checks run real `git` inside the live mount, so a deadlock
   regression (cycle 1 or 2) surfaces at mount time, not only under load.
-
----
-
-## 3. Considered / not built (possible future)
-
-Earlier drafts of this doc specified a much larger lifecycle-and-recovery
-architecture. **None of it was built**, and it does not match the shipped
-single-CLI design above. It is summarized here only so the design rationale is
-not lost; do not read any of it as describing current behavior.
-
-- **A persisted mount-lifecycle state machine.** A 12-state `MountState` enum
-  (`Creating` → … → `Mounted` → `Quiescing` → `Unmounting`, plus `Recovering` /
-  `Failed`) written to a mount **registry** by a long-running **daemon**, with a
-  write-ahead transition table and a `FailureReason` enum. None of this exists:
-  there is no daemon, no registry, no `controller.rs`/`registry.rs`, and no
-  `MountState`. The only "mount state" in `crates/core` is a monotonic
-  `MountGeneration` counter (`crates/core/src/ids.rs`); the real lifecycle is the
-  detached `__serve` child of section 2. *Rationale worth keeping:* the rule that
-  a record must never report "mounted" before the kernel mount exists and health
-  checks pass — which section 2 satisfies by only printing success after the live
-  health checks.
-
-- **A daemon startup transaction.** A `start_mount(StartupRequest) -> MountReady`
-  entry point that blocks until `Mounted`/`Failed`, takes an inter-process
-  `flock` on `workspaces/<id>/lock`, and idempotently resumes from persisted
-  state. Not built: startup is `cmd_mount` (no IPC, no flock, no resume).
-
-- **A recovery procedure.** A seven-step `recover(&self, spec, export) ->
-  RecoveryReport` run on daemon startup for non-terminal registry states and via
-  a `git lazy-mount recover <mnt> [--export <dir>]` subcommand. Not built: the
-  only CLI verbs are `unmount`, `doctor`, and the hidden `__serve`
-  (`crates/cli/src/main.rs:57-85`); there is no `recover`, no `RecoveryReport`,
-  and no crash-recovery pass. *Rationale worth keeping* (genuinely useful if
-  recovery is ever added): the safety bias — resolve uncertainty toward *more*
-  FSMonitor invalidation and *never* deletion (quarantine ambiguous files), and
-  never rewrite Git refs/index or steal a live `index.lock`.
-
-- **A SQLite namespace DB.** `state.sqlite` (WAL, `PRAGMA integrity_check`) as the
-  durable parent-indexed namespace. Not built and not planned: durability is
-  per-entry atomic JSON sidecars plus an append-only change journal in
-  `crates/worktree` (see [`durability-security.md`](durability-security.md) and
-  [`fsmonitor.md`](fsmonitor.md)). There is no SQLite anywhere in the tree.
-
-- **An object-provider coalescing fetch scheduler.** A separate `crates/object-provider`
-  with an `ensure_present_locally` gate and an `AllowNetwork` background thread
-  pool doing condvar-coalesced network fetches. Not built: that crate does not
-  exist; hydration is the direct, single-flight `materialize_path` of section 1
-  (INV-D5/D9), and `FetchPolicy` is the unwired vocabulary type of section 1.4.
-
-What *did* ship from this space: the overlay's two-phase atomic publish (content
-temp → fsync → rename, then metadata sidecar) and the durable append-only change
-journal, both in `crates/worktree`. Those are owned by
-[`durability-security.md`](durability-security.md) and
-[`fsmonitor.md`](fsmonitor.md).

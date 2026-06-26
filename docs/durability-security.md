@@ -80,13 +80,6 @@ copied. The detailed rename rules (RENAME_NOREPLACE honoured, RENAME_EXCHANGE
 rejected, directory/subtree rename metadata-only) live in
 [`worktree-model.md`](worktree-model.md).
 
-> Considered / not built (possible future): keying content by a
-> path-independent random nonce so even a *materialized* subtree rename touches
-> only the namespace. Today the content file is kept across a rename but the
-> sidecar is re-keyed per path; a single transactional namespace store would let
-> a multi-path rename commit atomically instead of as N independent sidecar
-> renames. Neither the nonce nor a namespace DB exists in the code.
-
 ### 1.2 Write protocol and durability ordering
 
 One overlay mutation writes content first, then the namespace sidecar that
@@ -130,8 +123,7 @@ full-invalidation rules are owned by [`fsmonitor.md`](fsmonitor.md).
 
 Known hardening gap: the journal has **no compaction** — `State.paths` is kept
 whole, so the log and its in-memory replay grow unbounded over the life of a
-mount. Epoch and generation are hard-coded `1` and `0` and never bumped;
-epoch-bump-on-crash is an explicit future refinement.
+mount. Epoch and generation are fixed at `1` and `0`.
 
 ---
 
@@ -148,15 +140,9 @@ until unmount. The only CLI verbs are the default mount form, `Unmount`,
 
 Single-writer discipline is in-process: one `__serve` child holds the mount and
 is the only overlay writer. There is no `WorkspaceLock`, no `locks/` directory,
-no `flock` set, and no `boot_id` stale-lock logic.
-
-> Considered / not built (possible future): a long-lived daemon owning the mount
-> with a versioned Unix control socket (peer-credential authenticated), an
-> interprocess `flock` lock set with `boot_id`-aware stale detection, and a
-> `MountState` startup recovery state machine with a `RecoveryReport` and a
-> `recover` subcommand. None of this exists; startup and its deadlock-avoidance
-> invariants are documented in
-> [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).
+no `flock` set, and no `boot_id` stale-lock logic. Startup and its
+deadlock-avoidance invariants are documented in
+[`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).
 
 ---
 
@@ -216,12 +202,6 @@ When a fetch fails with expired credentials, `git-store` classifies it as
 default (`error.rs` `default_retryable`). The recommended action points the user
 at `git lazy-mount doctor`; a subsequent user-run `git fetch` re-primes the
 credential helper and later reads of the same object succeed without a remount.
-
-> Considered / not built (possible future): an `AuthFailureState` record per
-> repo, an IPC `CredentialRefresh` flow, an `--offline` mount flag that pins
-> every callback to `CacheOnly`, and a `prefetch --for-offline` warm-cache
-> subcommand. The accurate, shipped mechanism is the `FetchPolicy` gate plus
-> `GIT_TERMINAL_PROMPT=0`; the rest is unbuilt.
 
 ---
 
@@ -293,12 +273,6 @@ It never invokes git porcelain and never the hooks directory, so hooks run only
 because the user invoked a git command that normally runs them. The
 `GIT_NO_LAZY_FETCH` environment on read paths keeps a filter from triggering a
 recursive lazy-fetch subprocess that could deadlock a callback.
-
-> Considered / not built (possible future): a configurable `FilterTrust`
-> { Trusted, BuiltinsOnly, ErrorOnExternal, Raw } policy defaulting to
-> builtins-only. No such enum exists; the real safety behaviour is the
-> conversion-attribute carve-out in the FSMonitor seed (section 4) plus serving
-> the raw baseline blob when a smudge filter would otherwise run.
 
 ### 5.3 Redaction
 

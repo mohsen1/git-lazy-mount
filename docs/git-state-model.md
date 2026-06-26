@@ -107,69 +107,35 @@ its own index back to stage 0.
 
 ---
 
-## 4. Considered but not built — a daemon-side Git-state cache
+## 4. Stock Git owns all repository state
 
-An earlier design proposed that the daemon maintain disposable parses of every
-Git-owned input: an `IndexCache` (a `DIRC` parser over `$GIT_DIR/index`,
-including v2/v3/v4, split index, sparse-dir, and conflict stages), a
-`RefSnapshot` (HEAD/branches/remotes/tags rebuilt from `for_each_ref` +
-`rev-parse`), and an `OpState` enum (merge/rebase/cherry-pick/revert/bisect
-derived from gitdir top-level files). These caches were to be kept warm by a
-hook multiplexer (`post-index-change`, `reference-transaction`,
-`post-checkout`, `post-merge`, `post-commit`, `post-rewrite`) layered over the
-user's hooks, plus an inotify/mtime watcher on
-`index`/`HEAD`/`packed-refs`/`refs/`/`logs/`.
+Stock Git owns all repository state through the real gitdir (§2): the index,
+HEAD, refs, reflogs, the object database, and in-progress operation state. The
+projection keeps no Git-state cache — no daemon-side index parser, no ref
+snapshot, no in-progress-operation model, and no gitdir watcher. The only Git
+hook configured is `core.fsmonitor` (with `core.fsmonitorHookVersion=2`),
+pointing at the `git-lazy-mount-fsmonitor` binary
+([`configure_fsmonitor`](../crates/cli/src/main.rs)).
 
-**None of this was built, and the transparent approach made it unnecessary.**
-Because stock Git operates directly on the real gitdir (§2), there is no
-daemon-side index parser, no `RefSnapshot`, no `OpState`, no hook multiplexer,
-and no gitdir watcher in the tree. The only Git hook configured is
-`core.fsmonitor` (with `core.fsmonitorHookVersion=2`), pointing at the
-`git-lazy-mount-fsmonitor` binary
-([`configure_fsmonitor`](../crates/cli/src/main.rs)). The genuinely useful idea
-that survives is the *principle* in §1 plus the FSMonitor seed in §2 — the rest
-was machinery for a problem the transparent design does not have.
+The change journal that backs that hook is the durable
+[`ChangeJournal`](../crates/worktree/src/journal.rs): the mount writes it
+synchronously before each FUSE reply and the `git-lazy-mount-fsmonitor` hook
+reads it; see [`fsmonitor.md`](./fsmonitor.md).
 
-If a future feature ever needs to *observe* (not own) Git state from a FUSE
-callback, the constraints still hold: such a read must run only plumbing
-against the native gitdir (`--git-dir`, `GIT_TERMINAL_PROMPT=0`,
-`GIT_OPTIONAL_LOCKS=0`, `GIT_NO_LAZY_FETCH=1`), never run porcelain, never scan
-the worktree, and never wait on the caller's `index.lock`.
+### The interop bridge
 
----
-
-## 5. Crates this model replaced
-
-The transparent design retired three crates that embodied the rejected "second
-authoritative model":
-
-- A **custom stage** crate (a JSON `index.json` of staged changes) — the second
-  staging database the principle forbids. Replaced by stock Git writing the
-  real `$GIT_DIR/index`.
-- A **custom workspace** crate (`workspace_head_ref`, attached-branch leases, a
-  `commit-tree`+CAS publish path) — the second branch model and in-process
-  merge state. Replaced by Git owning HEAD, branches, and `MERGE_HEAD`
-  directly.
-- The original in-memory `Mutex<Vec<_>>` **fsmonitor** crate. Replaced by the
-  durable [`ChangeJournal`](../crates/worktree/src/journal.rs) that the mount
-  writes synchronously before each FUSE reply and the
-  `git-lazy-mount-fsmonitor` hook reads; see [`fsmonitor.md`](./fsmonitor.md).
-
-These crate directories no longer exist in the tree.
-
-**The interop bridge still exists.**
 [`crates/git-store/src/interop.rs`](../crates/git-store/src/interop.rs) stands
 up a throwaway operational gitdir, routes object I/O via
 `GIT_OBJECT_DIRECTORY`, synthesizes an index from a tree with every entry
 marked skip-worktree, and reads back the resulting head. It is **not** on the
-mount hot path — stock Git operating on the real worktree replaced the need for
-it there — but the module is still `pub`-exported (`InteropOutcome`) and
+mount hot path, but the module is `pub`-exported (`InteropOutcome`) and
 exercised by the `interop_bridge_status_commit_and_lazy_fetch` integration test
-in [`store_integration.rs`](../crates/git-store/tests/store_integration.rs). It
-is retained and tested, not deleted.
+in [`store_integration.rs`](../crates/git-store/tests/store_integration.rs).
 
-Reused as-is: [`GitStore`](../crates/git-store/src/store.rs) and its
-`BatchSession` (long-lived `cat-file --batch-command`), the core types
+### Shared object-store components
+
+[`GitStore`](../crates/git-store/src/store.rs) and its `BatchSession`
+(long-lived `cat-file --batch-command`), the core types
 ([`ObjectId`](../crates/core/src/object_id.rs),
 [`GitMode`](../crates/core/src/mode.rs),
 [`RepoPath`](../crates/core/src/path.rs)), and the `MergeStage`/`MergeConflict`
