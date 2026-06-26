@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -243,10 +244,14 @@ impl AdminRepo {
         // A checkout conversion (clean/smudge `filter`, `ident`,
         // `working-tree-encoding`, or CRLF `eol`) makes a file's working-tree bytes
         // differ from its stored blob, so seeding it valid could hide a real diff.
-        // If the repo declares any such attribute, skip the seed entirely: the first
-        // status then falls back to the eager scan, which is correct. The common
-        // case (no conversion attribute) seeds every entry.
-        if self.declares_conversion_attributes(&all)? {
+        // Carve those paths out *per file* and seed the rest. A handful of converted
+        // files (e.g. a few `eol=crlf` entries in `.gitattributes`) must not cost the
+        // whole index its seed — otherwise the first `git status` falls back to
+        // stat-ing every tracked path, and on a lazy mount that size-faults every
+        // blob (tens of thousands of round-trips), which can stall the mount.
+        let converted = self.conversion_paths(&all)?;
+        let to_seed: Vec<&Vec<u8>> = all.iter().filter(|p| !converted.contains(*p)).collect();
+        if to_seed.is_empty() {
             return Ok(());
         }
         let mut child = self
@@ -262,7 +267,7 @@ impl AdminRepo {
                 .stdin
                 .take()
                 .ok_or_else(|| Error::new(ErrorCode::Internal, "update-index stdin".to_string()))?;
-            for p in &all {
+            for &p in &to_seed {
                 stdin
                     .write_all(p)
                     .and_then(|()| stdin.write_all(&[0]))
@@ -303,6 +308,95 @@ impl AdminRepo {
             }
         }
         Ok(false)
+    }
+
+    /// The exact tracked paths that carry a checkout-conversion attribute
+    /// (`filter`, `ident`, `working-tree-encoding`, or `eol=crlf`), so the FSMonitor
+    /// seed can carve out only those and seed everything else.
+    ///
+    /// Fast path: if no tracked `.gitattributes` declares any conversion attribute,
+    /// returns an empty set without running `check-attr`. Otherwise it asks Git to
+    /// resolve attributes from the index (`--cached`, so the working tree is never
+    /// stat'd and no file blob is faulted — only the already-read `.gitattributes`
+    /// definitions) over every path at once. The path list is streamed on a writer
+    /// thread so a large result cannot deadlock the pipe.
+    fn conversion_paths(&self, all: &[Vec<u8>]) -> Result<HashSet<Vec<u8>>> {
+        if !self.declares_conversion_attributes(all)? {
+            return Ok(HashSet::new());
+        }
+        // Pre-fetch every tracked `.gitattributes` (each bounded) so check-attr can
+        // resolve attributes from local objects only: `self.git()` runs with
+        // `GIT_NO_LAZY_FETCH=1`, and check-attr also reads sub-directory
+        // `.gitattributes` — not just the root one `declares_conversion_attributes`
+        // stopped at — so any it has not seen yet must already be present, or
+        // check-attr would fail and skip the seed entirely.
+        for path in all
+            .iter()
+            .filter(|p| p.rsplit(|&b| b == b'/').next() == Some(b".gitattributes".as_slice()))
+        {
+            let _ = self.read_index_blob(path);
+        }
+        let mut child = self
+            .git()
+            .args([
+                "check-attr",
+                "--cached",
+                "-z",
+                "--stdin",
+                "filter",
+                "ident",
+                "working-tree-encoding",
+                "eol",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("spawn check-attr: {e}")))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::new(ErrorCode::Internal, "check-attr stdin".to_string()))?;
+        let paths: Vec<Vec<u8>> = all.to_vec();
+        let writer = std::thread::spawn(move || {
+            for p in &paths {
+                if stdin.write_all(p).and_then(|()| stdin.write_all(&[0])).is_err() {
+                    break;
+                }
+            }
+            drop(stdin);
+        });
+        let out = child
+            .wait_with_output()
+            .map_err(|e| Error::new(ErrorCode::Internal, format!("check-attr wait: {e}")))?;
+        let _ = writer.join();
+        if !out.status.success() {
+            return Err(Error::new(
+                ErrorCode::Internal,
+                "check-attr --cached failed".to_string(),
+            ));
+        }
+        // `-z` output is repeated `<path> NUL <attr> NUL <value> NUL` triples.
+        let toks: Vec<&[u8]> = out.stdout.split(|&b| b == 0).collect();
+        let mut converted = HashSet::new();
+        let mut i = 0;
+        while i + 2 < toks.len() {
+            let (path, attr, val) = (toks[i], toks[i + 1], toks[i + 2]);
+            i += 3;
+            if path.is_empty() {
+                continue;
+            }
+            let is_conversion = match attr {
+                b"eol" => val == b"crlf",
+                b"ident" => val == b"set",
+                b"filter" | b"working-tree-encoding" => val != b"unspecified" && val != b"unset",
+                _ => false,
+            };
+            if is_conversion {
+                converted.insert(path.to_vec());
+            }
+        }
+        Ok(converted)
     }
 
     /// Read a tracked blob's contents from the index by path (`:<path>`), fetching
