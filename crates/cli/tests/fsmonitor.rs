@@ -226,11 +226,12 @@ fn non_conversion_gitattributes_still_seed_zero_fault() {
 }
 
 #[test]
-fn conversion_attribute_skips_seed_but_stays_correct() {
-    // A repo that declares a clean/smudge `filter` (its working-tree bytes can
-    // differ from the blob) skips the FSMonitor seed entirely, so the first status
-    // falls back to the eager scan. That must stay correct: an edit is surfaced and
-    // an unedited file is not falsely reported.
+fn conversion_attribute_carves_out_only_that_path() {
+    // A repo that declares a clean/smudge `filter` on one pattern (`*.dat`) must seed
+    // every OTHER path and carve out only the converted file — not skip the whole
+    // seed. So a first clean status faults at most the converted path, never every
+    // tracked blob (which on a large lazy mount means tens of thousands of faults
+    // that can stall the mount), and change detection stays correct.
     const N: usize = 8;
     let mut files: Vec<(String, Vec<u8>)> = (0..N)
         .map(|i| (format!("src/f{i}.txt"), format!("file {i}\n").into_bytes()))
@@ -243,8 +244,19 @@ fn conversion_attribute_skips_seed_but_stays_correct() {
         .collect();
     let h = mount_with_seed(&refs);
 
-    // Mount succeeded (no stall on the attributes read), and change detection is
-    // correct even with the seed skipped.
+    // First clean status: src/*.txt + .gitattributes are seeded (zero-fault); only
+    // the carved-out `data/blob.dat` is checked, so far fewer than every file faults.
+    let h0 = h.proj.hydrations();
+    let (ok, st) = git(&h.mnt, &["status", "--porcelain"]);
+    assert!(ok, "status failed");
+    assert_eq!(st, "", "tree must be clean");
+    assert!(
+        h.proj.hydrations() - h0 < N as u64,
+        "the seed must cover the non-converted paths; faulted {}",
+        h.proj.hydrations() - h0
+    );
+
+    // Change detection stays correct with the per-path seed.
     std::fs::write(h.mnt.join("src/f2.txt"), b"changed\n").unwrap();
     let (ok, st) = git(&h.mnt, &["status", "--porcelain"]);
     assert!(ok, "status failed");
