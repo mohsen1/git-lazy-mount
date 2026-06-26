@@ -24,12 +24,12 @@ upstream repos; the agent's commit is pushed to a fork.
 | repo | files | `git clone --depth 1` | `git lazy-mount` | file content fetched |
 |---|---|---|---|---|
 | facebook/react | 7,243 | 53 MB | 19 MB → 36 MB | 3 MB |
-| microsoft/vscode | 16,018 | 278 MB | 98 MB → 159 MB | 1 MB |
-| microsoft/TypeScript | 81,369 | 429 MB | 28 MB → 87 MB | 10 MB |
+| microsoft/vscode | 16,018 | 278 MB | 98 MB → 158 MB | 1 MB |
+| microsoft/TypeScript | 81,369 | 429 MB | 28 MB → 87 MB | 9 MB |
 
 `git lazy-mount` is the on-disk workspace **right after mounting → after the agent
 finished**. It keeps the **full commit history** (the clone is shallow) yet starts
-smaller than even a shallow clone. Of the lazy footprint, only **1–10 MB** is actual
+smaller than even a shallow clone. Of the lazy footprint, only **1–9 MB** is actual
 file *content* (sgrep answers the search; the agent reads just the one file it
 edits) — the rest is the `tree:0` commit history, plus the trees Git faults while
 building and pushing the commit (the mount→after-task growth). A normal full
@@ -42,14 +42,16 @@ and the 81k-file TypeScript trees — each agent searched, edited, committed, an
 
 ### Setup vs task time
 
-Mounting is near-instant; the per-task time on the mount is higher than on a local
-checkout, because Git faults trees on demand as it walks/commits:
+Mounting is near-instant. The per-task time on the mount is higher than on a local
+checkout — the working-tree walk crosses FUSE per file, and Git faults any missing
+objects on demand — and grows with the file count, so TypeScript's 81k-file walk
+dominates its task:
 
 | repo | clone | mount | full-clone task | lazy-mount task |
 |---|---|---|---|---|
-| react | 58 s | 8 s | 57 s | 187 s |
-| vscode | 168 s | 7 s | 189 s | 301 s |
-| TypeScript | 170 s | 4 s | 559 s | 913 s |
+| react | 58 s | 3 s | 57 s | 73 s |
+| vscode | 168 s | 7 s | 189 s | 246 s |
+| TypeScript | 170 s | 4 s | 559 s | 691 s |
 
 ## Transcripts
 
