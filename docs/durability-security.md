@@ -1,693 +1,319 @@
-# Overlay durability, recovery journal, auth/offline, security
+# Overlay durability, auth/offline, security
 
-This area of the [specification](design.md) covers overlay
-storage and durability, the optional operation journal, auth/offline, the
-security model, and stable synthetic metadata + racy-clean. Read
-alongside [`architecture.md`](architecture.md) (baseline+overlay model,
-two-sources-of-truth) and [`requirements-checklist.md`](requirements-checklist.md).
+This area of the [specification](design.md) covers how the writable overlay
+reaches the disk durably, how authentication and offline behaviour are gated so
+a filesystem callback never prompts, and the security model for treating
+repository data as untrusted. Read alongside
+[`architecture.md`](architecture.md) (baseline + overlay model,
+two-sources-of-truth).
 
-This document covers the daemon's own durable state: the writable working
-tree. Git's gitdir owns refs/index/reflogs/commits; we never duplicate
-them and never journal them here. The design supersedes the old
-custom-stage / commit-adoption / `git lazy-mount git --` bridge. The operation
-journal in this design is a *crash-recovery* artifact, not a second history.
+Scope. This document owns only the *working-tree bytes* the mount writes. Git's
+gitdir owns refs, index, reflogs, and commits; we never duplicate or journal
+them here. Related depth lives in its canonical owners:
 
-Crate map (target layout vs. existing): `overlay/` keeps native content +
-the namespace DB; `fsmonitor/` keeps the durable token journal; `daemon/` keeps
-mount ownership/locking/recovery; `object-provider/` keeps offline policy;
-`platform/` keeps path/security validation. The existing `crates/oplog`,
-`crates/stage`, and `crates/git-store/src/interop.rs` (the skip-worktree commit
-bridge) are **removed**: their journal *shape* (atomic-write + `CURRENT` + crash
-points) is reused as the recovery-journal substrate, but the
-view-history/commit-adoption semantics are not.
+- baseline/overlay/tombstone/`BaseRef` model and rename semantics:
+  [`worktree-model.md`](worktree-model.md)
+- `materialize_path`, single-flight, `smudge_blob`, exact size/metadata:
+  [`object-fetching.md`](object-fetching.md)
+- the FSMonitor seed, change journal, and zero-blob first status:
+  [`fsmonitor.md`](fsmonitor.md)
+- startup sequence and FUSE/git deadlock-avoidance:
+  [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md)
+- the per-path `Durability`/`Residency` state axes:
+  [`git-state-model.md`](git-state-model.md)
 
 ---
 
 ## 1. Overlay storage layout
 
-Native files hold content; a transactional SQLite-WAL database holds the
-namespace. **Large content is never stored in SQLite.** The daemon is the
-single writer.
+The overlay (`crates/worktree/src/overlay.rs`) records local working-tree changes
+on top of the read-only baseline: created/modified files, symlinks, explicit
+(empty) directories, deletions (tombstones), and clean-rename base-refs. It owns
+working-tree **bytes** only — never Git state.
+
+Storage is split:
+
+- **Content** lives in native files under `overlay/content/`, addressed by an
+  opaque content id and served by FD, never buffered whole.
+- **Namespace** is a parent-indexed map persisted as **one atomic JSON sidecar
+  per entry** under `overlay/meta/`, named `id_for(path) = sha256(path bytes) +
+  ".json"` (`overlay.rs` `id_for`). The in-memory index (`path -> OverlayEntry`
+  plus a parent → child-names map for `O(direct children)` listing) is a
+  disposable cache rebuilt from the sidecars on `Overlay::open`.
 
 ```
-~/.local/share/git-lazy-mount/workspaces/<id>/
-  git/                       real native gitdir (NOT ours, NOT in FUSE)
-  namespace.sqlite           the namespace DB  (WAL mode)
-  namespace.sqlite-wal
-  namespace.sqlite-shm
-  overlay/
-    content/
-      ab/<content-id>        native content blobs, sharded by first byte
-      ab/<content-id>.tmp    in-flight (reconciled/quarantined on startup)
-  filtered-cache/            validated working-tree representations
-  journal/
-    recovery.sqlite          recovery journal (WAL, bounded, compactable)
-  fsmonitor/
-    tokens.sqlite            FSMonitor durability journal (WAL)
-  quarantine/                ambiguous files preserved by recovery
-  mount.json                 daemon-written mount record (IPC-only writers)
-  locks/                     advisory lockfiles
-  logs/
+<workspace>/overlay/
+  meta/
+    <sha256(path)>.json     one sidecar per overlay entry (raw path + entry)
+    <sha256(path)>.tmp      in-flight write (temp+fsync+rename)
+  content/
+    c<pid>-<seq>            native content blobs, served by FD
 ```
 
-The current `crates/overlay/src/lib.rs` stores each entry as a per-path JSON
-file under `meta/` plus a content file under `content/`, addressed by
-`sha256(path bytes)`. That atomic-write-content-then-metadata discipline
-(`overlay::atomic_write`, lib.rs:249) is correct and is **kept**; the change is
-to move the *namespace* (the `meta/*.json` set) into the transactional DB so a
-multi-path rename/subtree operation is one atomic commit instead of N
-independent file renames. Content blobs stay as native
-files exactly as today (lib.rs:147–161).
-
-### 1.1 Content identity
-
-Content is addressed by an opaque **content id** (a random 128-bit nonce, hex),
-*not* by `sha256(path)` and *not* by blob OID. Decoupling content id from path
-is what makes rename/subtree-rename O(namespace rows) with **zero content
-copies**: a rename rewrites the `path → content_id` mapping, the content
-file is untouched. (The current `id_for(path)` scheme forces a content rename on
-every path rename; the design drops it.)
+There is **no** SQLite database, no `namespace.sqlite`, no `entries` table, and
+no SQL schema anywhere in the tree. The entry shape is the `OverlayEntry` enum:
 
 ```rust
-/// Opaque, location-independent handle to one overlay content file.
-pub struct ContentId([u8; 16]);          // random; hex = overlay/content/<aa>/<id>
-```
-
-### 1.2 Namespace DB schema
-
-One row per overlay entry. `path` is **raw bytes** (`BLOB`), never UTF-8.
-
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;          -- see 1.4 for the fsync ordering rule
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE entries (
-  ino            INTEGER PRIMARY KEY,    -- stable inode identity
-  generation     INTEGER NOT NULL,       -- bumped on delete+recreate
-  parent_ino     INTEGER NOT NULL,       -- parent identity (directory namespace)
-  name           BLOB    NOT NULL,       -- final component, raw bytes
-  kind           INTEGER NOT NULL,       -- File|Symlink|Dir|BaseRef|Tombstone|Gitlink
-  executable     INTEGER NOT NULL DEFAULT 0,   -- Git-relevant mode bit only
-  content_id     BLOB,                   -- NULL for dirs/tombstones/base-refs
-  base_oid       BLOB,                   -- BaseRef only: referenced blob (clean rename)
-  base_mode      INTEGER,                -- BaseRef only
-  dir_generation INTEGER NOT NULL DEFAULT 0,   -- bumped on direct-child change
-  open_unlinked  INTEGER NOT NULL DEFAULT 0,   -- retained-but-unnamed
-  rename_src     BLOB,                   -- diagnostic provenance only
-  size_hint      INTEGER,                -- validated exact size if known
-  created_unix   INTEGER NOT NULL,
-  modified_unix  INTEGER NOT NULL,
-  UNIQUE (parent_ino, name)              -- one entry per (parent,name)
-);
-CREATE INDEX entries_by_parent ON entries(parent_ino);
-CREATE INDEX entries_by_content ON entries(content_id);
-
-CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB) WITHOUT ROWID;
--- meta keys: schema_version, projection_generation, baseline_commit,
---            inode_high_water, fsmonitor_epoch
-```
-
-`kind` enumerates `OverlayKind` from `overlay/src/lib.rs:27` plus `Dir` and
-`Gitlink`. `BaseRef` (lib.rs:41) is preserved verbatim. It is the clean-rename
-optimization: place content at a new path referencing an existing blob OID
-with no fetch.
-
-Invariant **NS-1** (`UNIQUE(parent_ino,name)`): a directory never lists two
-entries with the same name; case/normalization collisions are handled by the
-platform layer (`platform::validate::detect_collisions`, validate.rs:223), not by
-the DB.
-
-### 1.3 Why SQLite, what stays native
-
-| Data | Store | Reason |
-|------|-------|--------|
-| namespace rows (small, transactional, queried by parent) | SQLite WAL | atomic multi-row rename/subtree; `O(direct children)` readdir |
-| file/symlink **content** | native file in `overlay/content/` | "do not store large file contents in SQLite"; streaming FD I/O |
-| filtered working-tree representations | native file in `filtered-cache/` | validated + atomically published |
-| FSMonitor tokens/events | SQLite WAL (`fsmonitor/tokens.sqlite`) | durable token journal |
-| recovery journal | SQLite WAL (`journal/recovery.sqlite`) | bounded, compactable |
-
-### 1.4 Write protocol and the durability ladder
-
-A single namespace mutation:
-
-```
-1. content   -> write overlay/content/<id>.tmp, fsync FILE
-2. content   -> rename .tmp into place (publish)                         [DataFsynced]
-3. namespace -> BEGIN IMMEDIATE; upsert/delete rows; COMMIT (WAL)        [MetadataCommitted]
-4. (optional) directory fsync of overlay/content/<shard>
-```
-
-Content is durable **before** the namespace row that references it, so a crash
-never yields a row pointing at absent/torn content (the existing
-overlay invariant, lib.rs:13). Order is the inverse of delete: to remove
-content, first delete the row (COMMIT), then unlink the content file. A crash
-leaves an unreferenced orphan, never a dangling reference.
-
-Durability levels (the existing `Durability` ladder, `core/src/state.rs:103`, is
-reused, dropping `OperationSealed` which belonged to the superseded op-history):
-
-```rust
-pub enum Durability { InMemory, Journaled, DataFsynced, MetadataCommitted }
-```
-
-We only claim crash durability for writes the application actually `fsync`ed
-beyond ordinary fs guarantees. `flush`/`release` publish to the overlay
-but do **not** force `fsync` unless the app called `fsync`/`fdatasync`.
-
-Invariant **DUR-1**: after a `COMMIT` returns, the entry and its content survive
-`SIGKILL` of the daemon and a remount. (Verified by a crash-injection test.)
-
-Invariant **DUR-2**: an acknowledged `write()`/`fsync()` from a user process is
-never silently lost; on ambiguous recovery the bytes are quarantined, not
-deleted.
-
----
-
-## 2. Single writer, interprocess locking
-
-The daemon is the authoritative overlay writer. CLI tools and hooks **never**
-open the namespace DB for writing or rewrite `mount.json`; they go through IPC
-(`crates/ipc`, the versioned control protocol, ipc/src/lib.rs:18). In-process
-mutexes alone are insufficient: use OS advisory file locks.
-
-### 2.1 Lock set and wire shape
-
-Each lock is an `flock`-style exclusive lock on a file under `locks/` (Linux
-`flock(2)` / `fcntl` `F_OFD_SETLK`; the lock file records the holder for
-diagnostics). Locks are CLOEXEC so a spawned `git`/filter never inherits them.
-
-| Lock file | Guards | Held by | Held during |
-|-----------|--------|---------|-------------|
-| `locks/mount.lock`     | mount ownership (one daemon owns the mount) | daemon | whole `mounted` lifetime |
-| `locks/startup.lock`   | daemon startup race | starting daemon | preflight → live |
-| `locks/migration.lock` | namespace DB schema migration | migrator | migration only |
-| `locks/recovery.lock`  | crash recovery pass | recoverer | recovery only |
-| `locks/git-init.lock`  | administrative gitdir creation | initializer | clone/init only |
-
-```rust
-pub enum LockScope { Mount, Startup, Migration, Recovery, GitInit }
-
-/// RAII exclusive interprocess lock. `try_acquire` returns `MountLifecycle`
-/// (EBUSY-class, error.rs:119) with the recorded holder pid in `context`.
-pub struct WorkspaceLock { scope: LockScope, _fd: OwnedFd }
-impl WorkspaceLock {
-    pub fn try_acquire(ws_dir: &Path, scope: LockScope) -> Result<WorkspaceLock>;
-    pub fn holder(ws_dir: &Path, scope: LockScope) -> Option<HolderInfo>; // pid, started_at
-}
-pub struct HolderInfo { pub pid: u32, pub started_unix: i64, pub boot_id: String }
-```
-
-Invariant **LOCK-1**: at most one process holds `mount.lock` for a workspace; a
-second `mount`/daemon attempt fails fast with `MountLifecycle` and names the
-holder, rather than corrupting the DB.
-
-Invariant **LOCK-2**: a **stale** lock (holder pid dead, or `boot_id` differs
-from current boot) is breakable only by the recovery path under
-`recovery.lock`, never silently. `boot_id` (Linux `/proc/sys/kernel/random/boot_id`)
-distinguishes "process still alive" from "machine rebooted, pid reused", which is a
-stale-PID-file attack vector.
-
-### 2.2 `mount.json` and the registry
-
-`mount.json` and the user-level registry (`crates/daemon/src/registry.rs`) are
-written **only** by the daemon, via the same temp-file + fsync + atomic rename
-discipline already in `registry.rs:86` (`Registry::store`). `MountState`
-(registry.rs:12) must reach `Mounted` only after a real kernel mount + Git health
-checks. The registry must never assert `Mounted` without a kernel
-mount. CLI `list`/`doctor` read it; they never write it.
-
----
-
-## 3. Recovery: startup state machine
-
-Recovery runs under `recovery.lock` before the mount goes live. It never
-deletes acknowledged user data (DUR-2).
-
-State table (the `MountState` set, registry.rs:12, drives this):
-
-| State | Entry condition | Actions | Exit |
-|-------|-----------------|---------|------|
-| `Recovering` | daemon start finds a non-clean shutdown marker, or `recover` CLI | run steps R1–R7 below | → `Mounting` (ok) / `Failed` (unrecoverable) |
-| `Mounting` | recovery clean | start FUSE | → `Mounted` / `Failed` |
-| `Mounted` | kernel mount + Git health pass | serve | n/a |
-| `Failed` | unrecoverable inconsistency | preserve everything; surface diagnostic | operator / `recover --export` |
-
-Recovery steps:
-
-```
-R1 validate namespace DB        SQLite integrity_check + schema_version;
-                                roll the WAL forward (SQLite does this);
-                                if corrupt -> Failed, DB never truncated.
-R2 reconcile content files      every entries.content_id must have a content
-                                file; orphan content files (no row) -> quarantine,
-                                NOT delete. Dangling rows (no file) -> the row's
-                                bytes were never durable per DUR-1; mark the path
-                                for full-invalidation, do not fabricate content.
-                                *.tmp files: a finished write renamed them; any
-                                surviving .tmp is incomplete -> quarantine.
-R3 preserve acknowledged writes any content file that R2 keeps and a row
-                                references is preserved verbatim (DUR-2).
-R4 reconcile kernel mount       is the mountpoint actually a FUSE mount? lazy-
-                                umount stale mounts; never report Mounted without
-                                a kernel mount.
-R5 reconcile native gitdir      compare meta.baseline_commit to the gitdir HEAD
-                                via long-lived cat-file; if HEAD moved while
-                                we were down (external git), baseline is behind ->
-                                force FSMonitor full-invalidation (R6).
-R6 FSMonitor continuity         if any of R1–R5 is uncertain, bump fsmonitor_epoch
-                                so the next token mismatches -> "/" full response.
-R7 quarantine ambiguous         move-aside into quarantine/ with a manifest; never
-                                in-place delete.
-```
-
-```rust
-pub struct RecoveryReport {
-    pub healthy: bool,
-    pub quarantined: Vec<QuarantinedItem>,   // path-or-content-id, reason
-    pub forced_full_invalidation: bool,      // R6 fired
-    pub baseline_behind: bool,               // R5
-    pub issues: Vec<String>,                 // redacted
-}
-pub struct QuarantinedItem { pub content_id: ContentId, pub reason: String, pub bytes: u64 }
-```
-
-CLI:
-
-```
-git lazy-mount recover <mountpoint>
-git lazy-mount recover <mountpoint> --export <dir>   # copy quarantine/ + any
-                                                     # recoverable uncommitted
-                                                     # working files out
-```
-
-The existing `oplog::recover` (oplog/src/lib.rs:275) and the FSKit `reattach`
-report (fs-fskit/src/recovery.rs:34) are the structural template (`healthy` /
-`stale` / `issues`), retargeted from the superseded view-history to the namespace
-DB + content reconciliation above.
-
-Invariant **REC-1**: recovery is idempotent. Running it twice yields the same
-result and never re-quarantines already-quarantined items.
-
-Invariant **REC-2**: recovery never requires network. Dirty overlay
-content never depends on network for recovery (see "Offline mode and prefetch"
-below).
-
----
-
-## 4. Recovery journal: strictly bounded purpose
-
-A filesystem **recovery** journal is allowed. It must **not** become a second
-Git history. Its only purposes:
-
-```
-overlay namespace crash recovery
-mount lifecycle transitions
-FSMonitor continuity
-diagnostic audit
-recovery of uncommitted working files
-```
-
-It explicitly does **not** record: commits, branch moves, ref updates,
-merge/rebase progress. Git's refs and reflogs are the history of those. We do
-**not** build a Jujutsu-style operation log here; the
-existing `crates/oplog` view-history and `crates/stage` are removed.
-
-### 4.1 Shape
-
-WAL SQLite at `journal/recovery.sqlite`, append-mostly, **compactable**:
-
-```sql
-CREATE TABLE journal (
-  seq          INTEGER PRIMARY KEY AUTOINCREMENT,   -- monotonic within an epoch
-  epoch        INTEGER NOT NULL,                    -- bumped on each clean start / R6
-  ts_unix      INTEGER NOT NULL,
-  kind         INTEGER NOT NULL,   -- ContentWritten|NamespaceCommitted|Renamed|
-                                   -- Unlinked|Lifecycle|FsmonitorEpochBump|Quarantine
-  path         BLOB,               -- raw bytes, may be NULL (lifecycle)
-  content_id   BLOB,
-  detail       BLOB                -- small CBOR; never file contents (redaction)
-);
-CREATE TABLE journal_meta (k TEXT PRIMARY KEY, v BLOB);
-```
-
-The journal entry is appended in the **same** SQLite transaction as the
-namespace row mutation (the write-protocol commit step). One `COMMIT` covers
-both, so the journal can never disagree with the namespace it describes.
-
-### 4.2 Compaction
-
-Once the namespace DB is checkpointed and durable to `MetadataCommitted`, journal
-rows older than the last checkpoint are unreferenced and may be pruned. Pruning
-is purely a recovery/audit optimization; losing old rows costs nothing because
-the namespace DB is itself the authoritative state.
-
-Invariant **JRN-1**: the journal is never the source of truth for working-tree
-bytes. Dropping `journal/` entirely still leaves a fully usable workspace
-(namespace DB + content files). Tested by deleting the journal and asserting the
-mount still serves correct content.
-
-Invariant **JRN-2**: the journal contains no secrets and no file contents.
-`detail` is bounded structured metadata only.
-
----
-
-## 5. Stable synthetic metadata + racy-clean
-
-For unmaterialized **clean** files we synthesize stable metadata; the existing
-`FileAttr` / `unix_mode_of` (fs-common/src/attr.rs) is the shape. The design
-nails down *stability* and *racy-clean*, which are durability concerns
-because Git compares index timestamps against what we project.
-
-### 5.1 Stable values within a projection generation
-
-```rust
-pub struct SyntheticMeta {
-    pub ino: u64,            // from the namespace inode table; stable per identity
-    pub generation: u64,     // bumped only on delete+recreate
-    pub mode: u32,           // 0o100644/0o100755/0o120777/0o040755 (attr.rs:44)
-    pub uid: u32,            // daemon's euid (private mount)
-    pub gid: u32,            // daemon's egid
-    pub mtime: SyntheticTime,
-    pub ctime: SyntheticTime,
-    pub size: SizeState,     // Unknown until first getattr that needs it
-}
-
-/// One fixed timestamp per projection generation, NOT wall-clock-on-read.
-pub enum SyntheticTime { ProjectionEpoch(u64) }   // -> a fixed unix time per generation
-
-pub enum SizeState { Unknown, Exact(u64) }        // never fake a size
-```
-
-Rules:
-
-- **STBL-1**: for a given `(workspace, projection_generation, path identity)`,
-  `getattr` returns byte-identical `ino/mode/uid/gid/mtime/ctime` across repeated
-  lookups. The synthetic mtime/ctime is the **projection epoch's** fixed time,
-  derived from `meta.baseline_commit` commit time (or mount time), *not* the
-  current clock. Re-reading a clean file must not advance its mtime.
-- **STBL-2**: a directory's `mtime`/`dir_generation` (the `dir_generation` column
-  in the namespace schema) changes when a **direct** child is
-  created/removed/renamed, but not when an unrelated dirty path elsewhere
-  changes. This is what lets Git's untracked cache stay valid. The hazard of
-  using one constant synthetic directory mtime forever is fixed by bumping
-  `dir_generation` on direct-child mutation.
-- **STBL-3**: `size` is `Unknown` until a `getattr` that genuinely needs it; we
-  never fabricate a size to dodge hydration, and `readdir` never asks for
-  it. Once known it is recorded in `entries.size_hint` and is
-  stable.
-
-### 5.2 Racy-clean
-
-Git treats an index entry as **racy-clean** when the file's mtime is `>=` the
-index timestamp; it then re-hashes the file to decide clean-vs-dirty. Two
-hazards:
-
-1. If our synthetic mtime equals the index write time, Git re-hashes the file on
-   the next status → a clean file triggers content hydration on every status.
-2. If we ever move a synthetic mtime *forward* on a passive read, Git flags a
-   clean file modified (we must not mark a path modified merely because a
-   synthetic timestamp differs).
-
-Mitigation:
-
-- **RACY-1**: synthetic mtimes are set to the **projection epoch**, which is
-  strictly **earlier** than any index Git writes after mount, so clean
-  unmaterialized files are never racy. FSMonitor is wired through
-  `core.fsmonitor` (the `git-lazy-mount-fsmonitor` hook reading the daemon's
-  durable change journal): it lets every clean status, including the
-  **first**, skip the redundant full-tree stat scan and fault zero blobs.
-  Under a `blob:none` clone a freshly `read-tree`'d index carries no FSMonitor
-  extension, so Git's "mark all entries valid" pass never runs on the first
-  status and Git would stat (and so fault) every entry. The fix is to pre-seed
-  the FSMonitor index extension at mount, right after read-tree
-  (`AdminRepo::seed_fsmonitor_valid`): mark every entry `CE_FSMONITOR_VALID`
-  carrying the journal's seq-0 token. Git's `refresh_cache_ent` then
-  early-returns on `CE_FSMONITOR_VALID` before any `lstat`, so the **first**
-  clean status faults zero blobs and the hook answers "nothing changed" at the
-  seq-0 token. Two carve-outs keep it correct: paths under a checkout
-  conversion (`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are excluded
-  from the seed so Git checks them normally, and the seeded token must match the
-  hook's identity (else Git falls back to the safe eager scan).
-- **RACY-2**: when a file *is* materialized (overlay content), its mtime is the
-  real native file mtime (the overlay file's `stat`, like `content_len`,
-  overlay/src/lib.rs:215). That is honest, and FSMonitor reports the change so Git
-  knows to look.
-- **RACY-3**: never narrow racy detection by lying; if exact size/mtime is
-  unknown we report the *stable synthetic* value, and any real edit goes through
-  the overlay + FSMonitor journal, so Git sees it through the change feed, not a
-  timestamp guess.
-
-Tested against a real `git status --porcelain=v2` differential vs. a normal
-checkout at the same commit: the first clean status faults zero blobs, every
-subsequent clean status fetches zero blobs, and an edit is reported exactly
-once.
-
----
-
-## 6. Authentication and offline
-
-The principle: **interactive auth only at the `mount` command;
-every FUSE callback is non-interactive.** This is already enforced at the
-process layer. `git-store::proc::run` sets `Stdio::null()` for stdin and
-hardens fds (proc.rs:84), so a spawned `git` "never inherits a terminal (so
-credential prompts cannot appear)".
-
-### 6.1 Interactive at mount, non-interactive after
-
-- `git lazy-mount <url> <path>` may use the user's normal credential helper
-  interactively during `git-init.lock` / clone. The initial clone is
-  the only place a prompt is allowed.
-- After mount, the **only** code allowed to cause network retrieval is the fetch
-  scheduler in the object provider; it runs non-interactively.
-
-### 6.2 FetchPolicy gate (the mechanism)
-
-Filesystem callbacks pass a non-fetching policy so a read can never prompt or
-even touch the network. This is implemented today: `FetchPolicy::may_fetch()`
-(core/src/fetch.rs) and the provider's `ensure_present_locally`
-(object-provider/src/lib.rs:137) return an offline error instead of fetching when
-the policy forbids it.
-
-```rust
-// object-provider/src/lib.rs, callback path uses CacheOnly/MustNotFetch:
-if !policy.may_fetch() { return Err(offline(id)); }  // OfflineMissingObject
-```
-
-| Caller | FetchPolicy | May prompt? | May hit network? |
-|--------|-------------|-------------|------------------|
-| `mount` clone | (git's own) | yes (helper) | yes |
-| FUSE read/getattr | `CacheOnly`/`MustNotFetch` | **no** | only via scheduler, non-interactive |
-| explicit `prefetch` | `AllowNetwork`/`Prefetch` | no (uses cached creds) | yes |
-| `git fetch`/`pull`/`push` (user-run) | git's own | yes | yes |
-
-### 6.3 Credential expiry
-
-When the scheduler's fetch fails with expired credentials, `git-store::classify`
-already maps it to `ErrorCode::Authentication` with the action "refresh
-credentials (e.g. `git lazy-mount doctor`) and retry" (proc.rs:152, error.rs).
-Required behavior:
-
-```
-1. return a bounded filesystem error      -> Authentication -> errno EACCES(13)
-                                             (error.rs:102), NOT a hang.
-2. record the failed object + cause        -> daemon AuthFailureState (per repo_id)
-3. surface a daemon diagnostic             -> git lazy-mount doctor / stats
-4. allow refresh without remount           -> IPC CredentialRefresh{repo_id}
-                                             (ipc/src/lib.rs:83); or a normal
-                                             user-run `git fetch` re-primes the helper
-5. retry subsequent reads                  -> Authentication is retryable
-                                             (error.rs:88 default_retryable)
-```
-
-```rust
-pub struct AuthFailureState {
-    pub repo_id: RepoId,
-    pub failed_oids: BoundedSet<ObjectId>,   // capped; for diagnostics
-    pub last_cause: ErrorCode,               // Authentication
-    pub since_unix: i64,
+pub enum OverlayEntry {
+    File { content: String, executable: bool },  // bytes in overlay/content/<content>
+    Symlink { target: Vec<u8> },                 // raw target stored inline
+    Dir,                                          // explicit (e.g. created empty) dir
+    Tombstone,                                    // a deleted baseline path
+    BaseRef { oid: ObjectId, mode: GitMode },     // clean-rename target: an existing blob
 }
 ```
 
-Invariant **AUTH-1**: a read of a missing object with expired credentials returns
-a bounded errno promptly; it never blocks a FUSE callback waiting for an
-interactive prompt.
+A corrupt sidecar is skipped at open (the path falls through to the baseline)
+rather than failing the whole mount.
 
-Invariant **AUTH-2**: after `CredentialRefresh` (or a user `git fetch`), a
-previously failing read of the same object succeeds without unmount/remount.
-Doctor or a normal git fetch refreshes credentials and the read retries.
+### 1.1 Content identity and clean rename
 
-### 6.4 Offline mode and prefetch
+Content is keyed by `id_for(path) = sha256(path bytes)` for its sidecar, and the
+content file itself carries an opaque sequential id (`new_content_id`). A path
+rename re-keys the overlay entry to the destination sidecar while **keeping** the
+content file (`Overlay::rename`), so a materialized file's bytes are not copied.
+
+A **clean** rename of an *unmaterialized* file fetches **zero blobs**: the
+projection records a `BaseRef { oid, mode }` at the destination (the existing
+baseline blob, by OID) and a tombstone at the source — no content is fetched or
+copied. The detailed rename rules (RENAME_NOREPLACE honoured, RENAME_EXCHANGE
+rejected, directory/subtree rename metadata-only) live in
+[`worktree-model.md`](worktree-model.md).
+
+> Considered / not built (possible future): keying content by a
+> path-independent random nonce so even a *materialized* subtree rename touches
+> only the namespace. Today the content file is kept across a rename but the
+> sidecar is re-keyed per path; a single transactional namespace store would let
+> a multi-path rename commit atomically instead of as N independent sidecar
+> renames. Neither the nonce nor a namespace DB exists in the code.
+
+### 1.2 Write protocol and durability ordering
+
+One overlay mutation writes content first, then the namespace sidecar that
+references it, each atomically:
 
 ```
-git lazy-mount <url> <path> --offline       # mount; never fetch on callbacks
-git lazy-mount prefetch <path> --for-offline # warm caches for offline use
+1. content   -> create overlay/content/<id> (the write path does not fsync it;
+                it is made durable only when the app calls fsync/fdatasync)
+2. namespace -> write meta/<id>.tmp, fsync it, rename into place,
+                then fsync the parent directory so the rename is durable
 ```
 
-- `--offline`: the daemon pins every callback policy to `CacheOnly`. Cached
-  content stays readable; a missing object returns a **clear**
-  `OfflineMissingObject` error (object-provider/src/lib.rs:368, `offline()`),
-  errno `EIO(5)`, with action "prefetch while online or rerun without --offline".
-- `prefetch --for-offline`: walks the requested subtree's trees and enqueues all
-  reachable blobs through the scheduler with `FetchPriority::Prefetch`, then
-  filters+caches them so an offline read needs no network.
+`atomic_write` (`overlay.rs`) performs the temp-write + `sync_all` +
+`rename` + best-effort parent-directory `sync_all`; the parent-dir fsync is what
+keeps an acknowledged create/rename from being lost after the file itself was
+fsynced. Content is durable **before** the sidecar that references it, so a crash
+never leaves a sidecar pointing at absent or torn content. Deletion is the
+inverse order (drop the sidecar, then unlink the content file), so a crash leaves
+at most an unreferenced orphan, never a dangling reference.
 
-Invariant **OFF-1**: **dirty overlay content never depends on the network**.
-Overlay files are self-contained native bytes; recovery and reads of
-locally-written content never call the fetcher. Tested: take a
-workspace offline, edit/create files, kill the daemon, recover. All dirty bytes
-stay intact, zero fetch attempts (REC-2).
+The per-path `Durability` ladder is defined in `crates/core/src/state.rs`. It is
+a 5-variant ordered enum; a higher level implies all lower guarantees:
 
-Invariant **OFF-2**: a `BaseRef` entry (clean rename of an unmaterialized file)
-whose blob is absent offline returns `OfflineMissingObject` on **content**
-read, but its **namespace** presence (lookup/readdir/rename) never needs network.
-A clean rename fetches zero blobs.
+```rust
+pub enum Durability { InMemory, Journaled, DataFsynced, MetadataCommitted, OperationSealed }
+```
+
+We only claim crash durability for writes the application actually `fsync`ed.
+`flush`/`release` publish to the overlay but do not force an `fsync` unless the
+app called `fsync`/`fdatasync`.
+
+### 1.3 Change journal
+
+The projection optionally carries a `ChangeJournal`
+(`crates/worktree/src/journal.rs`): a durable NUL-separated **append log** at
+`<gitdir>/glm-fsmonitor/changes.log`, replayed into an in-memory `Vec` on open.
+`record()` is synchronous (`write_all` + `sync_data`) *before* the FUSE reply, so
+a recorded change is on disk before the mutation is acknowledged. This journal
+feeds FSMonitor continuity, not a second history; its token form and
+full-invalidation rules are owned by [`fsmonitor.md`](fsmonitor.md).
+
+Known hardening gap: the journal has **no compaction** — `State.paths` is kept
+whole, so the log and its in-memory replay grow unbounded over the life of a
+mount. Epoch and generation are hard-coded `1` and `0` and never bumped;
+epoch-bump-on-crash is an explicit future refinement.
 
 ---
 
-## 7. Security model
+## 2. Process model (no daemon, no IPC)
 
-Repository data is **untrusted**. Threats and mitigations:
+There is no daemon and no IPC/control socket. `git lazy-mount <url> <path>`
+clones, builds the index, seeds FSMonitor, then spawns a **detached hidden
+`__serve` child** (`crates/cli/src/main.rs`) whose stdio is nulled and which is
+reparented to init and not waited on. That child opens the `AdminRepo`,
+`ChangeJournal`, and `Projection`, then calls `glm_fuse::mount`, which blocks
+until unmount. The only CLI verbs are the default mount form, `Unmount`,
+`Doctor`, and the internal `__serve`; there is no `list`, `recover`, or
+`prefetch`, and no `--offline` flag.
+
+Single-writer discipline is in-process: one `__serve` child holds the mount and
+is the only overlay writer. There is no `WorkspaceLock`, no `locks/` directory,
+no `flock` set, and no `boot_id` stale-lock logic.
+
+> Considered / not built (possible future): a long-lived daemon owning the mount
+> with a versioned Unix control socket (peer-credential authenticated), an
+> interprocess `flock` lock set with `boot_id`-aware stale detection, and a
+> `MountState` startup recovery state machine with a `RecoveryReport` and a
+> `recover` subcommand. None of this exists; startup and its deadlock-avoidance
+> invariants are documented in
+> [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).
+
+---
+
+## 3. Authentication and offline
+
+The principle: **interactive auth only at the `mount` command; every FUSE
+callback is non-interactive.** This is enforced at the process layer.
+
+- The clone in `AdminRepo::clone` (`crates/git-repo/src/lib.rs`) may use the
+  user's normal credential helper interactively, but still sets
+  `GIT_TERMINAL_PROMPT=0` so a non-interactive run fails fast instead of
+  hanging.
+- Every spawned `git` runs with stdin = `Stdio::null()` and hardened
+  (CLOEXEC'd) fds (`crates/git-store/src/proc.rs`), so a callback-spawned `git`
+  never inherits a terminal and a credential prompt cannot appear.
+
+### 3.1 FetchPolicy gate
+
+`FetchPolicy` (`crates/core/src/fetch.rs`) decides whether resolving an object
+may touch the network. Filesystem callbacks read with a non-fetching policy, so a
+read can never prompt or escalate to the network:
+
+```rust
+pub enum FetchPolicy { CacheOnly, AllowNetwork, Prefetch, MustNotFetch }
+pub fn may_fetch(&self) -> bool { matches!(self, AllowNetwork | Prefetch) }
+```
+
+`CacheOnly` maps to `GIT_NO_LAZY_FETCH=1` on the git side, and `MustNotFetch`
+additionally asserts the path never initiates I/O. On read paths `git-store`
+serves objects with `GIT_NO_LAZY_FETCH` set (`crates/git-store/src/store.rs`);
+hydration that *is* allowed to fetch goes through `materialize_path` (see
+[`object-fetching.md`](object-fetching.md)).
+
+| Caller | Policy | May prompt? | May hit network? |
+|--------|--------|-------------|------------------|
+| `mount` clone | git's own helper | yes (clone only) | yes |
+| FUSE read/getattr | `CacheOnly` / `MustNotFetch` | no | no |
+| `materialize_path` hydration | `AllowNetwork` | no (cached creds) | yes |
+| user-run `git fetch`/`pull`/`push` | git's own | yes | yes |
+
+### 3.2 Offline behaviour
+
+When an object is genuinely missing and the policy forbids a fetch, the read
+returns `ErrorCode::OfflineMissingObject`, which maps to **`EIO` (5)**
+(`crates/core/src/error.rs`), promptly and without blocking. Two facts follow
+from the storage model:
+
+- **Dirty overlay content never depends on the network.** Overlay files are
+  self-contained native bytes, so reads of locally-written content never call the
+  fetcher.
+- A `BaseRef` entry (clean rename of an unmaterialized file) whose blob is absent
+  returns `OfflineMissingObject` on a **content** read, but its namespace
+  presence (lookup/readdir/rename) needs no network.
+
+When a fetch fails with expired credentials, `git-store` classifies it as
+`ErrorCode::Authentication`, which maps to **`EACCES` (13)** and is retryable by
+default (`error.rs` `default_retryable`). The recommended action points the user
+at `git lazy-mount doctor`; a subsequent user-run `git fetch` re-primes the
+credential helper and later reads of the same object succeed without a remount.
+
+> Considered / not built (possible future): an `AuthFailureState` record per
+> repo, an IPC `CredentialRefresh` flow, an `--offline` mount flag that pins
+> every callback to `CacheOnly`, and a `prefetch --for-offline` warm-cache
+> subcommand. The accurate, shipped mechanism is the `FetchPolicy` gate plus
+> `GIT_TERMINAL_PROMPT=0`; the rest is unbuilt.
+
+---
+
+## 4. Synthetic metadata and racy-clean
+
+`getattr` is served by the projection's `attr_of` (`crates/worktree`) and the
+mount's `fuse_attr` (`crates/fuse/src/mount.rs`). There is no `SyntheticMeta`,
+`SyntheticTime`, or `SizeState` struct; the behaviour is:
+
+- A **clean** (unmaterialized) entry reports a stable mode and a fixed
+  `UNIX_EPOCH` mtime — never the wall clock — so re-reading it never advances its
+  timestamp.
+- A **materialized** overlay file reports its real on-disk `stat` (mtime, size).
+- Exact size of an unmaterialized blob is only computed when `getattr` genuinely
+  needs it (`ls -l`/`stat` faults the blob once; `readdir` does not), because a
+  tree carries no blob sizes.
+
+This stability matters for git's racy-clean handling: git re-hashes an index
+entry whose file mtime is `>=` the index timestamp. Because clean entries report
+a fixed epoch mtime that is strictly earlier than any index git writes after
+mount, clean unmaterialized files are never racy and a clean `git status` faults
+zero blobs.
+
+The first clean status faulting zero blobs depends on the **FSMonitor seed**
+(`AdminRepo::seed_fsmonitor_valid`), which marks every index entry
+`CE_FSMONITOR_VALID` so git's `refresh_cache_ent` early-returns before any
+`lstat`. Under the default `--filter=tree:0` clone, a freshly `read-tree`'d index
+carries no FSMonitor extension, so without the seed git would stat (and fault)
+every entry on the first status. Paths under a checkout conversion
+(`filter=` / `ident` / `working-tree-encoding=` / CRLF `eol`) are carved out:
+the seed is **skipped wholesale** if any tracked `.gitattributes` declares such
+an attribute, so git checks those paths normally. The seed, its token identity
+requirement, and the conversion carve-out are owned by
+[`fsmonitor.md`](fsmonitor.md).
+
+---
+
+## 5. Security model
+
+Repository data is **untrusted**. Threats and the mechanisms that actually exist:
 
 | Threat | Mitigation | Where |
-|------------|------------|-------|
-| path traversal | `RepoPath` rejects `..`, absolute, empty components, NUL | core/src/path.rs (`PathError`) |
-| symlink races | overlay writes never follow repo symlinks; write to `content/` by content-id, never via a repo-relative path; O_NOFOLLOW on internal opens | overlay write protocol |
-| malicious tree names | raw-byte paths, no shell construction, NUL-delimited plumbing | core/src/path.rs |
-| case/normalization attacks | `collision_key` / `detect_collisions`; `UNIQUE(parent,name)` NS-1 | platform/src/validate.rs:188,223 |
-| cache poisoning | filtered-cache + tree-cache keyed by content-addressed digests; atomic publish; validate on read | metadata/src/lib.rs |
-| corrupt object responses | `LocalObjectCorruption` on integrity failure | error.rs:28 |
-| decompression bombs | bounded decode in object provider; size caps before materialize | provider |
-| unbounded filter output | resource limits + timeouts on external filters | "External filter / hydration safety" below |
-| hung filters | filter timeout -> `FilterFailure` (errno EIO) | error.rs:69 |
-| credential leakage | URLs/headers/tokens redacted everywhere | repo_id.rs:13; proc.rs:138 |
-| control-socket impersonation | Unix socket owner-only perms + peer-cred check | "Control socket" below; ipc |
-| stale PID files | `boot_id`-aware stale detection (LOCK-2) | locking section |
-| mountpoint substitution | preflight validates mountpoint ownership/emptiness/nesting | platform/src/validate.rs |
-| unsafe repo ownership | gitdir + workspace dirs are 0700, owned by euid | "Private directories" below |
+|--------|------------|-------|
+| path traversal | `RepoPath::from_bytes` rejects NUL, absolute, empty, and `.`/`..` components | `core/src/path.rs` (`PathError`) |
+| malicious tree names | raw-byte paths, no shell construction, NUL-delimited git plumbing | `core/src/path.rs`, `git-store/src/tree_parse.rs` |
+| corrupt object responses | `LocalObjectCorruption` on integrity failure → `EIO` | `core/src/error.rs` |
+| hung/failed filters | `FilterFailure` → `EIO`; `ResourceLimit` → `ENOSPC` | `core/src/error.rs` |
+| recursive lazy-fetch deadlock | object reads run with `GIT_NO_LAZY_FETCH`; smudge pre-faults `.gitattributes` | `git-store/src/store.rs` |
+| credential leakage | URLs/tokens redacted in diagnostics; summaries/context carry no secrets | `git-store/src/proc.rs`, `core/src/error.rs` |
+| protected `.git` | any op on the synthetic `.git` returns `Authentication`, not a path probe | `worktree` `child_path` |
 
-### 7.1 Control socket
+### 5.1 Raw paths and traversal rejection
 
-The daemon's Unix-domain control socket (ipc) is created in a 0700
-user-private directory, the socket file is mode 0600, and every connection is
-authenticated by **peer credentials** (`SO_PEERCRED` on Linux): the connecting
-uid must equal the daemon's uid. The protocol is versioned
-(`PROTOCOL_VERSION`, ipc/src/lib.rs:18) so a mismatched client is rejected, not
-misparsed. No root privileges are required.
+`RepoPath` stores paths as raw non-NUL bytes and is the only validated path
+identity. `from_bytes` rejects a NUL byte, a leading `/`, an empty component
+(`a//b`), and any `.`/`..` traversal component, returning a typed `PathError`.
+Lossy Unicode is never used as an identity key: `RepoPath` exposes separate APIs
+for identity (`as_bytes`), human display, and reversible escaping for logs/JSON.
+A non-UTF-8 overlay path round-trips through reopen (the `Sidecar.path` is stored
+as raw bytes).
 
-Invariant **SEC-1**: a process with a different uid cannot drive the control
-socket (peer-cred check), and the socket is never world-accessible.
+### 5.2 Filter and hook safety
 
-### 7.2 External filter / hydration safety
+Passive hydration must never run a git hook and never silently execute an
+untrusted command. The mount serves objects through `cat-file`-class readers and,
+when a path declares a clean/smudge filter, `GitStore::smudge_blob` (which runs
+`git cat-file --filters --path --attr-source`, `crates/git-store/src/store.rs`).
+It never invokes git porcelain and never the hooks directory, so hooks run only
+because the user invoked a git command that normally runs them. The
+`GIT_NO_LAZY_FETCH` environment on read paths keeps a filter from triggering a
+recursive lazy-fetch subprocess that could deadlock a callback.
 
-Passive hydration must **never** unexpectedly execute an untrusted command
-and must **never run Git hooks**. Filter trust policy:
+> Considered / not built (possible future): a configurable `FilterTrust`
+> { Trusted, BuiltinsOnly, ErrorOnExternal, Raw } policy defaulting to
+> builtins-only. No such enum exists; the real safety behaviour is the
+> conversion-attribute carve-out in the FSMonitor seed (section 4) plus serving
+> the raw baseline blob when a smudge filter would otherwise run.
 
-```rust
-pub enum FilterTrust { Trusted, BuiltinsOnly, ErrorOnExternal, Raw }
-```
+### 5.3 Redaction
 
-- At mount, detect whether projected reads may need an executable filter;
-  default to `BuiltinsOnly`. An external filter under `BuiltinsOnly`/`ErrorOnExternal`
-  yields `FilterFailure` rather than silently executing repo-controlled code.
-- External filters that *are* permitted run with resource limits + timeouts;
-  a timeout/over-limit is `FilterFailure`/`ResourceLimit`
-  (error.rs:69/54).
-- The provider already smudges with `GIT_NO_LAZY_FETCH` and pre-faults
-  `.gitattributes` so a filter cannot trigger a recursive lazy-fetch subprocess
-  that deadlocks a callback (object-provider/src/lib.rs:189,268).
+Errors and logs carry only redacted breadcrumbs. `git-store`'s classifier keeps
+only the first few lines of git's stderr and never echoes full URLs (which can
+carry tokens) verbatim into a summary (`proc.rs`). In the `Error` model the
+`summary` field is documented to contain no secrets and `context` breadcrumbs are
+the caller's responsibility to redact (`core/src/error.rs`). File contents never
+appear in errors or the change journal.
 
-Invariant **SEC-2**: **passive hydration never runs a Git hook**. Hooks run
-only because the user invoked a Git command that normally runs them. The daemon's
-hydration path spawns only `cat-file`-class object readers and (policy-permitting)
-declared filters, never `git` porcelain, and never the hooks directory.
+### 5.4 Private directories
 
-Invariant **SEC-3**: passive hydration never executes an untrusted external
-command. Under the default policy, an unknown external filter errors
-instead of running.
-
-### 7.3 Redaction
-
-Redact in **all** outputs (logs, errors, journal, stats):
-
-```
-credentials in URLs        -> repo_id strips user:pass (repo_id.rs:126 test proves
-                              `secrettoken` never survives)
-authorization headers      -> never logged
-secret query parameters    -> stripped with the URL
-private paths when configured -> path redaction list
-file contents              -> never in errors/journal (Error.summary "must not
-                              contain secrets", error.rs:140; JRN-2)
-```
-
-The error model already carries only **redacted** breadcrumbs
-(`ErrorRepr.context`, "caller must ensure it is redacted", error.rs:212) and
-`git-store::classify` keeps "only the first few lines and never echo[es] full
-URLs verbatim" (proc.rs:138).
-
-Invariant **SEC-4**: no credential, token, authorization header, or file content
-appears in any log line, error JSON, journal row, or `stats`/`trace`/`doctor`
-output. (Regression: feed a URL with an embedded token and a file with a secret
-through clone+read+error paths; assert the token/secret never appears in any
-emitted bytes.)
-
-### 7.4 Private directories
-
-All cache and workspace directories are **private to the user**: created
-mode 0700, owned by the daemon's euid; content files 0600. The data roots
-(`platform::DataRoots`, roots.rs) place them under `XDG_STATE_HOME` /
-`~/Library/Application Support` / `%LOCALAPPDATA%`. Preflight refuses to operate
-on a workspace dir owned by another uid or with group/other write bits
-(unsafe-ownership).
-
-Invariant **SEC-5**: `namespace.sqlite`, `overlay/`, `filtered-cache/`,
-`journal/`, and `quarantine/` are never group/other readable or writable.
-
----
-
-## 8. Testable invariants (regression suite)
-
-Each becomes a regression test, most through a **real** `/dev/fuse` mount
-and differential against a normal checkout.
-
-Durability / overlay (crash injection):
-- **DUR-1** committed namespace+content survives `SIGKILL` + remount.
-- **DUR-2** an acknowledged user `write`/`fsync` is never silently lost; ambiguous
-  files are quarantined, not deleted.
-- **NS-1** no two entries share `(parent_ino, name)`.
-- crash injected after each of: content `.tmp` create, content publish, namespace
-  COMMIT, rename, unlink, fsync. No acknowledged data lost; DB never
-  corrupt.
-- non-UTF-8 path content survives reopen (already tested,
-  overlay/src/lib.rs:323 `non_utf8_path_overlay`).
-- clean rename fetches zero blobs (`BaseRef`, OFF-2).
-
-Locking / recovery:
-- **LOCK-1** second daemon on the same mount fails with `MountLifecycle`, names
-  the holder.
-- **LOCK-2** a stale lock (dead pid / new `boot_id`) is broken only under recovery.
-- **REC-1** recovery is idempotent.
-- **REC-2** recovery needs no network.
-- **JRN-1** deleting `journal/` leaves a usable workspace.
-- **JRN-2** journal rows contain no secrets/contents.
-
-Synthetic metadata / racy-clean:
-- **STBL-1** `getattr` is byte-stable across reads within a generation.
-- **STBL-2** directory mtime/`dir_generation` changes on direct-child change only.
-- **STBL-3** size is never fabricated; `readdir` never requests it.
-- **RACY-1** clean unmaterialized files are never racy; the first clean status
-  and every subsequent clean status both fault zero blobs.
-
-Auth / offline:
-- **AUTH-1** read with expired creds returns a bounded errno, never hangs.
-- **AUTH-2** `CredentialRefresh` / user `git fetch` re-enables reads without remount.
-- **OFF-1** dirty overlay content never depends on network for recovery.
-- **OFF-2** offline read of an absent blob returns a clear `OfflineMissingObject`.
-
-Security:
-- **SEC-1** non-owner uid cannot drive the control socket.
-- **SEC-2** passive hydration never runs a Git hook.
-- **SEC-3** passive hydration never runs an untrusted external filter (default policy).
-- **SEC-4** no credential/secret/content in any log/error/journal/stats output.
-- **SEC-5** workspace/cache dirs are user-private (0700/0600).
+Workspace and cache directories live under `data_dir()`
+(`$XDG_DATA_HOME/git-lazy-mount`, else `~/.local/share/git-lazy-mount`), keyed by
+a per-mountpoint hash, holding `git/`, `cache/`, `overlay/`, and `anchor/`. They
+are private to the invoking user. The synthetic `.git` inside the mount is
+protected not by a reserved inode but by `child_path` rejecting any operation on
+`.git` with `ErrorCode::Authentication`.

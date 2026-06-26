@@ -11,21 +11,15 @@ New here? Start with the [project README](../README.md). It covers what this is,
 
 - [Architecture overview](architecture.md): the moving parts, end to end.
 - [Worktree model](worktree-model.md): the read-only baseline plus the durable writable overlay.
-- [Git state model](git-state-model.md): what git owns vs. what the daemon caches.
-- [FUSE semantics](fuse-semantics.md): inodes, file handles, and the required operations.
-- [Object fetching](object-fetching.md): the object provider, fetch scheduler, filters, and metadata/size.
-- [Index & scalability](index-strategy.md): the real `.git/index` and the scalability gate.
+- [Git state model](git-state-model.md): what stock git owns vs. what the mount synthesizes.
+- [FUSE semantics](fuse-semantics.md): inodes, file handles, and the implemented operations.
+- [Object fetching](object-fetching.md): materialization, single-flight coalescing, filters, and exact size/metadata.
+- [Index & scalability](index-strategy.md): the real `.git/index` (`read-tree HEAD`) and scalability notes.
 - [FSMonitor](fsmonitor.md): the durable change journal and the `core.fsmonitor` hook.
-- [Startup, deadlock & recovery](deadlock-startup-recovery.md): the lifecycle state machines.
+- [Startup & deadlock avoidance](deadlock-startup-recovery.md): the mount startup sequence and the FUSE/git deadlock invariants.
 - [Durability & security](durability-security.md): overlay durability, auth/offline, and the threat model.
-
-## Working on it
-
-- [Requirements checklist](requirements-checklist.md): what's built and proven (the living tracker).
-- [Decision records](adr/): the load-bearing decisions and the reasoning behind them.
-- [Feasibility studies](feasibility/): the experiments that validated the approach before it was built.
 
 ## Reference
 
-- [Specification](design.md): the full, authoritative design the implementation is built and tested against.
-- [Future platforms](future-platforms/): notes on Windows (ProjFS) and macOS (FSKit). Out of scope today, but not impossible.
+- [Specification](design.md): the lean, authoritative design the implementation is built and tested against.
+- [Roads not taken](future-platforms/): the project is Linux-only; the Windows ([ProjFS](future-platforms/windows.md)) and macOS ([FSKit](future-platforms/macos.md), [on-device](future-platforms/macos-fskit-ondevice.md)) backends were retired and these notes survive only as history.
