@@ -42,7 +42,7 @@ Measured cold in a Linux container, with one real `claude` prompt per repo:
 | "what does `createTypeChecker` return?" `microsoft/TypeScript` | 81,370 | 652 MB | 27 MB |
 
 
-## Platform Support
+## Linux Only
 
 **Linux only**: because almost all microVMs are Linux-based.
 
@@ -62,8 +62,11 @@ cargo build --release -p glm-cli --features fuse   # produces `git-lazy-mount`
 
 ## Docs
 
-Everything is in [`docs/`](docs/) ([index](docs/README.md)):
+Everything is in [`docs/`](docs/):
 
 * **Using it**: [compatibility](docs/compatibility.md) (which `git` commands work, and how lazily) and [limitations](docs/limitations.md) (what's deferred, and why).
 * **How it works**: the [architecture overview](docs/architecture.md), then deep-dives into the [worktree model](docs/worktree-model.md), [FUSE semantics](docs/fuse-semantics.md), and [object fetching](docs/object-fetching.md).
-* **Reference**: the full [specification](docs/design.md) and the [decision records](docs/adr/).
+
+## License 
+
+MIT + Apache
