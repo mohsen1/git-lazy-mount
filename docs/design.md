@@ -380,7 +380,9 @@ git lazy-mount <url> <path> --allow-full-object-clone
 Each subsystem is summarized here at spec altitude; its area document owns the
 depth.
 
-## 6.1 Worktree model — [`worktree-model.md`](worktree-model.md)
+## 6.1 Worktree model
+
+*Area doc: [`worktree-model.md`](worktree-model.md).*
 
 The `Projection` layers the durable overlay over the fixed baseline HEAD tree.
 `resolve()` follows the order in [§5.2](#52-working-tree-model-baseline--overlay).
@@ -393,7 +395,9 @@ Repository paths are raw `RepoPath` byte sequences (never lossily converted to
 UTF-8), so paths with invalid UTF-8, newlines, leading dashes, quotes, and control
 characters round-trip correctly.
 
-## 6.2 FUSE semantics — [`fuse-semantics.md`](fuse-semantics.md)
+## 6.2 FUSE semantics
+
+*Area doc: [`fuse-semantics.md`](fuse-semantics.md).*
 
 `TransparentFs` implements these `fuser` operations: `init` (which negotiates
 `FUSE_ATOMIC_O_TRUNC`), `lookup`, `forget`, `getattr`, `setattr`, `readlink`,
@@ -415,7 +419,9 @@ and 4 metadata threads (so `ls` stays responsive while reads hydrate). There are
 no separate decompress/filter/network pools and no backpressure/cancellation
 machinery.
 
-## 6.3 Object fetching — [`object-fetching.md`](object-fetching.md)
+## 6.3 Object fetching
+
+*Area doc: [`object-fetching.md`](object-fetching.md).*
 
 `materialize_path` streams a baseline blob through `cat-file` into a
 content-addressed cache file and serves range reads from its FD via a
@@ -433,7 +439,9 @@ working-tree size, so `ls -l` / `stat` of an unmaterialized file faults its blob
 once. This is fundamental to lazy-blob fetching and is separate from `git status`,
 which faults zero blobs (next section).
 
-## 6.4 FSMonitor v2 + change journal — [`fsmonitor.md`](fsmonitor.md)
+## 6.4 FSMonitor v2 + change journal
+
+*Area doc: [`fsmonitor.md`](fsmonitor.md).*
 
 Git's FSMonitor v2 hook receives `(version, previous_token)` and returns a new
 token, a NUL, then the relative paths changed since that token. Responses are
@@ -464,7 +472,9 @@ never hides a diff — bounded by a 20-second attribute-read timeout; (b) the se
 must match the hook's identity, else Git falls back safely to the eager scan.
 Verified zero-fault on an 81k-file real mount.
 
-## 6.5 Git state model — [`git-state-model.md`](git-state-model.md)
+## 6.5 Git state model
+
+*Area doc: [`git-state-model.md`](git-state-model.md).*
 
 The transparent design — `git clone --separate-git-dir` + `core.worktree` + a
 synthetic `.git` gitfile served by the projection — gives stock Git an ordinary
@@ -474,7 +484,9 @@ Index-only updates leave baseline and overlay untouched; working-tree updates
 flow through FUSE into the overlay exactly as ordinary filesystem operations
 would. We never infer a working-tree update from a changed index.
 
-## 6.6 Index strategy — [`index-strategy.md`](index-strategy.md)
+## 6.6 Index strategy
+
+*Area doc: [`index-strategy.md`](index-strategy.md).*
 
 The mount uses a **full real index** built by `git read-tree HEAD` (faulting HEAD
 trees, fetching zero blobs) — the maximum-compatibility correctness baseline.
@@ -485,7 +497,9 @@ path. Scalability of larger-repo index strategies (sparse / dynamic skip-worktre
 / a minimal provider extension) is discussed there; the shipped choice is the
 full index.
 
-## 6.7 Durability and security — [`durability-security.md`](durability-security.md)
+## 6.7 Durability and security
+
+*Area doc: [`durability-security.md`](durability-security.md).*
 
 Overlay durability is per-entry: one atomic JSON sidecar per entry
 (`id_for(path) = sha256(path)+".json"`) under `meta/`, content bytes in native
@@ -499,7 +513,9 @@ are non-interactive (`GIT_TERMINAL_PROMPT=0`) and gate fetches through
 traversal, symlink races, decompression bombs, credential redaction); raw paths
 are escaped safely for display and JSON.
 
-## 6.8 Deadlock, startup, and recovery — [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md)
+## 6.8 Deadlock, startup, and recovery
+
+*Area doc: [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).*
 
 Git processes run *inside* the mount and can trigger FUSE callbacks; callbacks need
 Git objects. The invariants that prevent deadlock:
