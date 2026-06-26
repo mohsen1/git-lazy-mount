@@ -25,8 +25,6 @@
 
 #[cfg(feature = "fuse")]
 mod mount;
-#[cfg(feature = "fuse")]
-mod pool;
 
 #[cfg(feature = "fuse")]
 pub use mount::{mount, spawn_mount, BackgroundMount};

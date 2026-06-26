@@ -30,11 +30,31 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectId, RepoPath, Result};
-use glm_fs_common::{InodeTable, ROOT_INO};
+use glm_fs_common::{InodeTable, Pool, ROOT_INO};
 use glm_git_repo::AdminRepo;
 
 /// Uniquifier for temporary cache files during atomic publish.
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Worker threads for the speculative sibling size-prefetch. Bounded and separate
+/// from the FUSE callback pools, so prefetch never consumes a callback thread.
+/// (A foreground read can still briefly wait on a prefetch of the *same* oid via
+/// the shared per-oid `inflight` single-flight — one `cat-file -s` — which is
+/// desired: it coalesces the size-fault and the content-fault into one fetch.)
+const PREFETCH_THREADS: usize = 8;
+/// Stats observed in one directory before its sibling prefetch is armed. Keeps an
+/// isolated `cat`/`stat` of a single file from faulting the whole directory,
+/// while a real stat-walk (`git add -A`, the untracked scan) crosses it quickly.
+const PREFETCH_DIR_THRESHOLD: u32 = 4;
+/// Cap on siblings warmed per directory, bounding the speculative fetch.
+const PREFETCH_DIR_CAP: usize = 512;
+/// Total bytes the speculative prefetch may fault over a mount's life. `git
+/// add -A`/`status` walk the *whole* tree, so without this every directory would
+/// arm and the mount would eagerly materialize the entire repo — defeating
+/// laziness. The budget caps the speculative over-fetch (the hot first stretch of
+/// a walk is parallelized; past it, git falls back to its own serial faults),
+/// keeping a big-repo mount far smaller than a clone.
+const PREFETCH_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
 /// The reserved name of the synthetic gitfile at the projection root.
 pub const GITFILE_NAME: &[u8] = b".git";
@@ -139,6 +159,26 @@ pub struct Projection {
     /// blob cause exactly one retrieval — the first holder fetches,
     /// the rest wait and reuse the published cache file.
     inflight: Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>,
+    /// Memoized exact size per baseline blob oid. A blob's size is immutable, so
+    /// this never goes stale; populated by `getattr` size-faults and by the
+    /// speculative sibling prefetch so later stats in a walk are cache hits.
+    size_cache: Mutex<HashMap<ObjectId, u64>>,
+    /// Count of baseline size-faults (each a `cat-file -s` that pulls the blob
+    /// under tree:0). Distinct from `hydrations` (content materializations),
+    /// which stays ~0 during a stat-walk — this is the signal behind the
+    /// prefetch's effect.
+    size_faults: AtomicU64,
+    /// Directories whose sibling sizes have already been prefetched (arm once).
+    prefetched_dirs: Mutex<HashSet<RepoPath>>,
+    /// Per-directory stat counter; the prefetch arms once it crosses
+    /// `PREFETCH_DIR_THRESHOLD` (evidence of a stat-walk, not a one-off stat).
+    dir_stat_counts: Mutex<HashMap<RepoPath, u32>>,
+    /// Bounded pool running the off-callback sibling size-faults in parallel,
+    /// so git's serial lstat walk hits warm sizes instead of faulting per file.
+    prefetch_pool: Pool,
+    /// Total bytes faulted by the speculative prefetch so far, capped at
+    /// `PREFETCH_BYTE_BUDGET` so a whole-tree walk cannot eagerly fetch the repo.
+    prefetch_bytes: AtomicU64,
     /// Optional FSMonitor change journal. When present, every worktree
     /// mutation is recorded **synchronously** (before the FUSE reply) so the
     /// `git-lazy-mount-fsmonitor` hook, reading the same durable log, always sees
@@ -226,6 +266,12 @@ impl Projection {
             hydrations: AtomicU64::new(0),
             metadata_fetch: true,
             inflight: Mutex::new(HashMap::new()),
+            size_cache: Mutex::new(HashMap::new()),
+            size_faults: AtomicU64::new(0),
+            prefetched_dirs: Mutex::new(HashSet::new()),
+            dir_stat_counts: Mutex::new(HashMap::new()),
+            prefetch_pool: Pool::new(PREFETCH_THREADS),
+            prefetch_bytes: AtomicU64::new(0),
             journal: None,
         })
     }
@@ -402,6 +448,162 @@ impl Projection {
         false
     }
 
+    /// Memoized exact size of a baseline blob. The size of an object id is
+    /// immutable, so the cache is always sound. Single-flighted through the same
+    /// per-oid `inflight` lock as content materialization, so a real `getattr`
+    /// and a speculative sibling prefetch of the same oid fault the blob exactly
+    /// once (and that one `cat-file -s` also warms the blob into the promisor
+    /// store, so a following read finds it local).
+    fn cached_size(&self, oid: &ObjectId) -> Result<u64> {
+        if let Some(sz) = self
+            .size_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(oid)
+            .copied()
+        {
+            return Ok(sz);
+        }
+        let lock = {
+            let mut map = self.inflight.lock().unwrap_or_else(PoisonError::into_inner);
+            Arc::clone(map.entry(oid.clone()).or_default())
+        };
+        let _g = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(sz) = self
+            .size_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(oid)
+            .copied()
+        {
+            return Ok(sz); // another caller faulted it while we waited
+        }
+        let sz = self.repo.store().object_size(oid, self.metadata_fetch)?;
+        self.size_faults.fetch_add(1, Ordering::Relaxed);
+        self.size_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(oid.clone(), sz);
+        Ok(sz)
+    }
+
+    /// Count of baseline size-faults so far (for measurement/tests).
+    pub fn size_faults(&self) -> u64 {
+        self.size_faults.load(Ordering::Relaxed)
+    }
+
+    /// Speculatively warm the sizes of `ino`'s sibling baseline files in
+    /// parallel. git's working-tree/untracked walk (`git add -A`, `git status`)
+    /// `lstat`s files **serially**, and on a `tree:0` mount each `lstat` faults
+    /// that blob's size one at a time. Triggered from a `getattr`/`lookup` of a
+    /// File/Symlink, this gets the mount **ahead** of that serial walk: once a
+    /// few stats land in a directory (evidence of a walk, not a one-off `cat`),
+    /// it fans out the rest of the directory's size-faults across the prefetch
+    /// pool, so git's subsequent `lstat`s are `size_cache` hits.
+    ///
+    /// It is deliberately *not* hooked into `readdir` (which by invariant returns
+    /// names only): a plain `ls` does no `getattr`, so it never triggers this and
+    /// never over-fetches; and the per-directory threshold keeps a single
+    /// `cat`/`stat` below the arming point.
+    pub fn prefetch_siblings(self: &Arc<Self>, ino: u64) {
+        let Ok(path) = self.path_of(ino) else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        {
+            let mut counts = self
+                .dir_stat_counts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let c = counts.entry(parent.clone()).or_insert(0);
+            *c += 1;
+            if *c < PREFETCH_DIR_THRESHOLD {
+                return;
+            }
+        }
+        if self.prefetch_bytes.load(Ordering::Relaxed) >= PREFETCH_BYTE_BUDGET {
+            return; // speculative budget spent; let git fault the rest itself
+        }
+        if !self
+            .prefetched_dirs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(parent.clone())
+        {
+            return; // already prefetched this directory
+        }
+        // Capture a Weak, not a strong Arc: a prefetch job must never be the last
+        // owner of the Projection (that would drop it — and its prefetch pool —
+        // from a pool worker thread). It also lets queued work no-op promptly
+        // once the mount is torn down.
+        let weak = Arc::downgrade(self);
+        self.prefetch_pool.spawn(move || {
+            if let Some(me) = weak.upgrade() {
+                me.warm_dir_siblings(&parent);
+            }
+        });
+    }
+
+    /// Read `parent`'s baseline tree (already local — no fetch) and fan out a
+    /// bounded, deduplicated parallel size-fault for each sibling blob not yet
+    /// cached. Best-effort: every job ignores its error.
+    fn warm_dir_siblings(self: &Arc<Self>, parent: &RepoPath) {
+        let tree = match self.resolve(parent) {
+            Ok(Some(Resolved::Dir {
+                baseline_tree: Some(t),
+            })) => t,
+            _ => return,
+        };
+        let Ok(obj) = self.repo.store().read_tree(&tree, false) else {
+            return;
+        };
+        let mut n = 0usize;
+        for e in obj.entries {
+            if n >= PREFETCH_DIR_CAP
+                || self.prefetch_bytes.load(Ordering::Relaxed) >= PREFETCH_BYTE_BUDGET
+            {
+                break;
+            }
+            // Only blobs pay a size-fault; trees/gitlinks report size 0.
+            match e.mode {
+                GitMode::Regular | GitMode::Executable | GitMode::Symlink => {}
+                _ => continue,
+            }
+            let Ok(child) = parent.join(&e.name) else {
+                continue;
+            };
+            if self.overlay.lookup(&child).is_some() {
+                continue; // an overlay entry decides this name
+            }
+            let oid = e.object_id.clone();
+            if self
+                .size_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&oid)
+            {
+                continue;
+            }
+            n += 1;
+            let weak = Arc::downgrade(self);
+            self.prefetch_pool.spawn(move || {
+                let Some(me) = weak.upgrade() else { return };
+                // Re-check the budget at run time: the enqueue-time check reads a
+                // counter that lags the in-flight faults, so this caps the
+                // overshoot to the concurrent batch instead of a whole wide
+                // directory's worth of blobs.
+                if me.prefetch_bytes.load(Ordering::Relaxed) >= PREFETCH_BYTE_BUDGET {
+                    return;
+                }
+                if let Ok(sz) = me.cached_size(&oid) {
+                    me.prefetch_bytes.fetch_add(sz, Ordering::Relaxed);
+                }
+            });
+        }
+    }
+
     fn attr_of(&self, ino: u64, generation: u64, r: &Resolved) -> Result<Attr> {
         let (kind, size, mtime) = match r {
             Resolved::Dir { .. } => (Kind::Dir, 0, UNIX_EPOCH),
@@ -418,10 +620,7 @@ impl Projection {
                         self.overlay.content_size(p)?,
                         self.overlay.content_mtime(p)?,
                     ),
-                    FileSource::Baseline(oid) => (
-                        self.repo.store().object_size(oid, self.metadata_fetch)?,
-                        UNIX_EPOCH,
-                    ),
+                    FileSource::Baseline(oid) => (self.cached_size(oid)?, UNIX_EPOCH),
                 };
                 (
                     Kind::File {
@@ -434,9 +633,7 @@ impl Projection {
             Resolved::Symlink { source } => {
                 let size = match source {
                     SymSource::Overlay(t) => t.len() as u64,
-                    SymSource::Baseline(oid) => {
-                        self.repo.store().object_size(oid, self.metadata_fetch)?
-                    }
+                    SymSource::Baseline(oid) => self.cached_size(oid)?,
                 };
                 (Kind::Symlink, size, UNIX_EPOCH)
             }
@@ -1105,6 +1302,108 @@ mod tests {
             .unwrap()
             .with_journal(j);
         (tmp, remote, proj)
+    }
+
+    // A directory of `n` baseline files named dir/fNN.txt.
+    fn dir_of(n: usize) -> Vec<(String, Vec<u8>)> {
+        (0..n)
+            .map(|i| {
+                (
+                    format!("dir/f{i:02}.txt"),
+                    format!("contents-of-file-{i}\n").into_bytes(),
+                )
+            })
+            .collect()
+    }
+
+    // Wait until at least `target` size-faults have landed (the prefetch is
+    // async), bounded by a ~10s timeout. Polling to a known target — not to
+    // "stable" — is deterministic: a momentary stall mid-prefetch can't make it
+    // return early.
+    fn await_faults(p: &Projection, target: u64) -> u64 {
+        for _ in 0..500 {
+            if p.size_faults() >= target {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        p.size_faults()
+    }
+
+    #[test]
+    fn stat_walk_warms_siblings_without_hydrating() {
+        // Stat-ing past the per-directory threshold arms a speculative prefetch
+        // that size-faults the REST of the directory in parallel (so git's serial
+        // lstat walk hits warm sizes), via object_size — never content
+        // materialization, so hydrations() stays 0.
+        const N: usize = 40;
+        let files = dir_of(N);
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(s, c)| (s.as_str(), c.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"dir").unwrap().unwrap().ino;
+
+        // Stat exactly THRESHOLD files; the mount calls prefetch_siblings after
+        // each getattr. The last one crosses the threshold and arms the prefetch.
+        for i in 0..PREFETCH_DIR_THRESHOLD {
+            let name = format!("f{i:02}.txt");
+            let ino = p.lookup(dir, name.as_bytes()).unwrap().unwrap().ino;
+            p.getattr(ino).unwrap();
+            p.prefetch_siblings(ino);
+        }
+
+        let faults = await_faults(&p, N as u64);
+        assert_eq!(
+            faults, N as u64,
+            "prefetch warmed every sibling exactly once"
+        );
+        assert_eq!(
+            p.hydrations(),
+            0,
+            "size-prefetch must not materialize content"
+        );
+
+        // A later stat of a warmed sibling is a size_cache hit — no new fault.
+        let before = p.size_faults();
+        let ino = p.lookup(dir, b"f39.txt").unwrap().unwrap().ino;
+        p.getattr(ino).unwrap();
+        assert_eq!(
+            p.size_faults(),
+            before,
+            "warmed sibling stat is a cache hit"
+        );
+    }
+
+    #[test]
+    fn single_stat_does_not_arm_prefetch() {
+        // A one-off `cat`/`stat` of a single file in a big directory must fault
+        // exactly its own size and NOT speculatively pull the whole directory
+        // (the readdir-no-hydrate / no-over-fetch guarantee).
+        let files = dir_of(40);
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(s, c)| (s.as_str(), c.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"dir").unwrap().unwrap().ino;
+
+        let ino = p.lookup(dir, b"f00.txt").unwrap().unwrap().ino;
+        p.getattr(ino).unwrap();
+        p.prefetch_siblings(ino);
+
+        // Give any (incorrect) speculative prefetch ample time to run, then
+        // confirm it never armed: only the one stat faulted.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            p.size_faults(),
+            1,
+            "a single stay-below-threshold stat faults only itself"
+        );
+        assert_eq!(p.hydrations(), 0, "no content materialized");
     }
 
     #[test]
