@@ -122,15 +122,8 @@ whose `seq` exceeds the current journal length is rejected as a future seq (see
 below), so a shorter-than-expected log degrades to a safe full invalidation
 rather than a false negative.
 
-### Considered / not built (possible future)
-
-Bumping `epoch` on a *detected* crash or journal discontinuity — so a token
-minted before the loss gets `/` even if the new log happens to be longer — is a
-documented future refinement, noted in the `journal.rs` module docs. It is **not
-built**: epoch is pinned to `1`. Likewise `generation` would track baseline
-advancement if the projection ever advanced its baseline at runtime, but the
-[projection's baseline is fixed at open](worktree-model.md), so `generation`
-stays `0`.
+The journal is not compacted, so its log grows unbounded over a long-lived
+mount; `epoch` and `generation` are fixed at `1` and `0`.
 
 ---
 
@@ -178,15 +171,11 @@ flow through this same FUSE write path: stock git writes each changed path, so
 each is recorded. See [compatibility.md](compatibility.md) for the
 per-command laziness matrix.
 
-### Considered / not built (possible future)
-
 The log is replayed into an in-memory `Vec` and **kept whole** — there is no
 compaction, so a very long-lived mount with many mutations grows the log and the
-replayed vector without bound. Bounding it (a retention floor, with any token
-below the floor answered `/`) is a known hardening gap, noted in `journal.rs`.
-The barrier/drain machinery an asynchronous executor would need is also absent and
-unnecessary: because `record` is synchronous and precedes the reply, a `git
-status` issued after an editor's `write()` returned already sees that path.
+replayed vector without bound. Because `record` is synchronous and precedes the
+reply, a `git status` issued after an editor's `write()` returned already sees
+that path.
 
 ---
 
@@ -248,7 +237,7 @@ not optimized. The common case (no conversion attribute) seeds every entry.
 
 `ls -l`/`stat` of an unmaterialized file still faults its blob once for the exact
 size — that is limitation [R6](limitations.md), a `getattr` cost separate from
-`git status`, which no longer stats seeded entries at all.
+`git status`, which does not stat seeded entries.
 
 ---
 

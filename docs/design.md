@@ -80,11 +80,6 @@ Providing alternative workflow commands such as `git lazy-mount add | commit |
 branch | switch | push | git --` would mean transparency had failed; they do not
 exist.
 
-> **Planned, not implemented.** Earlier drafts advertised post-mount
-> `list`, `stats`, `trace`, `prefetch`, `dehydrate`, `recover` subcommands and an
-> `--offline` flag. None of these are built. Observability and prefetch ideas are
-> collected in [§11](#11-considered-but-not-built-possible-future).
-
 ---
 
 # 2. Definition of "stock Git works"
@@ -143,7 +138,7 @@ than hiding it. The per-command matrix lives in
 # 4. Lessons as invariants
 
 Each item below is enforced by the architecture and covered by tests. They are the
-mistakes the previous implementation made, turned into rules.
+core design invariants the implementation upholds.
 
 **Do not report a mount before mounting.** The mount is reported ready only after
 the kernel mount is live and Git health checks pass. Readiness is observed by
@@ -199,9 +194,8 @@ response.
 **Baseline + overlay model the working tree.** The virtual working tree is a
 read-only baseline tree plus a writable overlay (see [§5.2](#52-working-tree-model-baseline--overlay)).
 
-**Linux first; no platform scaffolding before a working slice.** A crate that
-merely compiles on another OS is not platform support. The shipped system is Linux
-/ FUSE only.
+**Linux only; no premature platform scaffolding.** A crate that merely compiles
+on another OS is not platform support. The shipped system is Linux / FUSE only.
 
 ---
 
@@ -354,7 +348,7 @@ history, merge-base, `git log`, and branch switching all work), but no trees or
 blobs are. `build_index` then faults only the HEAD tree hierarchy; blobs hydrate
 on read. This is both correct and cheap.
 
-The two rejected alternatives:
+Two alternatives are deliberately not the default:
 
 - **`--depth 1` (shallow)** grafts the commits, which breaks `git merge` / `git
   rebase` and hides history. Not a default.
@@ -447,7 +441,7 @@ Git's FSMonitor v2 hook receives `(version, previous_token)` and returns a new
 token, a NUL, then the relative paths changed since that token. Responses are
 **inclusive**: false positives are acceptable, false negatives are not. The token
 wire form is `glm1:workspace:epoch:seq:generation`; `epoch` and `generation` are
-fixed at 1 and 0 in this slice.
+fixed at 1 and 0.
 
 The `ChangeJournal` (`<gitdir>/glm-fsmonitor/changes.log`) is a durable
 NUL-separated append log replayed into memory on open. `record()` writes and
@@ -601,8 +595,7 @@ By-design and deferred behaviors are registered in
   bytes, not the smudged bytes. Commits stay byte-correct because the clean filter
   is the inverse, and Git's content comparison stays clean.
 - **Branch transitions are potentially eager** ([§7](#7-required-plain-git-compatibility-surface)).
-- **The change journal has no compaction** and a fixed epoch/generation; bumping
-  the epoch on a detected crash is a future refinement.
+- **The change journal has no compaction** and a fixed epoch/generation (1/0).
 - **LFS end-to-end and nested lazy submodules are deferred** (some submodule tests
   are `#[ignore]`'d).
 
@@ -610,26 +603,13 @@ By-design and deferred behaviors are registered in
 
 # 10. Project status
 
-Linux-only, real-`/dev/fuse`-CI tested (CI runs on `ubuntu-latest` only). Shipped
-through M0–M7:
+Linux-only, real-`/dev/fuse`-CI tested (CI runs on `ubuntu-latest` only). The
+transparent mount drives the full stock-Git surface: stock Git, editors, and
+builds operate directly on the virtual working tree with no wrapper.
 
-- **M0** architecture + a first transparent read-only vertical slice.
-- **M1** one-command clone + detached serve + FUSE mount; stock `git rev-parse`;
-  zero-hydration `readdir`; lazy read.
-- **M2** writable semantics: real handles, copy-on-write, create/write/truncate/
-  append, unlink/open-unlink, rename, directories, symlinks, flush/fsync/release,
-  durable overlay.
-- **M3** stock status/staging/commit via the real index + durable FSMonitor v2.
-- **M4** branch-changing workflows; measured eagerness (O(delta), not O(repo)).
-- **M5** remote + maintenance (fetch/pull/push/gc/…); offline reads; credential
-  recovery via normal `git fetch`.
-- **M6** large-repo index strategy chosen from measurements (the full index);
-  bounded-memory large-file reads.
-- **M7** the shared-object-cache direction is explored but not enabled by default.
-
-Genuinely deferred: LFS end-to-end, nested lazy submodules, a default-on shared
-object cache, and other platforms (M8 — out of scope; see
-[`future-platforms/`](future-platforms/)).
+Not supported yet: end-to-end LFS, full nested submodules, and a shared object
+cache across workspaces. Other platforms (macOS/Windows) are out of scope; see
+[`future-platforms/`](future-platforms/).
 
 Build: `cargo build --release -p glm-cli --features fuse` produces
 `git-lazy-mount`; the `git-lazy-mount-fsmonitor` hook is built alongside and must
@@ -637,55 +617,7 @@ sit next to it. Requires libfuse3 and system Git (≥ 2.36).
 
 ---
 
-# 11. Considered but not built (possible future)
-
-The pre-implementation design described considerable machinery the shipped MVP
-deliberately did **not** build. It is recorded here as rationale, **not** as a
-mandate, so the spec does not contradict the code. None of this exists today.
-
-- **Per-user daemon + Unix-socket IPC.** A long-running per-user daemon owning all
-  FUSE sessions, with a versioned, peer-credential-authenticated control socket.
-  *Shipped instead:* a detached hidden `__serve` child per mount; the hook and
-  `sgrep` read the durable journal file directly. A daemon would help only if many
-  mounts needed to share fetch scheduling or an object cache.
-- **SQLite / transactional namespace DB / WAL.** A `state.sqlite` namespace
-  database for overlay metadata, inodes, tombstones, and renames. *Shipped
-  instead:* per-entry atomic JSON sidecars + a NUL-append journal. SQLite would
-  matter only at overlay sizes where per-entry sidecars become a bottleneck.
-- **A rich fetch scheduler.** Per-origin concurrency limits, global bandwidth
-  caps, request priorities, retries, a network circuit breaker, an explicit
-  offline mode, and a credential-refresh state machine. *Shipped instead:*
-  per-`ObjectId` single-flight coalescing and a `FetchPolicy` gate.
-- **Separate decompress / filter / network worker pools** with backpressure and
-  cancellation. *Shipped instead:* two fixed pools (object-IO + metadata).
-- **Cached Git-state views as first-class types** (`IndexCache` / `RefSnapshot` /
-  `OpState`) and a generic `ObjectProvider`/`ensure_objects` trait surface.
-  *Shipped instead:* direct `git-store` calls; parsed state is recomputed, not
-  cached behind a typed layer.
-- **A hook multiplexer** chaining provider notifications
-  (post-index-change/reference-transaction/post-checkout/…) ahead of the user's
-  existing hooks, plus inotify/fanotify gitdir watchers. *Shipped instead:* only
-  `core.fsmonitor`; user hooks and `core.hooksPath` are untouched.
-- **A named mount state machine and recovery state machine** (creating → cloning →
-  … → mounted → recovering → failed), a mount registry, and a `git lazy-mount
-  recover` subcommand. *Shipped instead:* a `MountGeneration` counter, orthogonal
-  per-path state axes, and poll-for-`.git` readiness.
-- **Post-mount observability and prefetch CLI** (`list`/`stats`/`trace`/`prefetch`
-  `--for-offline`/`dehydrate`/`recover`, `--offline`). *Shipped instead:* only
-  `doctor`.
-- **A shared object cache** across workspaces (alternates + leases/keep-refs/grace
-  periods) and a baseline-advancement/compaction pass that dematerializes overlay
-  entries proven to match a new baseline.
-- **Git LFS modes** (smudge/pointer/error) and nested lazy submodules.
-- **A minimal upstreamable Git provider extension** to let Git declare paths
-  virtual-and-clean and update a projected baseline without writing file bytes —
-  the only path to truly lazy (non-eager) branch switching.
-- **Other platforms.** macOS (FSKit) and Windows (ProjFS). FSKit was blocked by an
-  Apple 26.x OS bug; both are retired to [`future-platforms/`](future-platforms/).
-
----
-
-# 12. Implementation discipline
+# 11. Implementation discipline
 
 The priority order, highest first:
 

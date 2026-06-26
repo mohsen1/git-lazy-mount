@@ -186,13 +186,11 @@ detail is in [`index-strategy.md`](index-strategy.md).
 
 ## Status
 
-The transparent design shipped through M0–M7, all real-`/dev/fuse`-CI tested on
-`ubuntu-latest`; the system is Linux-only. The M7 shared-object-cache direction
-was explored but is not enabled by default. Still deferred: full submodule
-support and end-to-end LFS (bounded by the smudge-side raw-baseline behavior).
-Windows (ProjFS) and macOS (FSKit) backends were retired; their notes
-survive under [`future-platforms/`](future-platforms/) purely as roads not
-taken.
+Linux-only, real-`/dev/fuse`-CI tested on `ubuntu-latest`. Not supported yet: a
+shared object cache across workspaces, full submodule support, and end-to-end
+LFS (bounded by the smudge-side raw-baseline behavior). Windows (ProjFS) and
+macOS (FSKit) backend notes survive under
+[`future-platforms/`](future-platforms/) purely as roads not taken.
 
 Per-command compatibility and the laziness matrix live in
 [`compatibility.md`](compatibility.md); the by-design / fundamental / deferred

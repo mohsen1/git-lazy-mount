@@ -76,9 +76,9 @@ The three sources:
    from. Lazy — nothing is fetched merely to hold a baseline.
 
 `baseline_tree` is set once at `Projection::open` from `repo.head_tree()` and is
-**immutable for the life of the projection** (`lib.rs:208-214`). There is no
-in-process baseline-advancement machinery; see the "Considered / not built" note
-in §4. Branch-changing Git commands (switch/checkout/merge/rebase) still work and
+**immutable for the life of the projection** (`lib.rs:208-214`); it is fixed at
+projection open and does not advance in-process. Branch-changing Git commands
+(switch/checkout/merge/rebase) still work and
 stay correct because stock Git writes every changed path through the FUSE write
 path, landing in the overlay — they do not need the projection to move its
 baseline.
@@ -139,16 +139,6 @@ A working-tree edit goes to the **overlay**, never the index; the index changes
 only when the user runs `git add`, which Git does through the real index. The
 two move independently and correctly.
 
-> **Considered / not built (possible future):** an earlier design proposed
-> *advancing* the baseline in-process after worktree-updating commands
-> (`post-checkout`/`post-merge` hooks driving an `advance_baseline`, plus a
-> later compaction/dematerialization pass that drops overlay entries once their
-> bytes match the baseline). Neither is built: `baseline_tree` is immutable and
-> the overlay is never compacted (a known unbounded-growth item; see
-> [fsmonitor.md](fsmonitor.md) and the journal note in §5). Correctness does not
-> depend on advancement because stock Git already writes checkout deltas through
-> the FUSE write path into the overlay.
-
 ---
 
 ## 5. The change journal (FSMonitor durable log)
@@ -173,8 +163,7 @@ acknowledging it**.
 - The FSMonitor hook reads the same log and answers git's
   `(version, previous_token)` query. The token wire form is
   `glm1:ws:epoch:seq:gen`; `epoch` and `generation` are fixed at `1` and `0`
-  (`journal.rs:36-43`) — bumping the epoch on a detected discontinuity is a
-  future refinement. Continuity it cannot prove yields full invalidation (`/`).
+  (`journal.rs:36-43`). Continuity it cannot prove yields full invalidation (`/`).
 
 ---
 
