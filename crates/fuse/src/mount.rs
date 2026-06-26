@@ -723,6 +723,9 @@ mod tests {
             &CloneOptions::default(),
         )
         .unwrap();
+        // Fault the HEAD trees into the gitdir (the default `tree:0` clone fetches
+        // none), exactly as the real mount flow does before projecting.
+        repo.build_index().unwrap();
         let gitdir = repo.gitdir().to_path_buf();
         let proj = Arc::new(
             Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap(),

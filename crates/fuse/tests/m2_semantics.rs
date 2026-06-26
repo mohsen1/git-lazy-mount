@@ -62,7 +62,7 @@ impl Fixture {
         let cache_dir = tmp.path().join("cache");
         // `AdminRepo::clone` creates the gitdir + worktree dir; we re-`open` it
         // per mount via `open_projection` so each (re)mount gets a fresh handle.
-        let _repo = AdminRepo::clone(
+        let repo = AdminRepo::clone(
             &remote.url,
             &gitdir,
             &mnt,
@@ -70,6 +70,10 @@ impl Fixture {
             &CloneOptions::default(),
         )
         .unwrap();
+        // Fault HEAD trees into the gitdir once (the default tree:0 clone fetches
+        // none); each mount then re-`open`s and projects over the present trees.
+        repo.build_index().unwrap();
+        drop(repo);
         Fixture {
             _remote: remote,
             _tmp: tmp,

@@ -40,14 +40,13 @@ struct Cli {
     /// Branch to attach to (default: the remote's default).
     #[arg(long)]
     branch: Option<String>,
-    /// Shallow clone depth (default: 1, unless --full-history).
+    /// Shallow clone depth. Off by default: the `tree:0` filter already makes a
+    /// full-history clone cheap, and a shallow clone grafts commits, which breaks
+    /// `git merge`/`git rebase` and hides history.
     #[arg(long)]
     depth: Option<u32>,
-    /// Keep full history. The default is a shallow depth-1 clone for fast
-    /// startup; `git log`/`blame` then see one commit until `git fetch --unshallow`.
-    #[arg(long)]
-    full_history: bool,
-    /// Partial-clone filter (default: blob:none).
+    /// Partial-clone filter (default: `tree:0`, full commit history with trees and
+    /// blobs fetched lazily).
     #[arg(long)]
     filter: Option<String>,
     /// Permit a full-object clone if the remote rejects the filter.
@@ -153,18 +152,16 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
         std::fs::create_dir_all(parent).map_err(|e| format!("create workspace dir: {e}"))?;
     }
 
-    // Clone + build the real index (no checkout, no blob fetches).
-    // Shallow by default: a full-history blob:none clone still downloads every
-    // tree from all of history, which on a big repo is slower and larger than a
-    // normal clone. depth-1 fetches only the latest commit's trees.
+    // Clone + build the real index (no checkout, no blob fetches). The default
+    // `tree:0` filter fetches every commit (full history, so `git merge`/`rebase`/
+    // `log` and branch switching all work) but no trees or blobs; `build_index`
+    // faults the HEAD trees, blobs hydrate on read. This is both correct and cheap,
+    // unlike a shallow clone (grafts commits, breaks merge) or a full-history
+    // `blob:none` clone (downloads every tree from all of history).
     let opts = glm_git_repo::CloneOptions {
         branch: cli.branch.clone(),
-        depth: if cli.full_history {
-            None
-        } else {
-            cli.depth.or(Some(1))
-        },
-        filter: cli.filter.clone().or_else(|| Some("blob:none".into())),
+        depth: cli.depth,
+        filter: cli.filter.clone().or_else(|| Some("tree:0".into())),
         allow_full_object_clone: cli.allow_full_object_clone,
     };
     let repo = glm_git_repo::AdminRepo::clone(url, &gitdir, path, &anchor, &opts)

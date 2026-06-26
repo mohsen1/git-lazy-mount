@@ -51,11 +51,12 @@ fn git_status_add_commit_through_the_transparent_mount() {
         &CloneOptions::default(),
     )
     .unwrap();
+    // Fault HEAD trees into the gitdir (tree:0 fetches none) before projecting.
+    repo.build_index().unwrap();
     let proj = Arc::new(
         Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap(),
     );
     // Build the real index from the baseline (the single stage).
-    proj.repo().build_index().unwrap();
 
     let mount = spawn_mount(Arc::clone(&proj), &mnt).unwrap();
     assert!(wait_until(|| mnt.join(".git").exists()), "mount not ready");
