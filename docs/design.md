@@ -1,38 +1,39 @@
-# `git-lazy-mount`: a transparent, stock-Git, lazily hydrated working tree in Rust
+# `git-lazy-mount`: design specification
 
-This is the design of `git-lazy-mount`, the authoritative specification the
-implementation is built and tested against. It targets **Linux only** (FUSE);
-macOS (FSKit) and Windows (ProjFS) are out of scope but possible, with notes
-under [`future-platforms/`](future-platforms/).
-
-The design is deliberately a clean one, not an incremental refactor: it does not
-carry a custom stage, custom branch state, a commit-adoption bridge, or a
-headless-first architecture. The real `.git/index` is the only stage and stock
-Git owns refs, HEAD, commits, merges, and conflict stages.
-
-The executable is named:
-
-```text
-git-lazy-mount
-```
-
-so Git exposes it as:
-
-```bash
-git lazy-mount
-```
-
----
-
-# 1. Product contract
-
-The primary command is:
+`git-lazy-mount` is a **Linux-only** FUSE filesystem that lazily mounts a Git
+repository without a full clone. One command —
 
 ```bash
 git lazy-mount https://github.com/example/huge-repo ~/huge-repo
 ```
 
-This command replaces the initial `git clone` for this working copy.
+— partial-clones the repo, mounts a transparent virtual working tree, validates
+it, and returns. Afterward **stock Git, editors, and builds work directly**, with
+no wrapper, alias, environment activation, or `git lazy-mount` workflow verb.
+Files materialize (hydrate) on read or edit.
+
+This is the authoritative specification. It is written to match the shipped code;
+where it summarizes a subsystem, the linked area document under [`docs/`](.) owns
+the implementation detail. macOS (FSKit) and Windows (ProjFS) backends were
+explored and retired — their notes survive only as roads not taken under
+[`future-platforms/`](future-platforms/).
+
+The design is deliberately clean rather than an incremental refactor: there is no
+custom stage, no custom branch/commit state, no commit-adoption bridge, and no
+headless-first architecture. The real `.git/index` is the only stage; stock Git
+owns refs, HEAD, commits, merges, and conflict stages.
+
+The executable is named `git-lazy-mount`, so Git exposes it as `git lazy-mount`.
+
+---
+
+# 1. Product contract
+
+The primary command replaces the initial `git clone` for one working copy:
+
+```bash
+git lazy-mount https://github.com/example/huge-repo ~/huge-repo
+```
 
 It must not return successfully until:
 
@@ -42,93 +43,67 @@ It must not return successfully until:
 4. the synthetic `.git` entry resolves correctly;
 5. stock Git recognizes the repository;
 6. the FSMonitor integration is live;
-7. a basic `git status` health check succeeds.
+7. a basic Git health check succeeds.
 
-After the command returns, the following must use the user’s ordinary Git executable without wrappers, shell aliases, environment activation, or `git lazy-mount` workflow verbs:
+After the command returns, the following must use the user's ordinary Git
+executable with no wrapper, shell alias, environment activation, or workflow verb:
 
 ```bash
 cd ~/huge-repo
-
-ls
-cat README.md
-$EDITOR src/main.rs
-
-git status
-git diff
-git add src/main.rs
-git add -p
-git commit -m "Change behavior"
-git commit --amend
-git log --oneline
-git branch
-git switch feature
-git checkout other-branch
-git merge topic
-git rebase main
-git stash
-git fetch
-git pull
-git push
-
-cargo build
-make
-rg 'pattern'
+ls; cat README.md; $EDITOR src/main.rs
+git status; git diff; git add -p; git commit -m "…"; git commit --amend
+git log; git branch; git switch feature; git checkout other
+git merge topic; git rebase main; git stash
+git fetch; git pull; git push
+cargo build; make; rg 'pattern'
 ```
 
-Running an unrelated command such as:
+Running an unrelated command such as `git clone …` from inside the mount must
+behave like ordinary Git.
+
+## 1.1 The `git lazy-mount` verb surface
+
+`git lazy-mount` itself stays out of the daily workflow. The shipped subcommands
+are limited to lifecycle and diagnostics:
 
 ```bash
-git clone https://github.com/example/another-repo ../another-repo
+git lazy-mount <url> <path>        # mount (primary form)
+git lazy-mount unmount <path>      # release the kernel mount
+git lazy-mount doctor <path>       # report mountpoint / mounted / show-toplevel (--json)
 ```
 
-from inside the mounted directory must behave like ordinary Git.
+There is also one hidden, internal subcommand, `__serve`, spawned by the mount
+flow to hold the kernel mount after the parent command returns (see
+[§5.5](#55-command-surface)). It is not a user-facing command.
 
-After mounting, `git lazy-mount` commands are limited to lifecycle, diagnostics, cache management, and explicit prefetching:
+Providing alternative workflow commands such as `git lazy-mount add | commit |
+branch | switch | push | git --` would mean transparency had failed; they do not
+exist.
 
-```bash
-git lazy-mount unmount ~/huge-repo
-git lazy-mount list
-git lazy-mount doctor ~/huge-repo
-git lazy-mount stats ~/huge-repo
-git lazy-mount trace ~/huge-repo
-git lazy-mount prefetch ~/huge-repo src tests
-git lazy-mount dehydrate ~/huge-repo src
-git lazy-mount recover ~/huge-repo
-```
-
-Do not provide alternative workflow commands such as:
-
-```text
-git lazy-mount add
-git lazy-mount commit
-git lazy-mount branch
-git lazy-mount switch
-git lazy-mount push
-git lazy-mount git --
-```
-
-Those commands indicate that transparency has failed.
+> **Planned, not implemented.** Earlier drafts advertised post-mount
+> `list`, `stats`, `trace`, `prefetch`, `dehydrate`, `recover` subcommands and an
+> `--offline` flag. None of these are built. Observability and prefetch ideas are
+> collected in [§11](#11-considered-but-not-built-possible-future).
 
 ---
 
-# 2. Definition of “stock Git works”
+# 2. Definition of "stock Git works"
 
-The primary compatibility target is an unmodified, upstream Git executable discovered from the user’s `PATH`.
+The compatibility target is an unmodified, upstream Git executable discovered from
+the user's `PATH`.
 
-Using these integration points is allowed:
+Allowed integration points:
 
 ```text
 a standard .git gitfile
-normal Git configuration
-normal Git hooks
+normal Git configuration, hooks, refs, and reflogs
 core.fsmonitor
 the real Git index
-normal refs and reflogs
 normal partial-clone configuration
-normal alternates, in a later optimization phase
+normal alternates (a possible later optimization)
 ```
 
-These are not allowed as the default product design:
+Not allowed as the product design:
 
 ```text
 shadowing or replacing the git executable
@@ -137,583 +112,256 @@ a required command wrapper
 LD_PRELOAD interception
 process-specific filesystem lies
 a disposable Git repository per command
-importing or “adopting” commits after Git exits
+importing or "adopting" commits after Git exits
 a second staging database
 a second authoritative branch database
 a second implementation of Git commit semantics
 ```
 
-The filesystem must expose the same namespace and contents to Git, editors, builds, and ordinary applications. Do not return different filesystem results based on the caller’s process name.
+The filesystem exposes the same namespace and contents to Git, editors, builds,
+and ordinary applications. Results never depend on the caller's process name.
 
 ---
 
 # 3. Two separate success dimensions
 
-For every Git command, report two independent classifications:
+Every Git command is classified along two independent axes.
 
-## 3.1 Compatibility
+**Compatibility:** `correct` / `partially correct` / `unsupported`. Correct means
+exit status, stdout/stderr, HEAD, refs, reflogs, index, pseudorefs, working-tree
+contents, conflicts, hooks, and resulting commits match a normal checkout.
 
-```text
-correct
-partially correct
-unsupported
-```
-
-Correct means its:
-
-```text
-exit status
-stdout and stderr behavior
-HEAD
-refs
-reflogs
-index
-pseudorefs
-working-tree contents
-conflicts
-hooks
-resulting commits
-```
-
-match a normal checkout.
-
-## 3.2 Laziness and performance
-
-```text
-fully lazy
-bounded hydration
-potentially eager
-```
-
-A command is not “fully supported at scale” merely because it produces the right result after fetching every changed blob.
-
-For example, unmodified Git may attempt to materialize every path changed by a branch switch. Measure that behavior rather than hiding it.
-
-Maintain a generated compatibility report containing both dimensions.
+**Laziness and performance:** `fully lazy` / `bounded hydration` / `potentially
+eager`. A command is not "fully supported at scale" merely because it produces the
+right result after fetching every changed blob. For example, unmodified Git may
+materialize every path changed by a branch switch — measure that behavior rather
+than hiding it. The per-command matrix lives in
+[`compatibility.md`](compatibility.md).
 
 ---
 
-# 4. Lessons from the previous implementation
+# 4. Lessons as invariants
 
-Turn every item below into a regression test or architectural invariant.
+Each item below is enforced by the architecture and covered by tests. They are the
+mistakes the previous implementation made, turned into rules.
 
-## 4.1 Do not report a mount before mounting
+**Do not report a mount before mounting.** The mount is reported ready only after
+the kernel mount is live and Git health checks pass. Readiness is observed by
+polling for the synthetic `.git` to appear, then running `git rev-parse
+--show-toplevel` / `--is-inside-work-tree`. Mount identity is a monotonic
+`MountGeneration` counter (`crates/core/src/ids.rs`) used to detect stale kernel
+and view entries; there is no named mount state machine and no mount registry.
 
-The prior controller created the mountpoint directory and immediately stored a `Mounted` registry state.
+**Do not maintain two stages.** The single stage is the real `$GIT_DIR/index`.
+`git add`, `git add -p`, `git reset`, `git restore --staged`, merges, and conflict
+stages operate on that index directly through stock Git.
 
-The new lifecycle must distinguish:
+**Do not maintain two ref models.** Git owns HEAD, `refs/heads/*`,
+`refs/remotes/*`, `refs/tags/*`, `ORIG_HEAD`/`FETCH_HEAD`/`MERGE_HEAD`/…,
+sequencer and rebase state, and reflogs. Plain `git commit`, `git amend`, `git
+rebase`, and `git push` update normal Git state directly.
 
-```text
-creating
-cloning
-initializing-git
-building-index
-starting-daemon
-mounting
-validating
-mounted
-quiescing
-unmounting
-recovering
-failed
-```
+**Do not use skip-worktree as a universal trick.** The correctness baseline works
+without marking every index entry skip-worktree. The mount builds a full real
+index from HEAD (`git read-tree HEAD`) and relies on FSMonitor, not on
+sparse/skip-worktree semantics, to keep `git status` cheap. (The interop bridge in
+`crates/git-store/src/interop.rs` *does* mark every entry skip-worktree, but that
+is a throwaway operational index for running stock Git against the shared store —
+not the mount hot path.)
 
-Only enter `mounted` after a kernel mount and Git health checks succeed.
+**Directory listing must not hydrate file contents.** `readdir` returns names,
+inode IDs, and `d_type` only — never exact sizes or blob reads. It merges baseline
+tree and overlay children at O(direct children). `readdirplus` is not enabled.
 
-## 4.2 Do not maintain two stages
+**Do not buffer entire files per callback.** All content paths are
+file-descriptor / streaming based. Reads are serviced by `pread` into a cache
+file; writes by `pwrite` into an overlay FD. Memory use is not proportional to
+blob size (reading a 64 MiB blob grows RSS by roughly one request-sized buffer,
+far below the blob size; the test pins it under 24 MiB for a 64 MiB blob).
 
-The previous implementation had:
+**Real file handles; never `fh = 0`.** Each successful open allocates a unique
+handle (`next_fh` is an `AtomicU64` starting at 1). Reads and writes are serviced
+strictly by handle, so open-unlink and rename-while-open work without a path.
 
-```text
-a custom staged-delta database
-a generated throwaway .git/index
-a commit-adoption step
-```
+**Bounded pools, not thread-per-callback.** FUSE callbacks run on two fixed-size
+worker pools (16 object-I/O threads + 4 metadata threads), never one OS thread per
+request.
 
-The new implementation has one stage:
+**Empty directories are real workspace state.** An untracked empty directory is a
+durable overlay `Dir` entry, not just an inode-table row; it survives lookup,
+`readdir`, unmount, and remount. Git omits empty directories from commits.
 
-```text
-the real $GIT_DIR/index
-```
+**The change journal must be durable.** A process-local `Mutex<Vec<…>>` is not a
+sufficient FSMonitor backing store. Changes are appended to a durable on-disk log
+that is replayed on open, and any discontinuity yields a full-invalidation
+response.
 
-`git add`, `git add -p`, `git reset`, `git restore --staged`, merges, and conflict stages must operate on that index directly through stock Git.
+**Baseline + overlay model the working tree.** The virtual working tree is a
+read-only baseline tree plus a writable overlay (see [§5.2](#52-working-tree-model-baseline--overlay)).
 
-## 4.3 Do not maintain two ref models
-
-The previous implementation used private workspace refs, attached-branch leases, and later adopted commits created elsewhere.
-
-The new implementation lets Git own:
-
-```text
-HEAD
-refs/heads/*
-refs/remotes/*
-refs/tags/*
-ORIG_HEAD
-FETCH_HEAD
-MERGE_HEAD
-REBASE_HEAD
-CHERRY_PICK_HEAD
-REVERT_HEAD
-BISECT_*
-sequencer state
-rebase state
-reflogs
-```
-
-Plain `git commit`, `git amend`, `git rebase`, and `git push` must update normal Git state directly.
-
-## 4.4 Do not use skip-worktree as an unproven universal trick
-
-Do not mark every index entry skip-worktree merely because the filesystem is virtual.
-
-A full projected tree and sparse-checkout semantics are not equivalent.
-
-Any dynamic skip-worktree or sparse-index design must pass dedicated feasibility tests for:
-
-```text
-status
-add
-add -p
-rm
-mv
-checkout
-switch
-restore
-reset
-merge
-rebase
-stash
-clean
-files materialized outside the sparse set
-files visible virtually but not materialized physically
-```
-
-The correctness baseline must work without skip-worktree.
-
-Do not use `assume-unchanged` as a substitute.
-
-## 4.5 Directory listing must not hydrate file contents
-
-The prior path:
-
-```text
-readdir
-  -> attr_for
-    -> file_size
-      -> read and filter blob
-```
-
-can hydrate every file in a listed directory.
-
-The new invariant is:
-
-```text
-readdir returns names, inode IDs, and d_type only
-```
-
-Plain directory enumeration must not request exact file sizes or read blob contents.
-
-`readdirplus` must remain disabled unless measurements prove it is beneficial and does not cause mass hydration.
-
-## 4.6 Do not buffer entire files per callback
-
-Do not expose APIs such as:
-
-```rust
-fn raw_blob(...) -> Result<Vec<u8>>;
-fn read_file(...) -> Result<Vec<u8>>;
-fn write_at(...) {
-    read_entire_file();
-    modify_buffer();
-    rewrite_entire_file();
-}
-```
-
-All content paths must be streaming or file-descriptor based.
-
-Memory usage must not be proportional to blob size.
-
-## 4.7 Implement real file handles
-
-Returning `fh = 0` for every open is not sufficient.
-
-Implement durable handle tables for:
-
-```text
-open
-create
-read
-write
-flush
-fsync
-release
-opendir
-readdir
-releasedir
-```
-
-Open-unlink, rename while open, append, truncation, writable mappings, and concurrent access depend on real handles.
-
-## 4.8 Do not spawn one native thread per callback
-
-Use a bounded executor with:
-
-```text
-backpressure
-priorities
-cancellation
-separate network and local-I/O limits
-deadlock detection
-metrics
-```
-
-## 4.9 Empty directories must be real workspace state
-
-An empty directory cannot exist only as an inode-table entry.
-
-Persist untracked empty directories in the overlay namespace. They must survive:
-
-```text
-lookup
-readdir
-unmount
-remount
-daemon restart
-rename
-rmdir checks
-git clean -d
-```
-
-Git will simply omit empty directories from commits.
-
-## 4.10 The change journal must be durable
-
-A process-local `Mutex<Vec<ChangeRecord>>` is not a sufficient FSMonitor implementation.
-
-Tokens must survive daemon restarts, or the daemon must return a full-invalidation response.
-
-## 4.11 Do not overbuild platform scaffolding before a Linux vertical slice
-
-Complete transparent Linux behavior before implementing FSKit or ProjFS.
-
-A crate that compiles on another platform is not platform support.
+**Linux first; no platform scaffolding before a working slice.** A crate that
+merely compiles on another OS is not platform support. The shipped system is Linux
+/ FUSE only.
 
 ---
 
-# 5. Foundational architecture
+# 5. Architecture
 
-Implement five primary components:
+## 5.1 Two sources of truth
 
-```text
-normal per-workspace Git repository
-virtual working-tree model
-durable writable overlay
-long-running mount daemon
-Linux FUSE projection
-```
+| Owner | State |
+|-------|-------|
+| **Git** (the native admin gitdir) | HEAD, branches, refs, reflogs, remote-tracking refs, **the real `.git/index`** (the only stage), conflict stages 1/2/3, commit/amend, merge/rebase/cherry-pick/stash/bisect/sequencer state, tags, push/fetch config |
+| **The projection** (custom state) | only the **virtual working-tree bytes**: baseline + overlay + tombstones + the synthetic `.git`; the FUSE projection; the durable change journal; the content cache; inode/handle tables |
 
-The initial production implementation must not depend on a shared bare store.
+The projection's parsed views of Git state are disposable caches, rebuilt from the
+real gitdir. We never mirror Git state into a second authoritative model, never
+import commits after Git exits, and never keep a second stage or branch database.
+See [`git-state-model.md`](git-state-model.md).
 
----
-
-# 6. Use a normal per-workspace Git repository first
-
-For each mount, create a normal partial-clone repository with its administrative Git directory stored outside the mount.
-
-Conceptual layout:
+## 5.2 Working-tree model: baseline + overlay
 
 ```text
-~/.local/share/git-lazy-mount/
-  workspaces/
-    <workspace-id>/
-      git/                  # real native Git administrative directory
-      state.sqlite
-      overlay/
-      filtered-cache/
-      journal/
-      mount.json
-      logs/
+working tree(path) =
+  1. synthetic entry (root .git gitfile)   reserved, protected
+  2. overlay file / dir / symlink          local writes
+  3. overlay tombstone                      deletions (incl. tombstoned ancestor)
+  4. overlay clean-rename base-ref          rename/subtree mapping
+  5. baseline Git tree entry (HEAD tree)    lazy, unmaterialized
+  6. absent
 ```
 
-The mounted working tree is:
+Initial state: `baseline = checked-out commit tree`, `overlay = empty`. The
+baseline answers "what would this unmaterialized path contain in the logical
+working tree" — not what is staged, what HEAD is, or what branch is checked out;
+those come from Git. This is why a baseline is necessary: index-only operations
+(`git reset --mixed`, `git restore --staged`, `git rm --cached`) change the index
+without changing working-tree bytes, and the baseline/overlay split preserves the
+working tree while the real index moves independently.
+
+The baseline tree is **fixed at projection open** from the HEAD tree and is
+immutable for that projection's life; there is no baseline-advancement machinery.
+Branch-changing commands stay correct because stock Git writes every changed path
+through the FUSE write path into the overlay (see
+[worktree-model.md](worktree-model.md) and the eagerness note in
+[§7](#7-required-plain-git-compatibility-surface)).
+
+## 5.3 Crates
+
+The workspace is exactly nine crates (Cargo package names in parentheses):
+
+| Crate | Package | Role |
+|-------|---------|------|
+| `core` | `glm-core` | Backend-agnostic vocabulary: `ObjectId` (format-tagged raw bytes, never assumed SHA-1), `GitMode`, `RepoPath` (raw non-NUL bytes), `TreeObject`, `MountGeneration`, the per-path state axes `Source`/`SemanticStatus`/`Residency`/`Durability`, `FetchPolicy`, and `Error`/`ErrorCode` with stable string codes + Linux errno mapping. |
+| `git-store` | `glm-git-store` | Git-CLI object access: long-lived `cat-file --batch-command` sessions, `object_size`, `smudge_blob`, fd hardening (`CLOEXEC`, `GIT_NO_LAZY_FETCH`, `GIT_OPTIONAL_LOCKS`), byte-exact tree parsing, and the `interop.rs` operational-index bridge. |
+| `git-repo` | `glm-git-repo` | `AdminRepo`: the transparent clone, `build_index` (`git read-tree HEAD`), and the FSMonitor seed. |
+| `worktree` | `glm-worktree` | The `Projection` (baseline + overlay + content cache + single-flight), the `Overlay` (JSON sidecars), and the `ChangeJournal`. |
+| `fs-common` | `glm-fs-common` | `InodeTable`: stable inode identity with generations; `ROOT_INO = 1` is the only pre-allocated inode. |
+| `fuse` | `glm-fuse` | `TransparentFs`: the `fuser::Filesystem` implementation, real handle table, and the two bounded worker pools. |
+| `cli` | `glm-cli` | The `git-lazy-mount` binary and the `git-lazy-mount-fsmonitor` hook binary. |
+| `sgrep` | `glm-sgrep` | A separate standalone remote-grep CLI that reads the overlay/journal directly so search fetches nothing. Not part of the mount. |
+| `testkit` | `glm-testkit` | Shared test helpers. |
+
+There is no `daemon`, `ipc`, `namespace`, `overlay`, `object-provider`,
+`filtered-cache`, `fsmonitor`, or `platform` crate.
+
+## 5.4 On-disk layout
 
 ```text
-~/huge-repo/
+$XDG_DATA_HOME/git-lazy-mount/        (else ~/.local/share/git-lazy-mount/)
+  workspaces/<16-hex-hash-of-mountpoint>/
+    git/        real native partial-clone admin gitdir   (NOT inside FUSE)
+      glm-fsmonitor/changes.log        durable NUL-separated change journal
+    cache/      content-addressed cache files (materialized working-tree bytes)
+    overlay/
+      meta/     one atomic JSON sidecar per overlay entry  (sha256(path).json)
+      content/  native files holding writable content bytes
+    anchor/     temporary clone anchor, discarded after init
 ```
 
-At its root, project a synthetic read-only regular file:
-
-```text
-.git
-```
-
-whose content is:
-
-```text
-gitdir: /absolute/path/to/workspaces/<workspace-id>/git
-```
-
-The administrative Git directory must be on a normal native filesystem, not inside FUSE.
-
-This lets stock Git use its normal:
-
-```text
-index.lock
-packed-refs
-ref locks
-reflogs
-config locks
-sequencer state
-merge state
-rebase state
-commit message files
-hook execution
-atomic renames
-```
-
-Do not synthesize the contents of the entire `.git` directory through FUSE.
-
-Protect the synthetic `.git` entry from:
-
-```text
-unlink
-rename
-replacement
-chmod
-write
-directory creation beneath it
-```
-
-A Git tree entry that conflicts with Git’s protected `.git` namespace must fail safely.
-
-## 6.1 Recommended initialization experiment
-
-Evaluate a workflow equivalent to:
-
-```bash
-git clone \
-  --filter=blob:none \
-  --no-checkout \
-  --separate-git-dir=<native-gitdir> \
-  <url> \
-  <temporary-anchor>
-```
-
-Then configure the administrative repository to use the mountpoint as its worktree.
-
-Do not depend on a temporary physical checkout after initialization.
-
-Use Git itself for:
-
-```text
-protocol negotiation
-authentication
-partial clone
-object format
-reference format
-remote setup
-branch tracking
-fetch
-push
-signing
-```
-
-Do not assume SHA-1, 40-character IDs, or the files ref backend.
-
----
-
-# 7. Git is authoritative for repository state
-
-The following are owned exclusively by Git:
-
-```text
-HEAD and branch attachment
-refs and reflogs
-remote-tracking refs
-the index and conflict stages
-commit creation
-amend and history rewriting
-merge and rebase state
-stash refs
-bisect state
-tags
-push and fetch configuration
-```
-
-Do not mirror these into an independent workspace state machine.
-
-The daemon may cache parsed versions with a checksum or generation, but caches are disposable and must be rebuilt from the real Git directory.
-
----
-
-# 8. The custom state represents only the virtual working tree
-
-A virtual filesystem still needs to remember what bytes the working tree contains independently of HEAD and the index.
-
-This is not a second staging system.
-
-Represent the working tree as:
-
-```text
-baseline projected tree
-+
-overlay namespace and content
-+
-tombstones
-+
-synthetic control entries
-```
-
-Initial state:
-
-```text
-baseline = initial checked-out commit tree
-overlay = empty
-```
-
-Path resolution order:
-
-```text
-1. synthetic entries such as root .git
-2. overlay file, directory, or symlink
-3. overlay tombstone
-4. overlay rename/subtree mapping
-5. baseline Git tree entry
-6. absent
-```
-
-The baseline answers:
-
-> What would this unmaterialized path contain in the logical working tree?
-
-It does not answer:
-
-```text
-what is staged
-what HEAD is
-what branch is checked out
-```
-
-Those answers come from Git.
-
-## 8.1 Why a baseline is necessary
-
-Index-only operations can change the index without changing working-tree bytes.
-
-Examples:
-
-```bash
-git reset --mixed <commit>
-git restore --staged path
-git rm --cached path
-git update-index --cacheinfo ...
-```
-
-If the projection always used the current index as its content source, these commands would incorrectly change or delete working-tree files.
-
-The baseline and overlay preserve working-tree state while the real index changes independently.
-
-## 8.2 Baseline advancement
-
-Initially favor correctness over aggressive compaction.
-
-Advance or replace the baseline only after a command is known to have updated the working tree, such as a successful checkout-like operation.
-
-Keep overlay entries for local modifications that must survive the baseline change.
-
-A later compaction pass may dematerialize an overlay entry only after proving that:
-
-```text
-its contents match the new projected baseline
-its Git-relevant mode matches
-no writable handle remains open
-no pending fsync exists
-no concurrent rename references it
-```
-
-Never dematerialize based only on timestamps.
-
----
-
-# 9. Long-running daemon is part of the MVP
-
-The CLI must not instantiate a new independent workspace engine for every invocation.
-
-A per-user daemon must own:
-
-```text
-FUSE sessions
-open file handles
-overlay namespace transactions
-the changed-path journal
-object fetch scheduling
-long-lived Git object readers
-filtered-content cache
-inode allocation
-mount registration
-credential failure state
-metrics
-recovery
-```
-
-The command:
-
-```bash
-git lazy-mount <url> <path>
-```
-
-may start the daemon when absent, but must wait for the mount to become ready.
-
-Use a secured Unix-domain socket on Linux.
-
-The daemon protocol must be versioned and authenticate the local user through socket ownership and peer credentials.
-
-Do not require root privileges.
-
----
-
-# 10. Exact mount startup sequence
-
-Implement startup as an idempotent transaction.
-
-## 10.1 Preflight
-
-Validate:
-
-```text
-Git executable and minimum supported version
-FUSE availability
-mountpoint ownership and emptiness
-mountpoint not nested beneath another managed mount
-data-directory permissions
-remote URL
-credential availability
-partial-clone filter support
-filesystem case behavior
-symlink support
-available disk space
-stale registry entries
-stale native Git locks
-```
-
-Do not prompt for credentials from a FUSE callback.
-
-Authentication may be interactive during the initial mount command.
-
-## 10.2 Create the Git repository
-
-Create a normal per-workspace partial clone using:
-
-```text
---filter=blob:none
---no-checkout
-full history by default
-normal origin configuration
-normal local branch and upstream
-```
-
-Support explicit options:
+The mounted worktree (`~/huge-repo/`) projects one synthetic read-only regular
+file `.git` whose bytes are `gitdir: /abs/.../workspaces/<id>/git`. The admin
+gitdir is configured with `core.worktree = <mountpoint>`, so stock Git resolves
+the repo through the gitfile and operates on the mounted worktree using its normal
+index, refs, locks, and hooks. The admin gitdir lives on a native filesystem,
+never inside FUSE, so Git's `index.lock`, `packed-refs`, ref/config locks,
+reflogs, sequencer/merge/rebase state, and atomic renames all work normally.
+
+The synthetic `.git` is protected: any create/replace/delete/rename/chmod/write of
+it, or any attempt to create a path beneath it, fails safely. Protection is
+enforced in `Projection::child_path` (returns `ErrorCode::Authentication`), not by
+a reserved inode. A repo tree entry literally named `.git` never shadows the
+synthetic one.
+
+Storage durability (atomic sidecars + fsync, content retention via Linux fd
+survival) is owned by [`durability-security.md`](durability-security.md); the
+overlay/baseline/tombstone model is owned by
+[`worktree-model.md`](worktree-model.md).
+
+## 5.5 Command surface
+
+The mount flow does **not** run a per-user daemon and uses no IPC socket. Instead
+the parent command spawns a single **detached, hidden `__serve` child** that holds
+the kernel mount:
+
+- `cmd_mount` does the clone/index/seed work, then spawns `git-lazy-mount __serve
+  --gitdir … --mountpoint … --cache … --overlay …` with stdio nulled. The child is
+  reparented to init and is **not** waited on; the parent polls for the synthetic
+  `.git`, runs health checks, prints success, and exits.
+- `cmd_serve` (the `__serve` body) opens the `AdminRepo`, opens the
+  `ChangeJournal`, builds the `Projection` with that journal, and calls
+  `glm_fuse::mount`, which blocks until the mount is released.
+- `cmd_unmount` runs `fusermount3 -u` (falling back to `fusermount -u`, then
+  `umount`); the serving child's `mount()` returns and it exits.
+- `cmd_doctor` reports mountpoint, mounted-or-not, and `show-toplevel`
+  (optionally as JSON).
+
+The FSMonitor hook (`git-lazy-mount-fsmonitor`) and `sgrep` read the durable
+journal file directly — there is no socket and no protocol version to negotiate.
+
+## 5.6 Startup sequence
+
+`cmd_mount` runs as a straight-line sequence:
+
+1. **Preflight.** Create the mountpoint if needed and require it to be empty;
+   derive the deterministic per-mountpoint workspace paths.
+2. **Clone.** `AdminRepo::clone` runs `git clone --no-checkout
+   --separate-git-dir=<gitdir>` with the default `--filter=tree:0`, sets
+   `core.worktree=<mountpoint>`, adds `--no-single-branch` when `--depth` is set,
+   and runs with `GIT_TERMINAL_PROMPT=0`. A full-object clone (filter rejected
+   with `--allow-full-object-clone`) still implies **no** checkout.
+3. **Build the index.** `build_index` runs `git read-tree HEAD`, faulting the HEAD
+   tree hierarchy and fetching **zero** blobs. This is O(tracked paths) of
+   metadata work and is reported honestly, never marketed as O(1).
+4. **Configure FSMonitor.** Set `core.fsmonitor` to the
+   `git-lazy-mount-fsmonitor` binary beside the executable, and
+   `core.fsmonitorHookVersion=2`. (Nothing else is configured — no
+   `untrackedCache`, no `hooksPath`, no `index.version`.)
+5. **Seed first status.** Open the (empty) change journal, then
+   `seed_fsmonitor_valid` so the *first* `git status` faults zero blobs (see
+   [§6.4](#64-fsmonitor-v2--change-journal)).
+6. **Serve.** Spawn the detached `__serve` child.
+7. **Validate.** Poll `mountpoint/.git` for readiness (up to 1000 × 10 ms), then
+   run the health checks and print success.
+
+The startup ordering and its deadlock-avoidance constraints are owned by
+[`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).
+
+## 5.7 The `tree:0` default and its rationale
+
+The default partial-clone filter is **`tree:0`**: every commit is fetched (so
+history, merge-base, `git log`, and branch switching all work), but no trees or
+blobs are. `build_index` then faults only the HEAD tree hierarchy; blobs hydrate
+on read. This is both correct and cheap.
+
+The two rejected alternatives:
+
+- **`--depth 1` (shallow)** grafts the commits, which breaks `git merge` / `git
+  rebase` and hides history. Not a default.
+- **`blob:none`** with full history would download **every tree from all of
+  history** — slow and large on big repos. Not a default.
+
+`blob:none` and `--depth` remain valid **explicit** overrides:
 
 ```bash
 git lazy-mount <url> <path> --branch main
@@ -722,2173 +370,308 @@ git lazy-mount <url> <path> --filter blob:none
 git lazy-mount <url> <path> --allow-full-object-clone
 ```
 
-If the remote rejects the requested filter, fail with an actionable message unless the user explicitly allowed a full object clone.
-
-A full object clone must still not imply a full checkout.
-
-## 10.3 Initialize working-tree state
-
-Record:
-
-```text
-baseline commit/tree
-empty overlay
-initial namespace generation
-initial FSMonitor token
-```
-
-## 10.4 Initialize the real index
-
-The correctness-first implementation may create a full index from the initial tree.
-
-This may be O(number of tracked paths), but must fetch no blob contents.
-
-Measure and report:
-
-```text
-index creation time
-index size
-peak memory
-tree objects read
-blob objects fetched
-```
-
-Do not market mount creation as O(1) while constructing a full index.
-
-## 10.5 Configure Git integration
-
-Configure at least:
-
-```text
-core.worktree
-core.bare=false
-core.fsmonitor=<absolute hook/client path>
-core.fsmonitorHookVersion=2
-core.untrackedCache=true, after capability testing
-index.version=4, after compatibility testing
-core.fileMode based on mount behavior
-core.symlinks based on mount behavior
-core.ignoreCase based on mount behavior
-```
-
-Preserve the user’s ordinary global configuration.
-
-Do not overwrite user identity, signing, editor, pager, aliases, credential helpers, or remote policies.
-
-## 10.6 Start and validate the mount
-
-Start FUSE, then verify:
-
-```bash
-test "$(cat <mountpoint>/.git)" = "gitdir: <expected-gitdir>"
-git -C <mountpoint> rev-parse --is-inside-work-tree
-git -C <mountpoint> rev-parse --show-toplevel
-git -C <mountpoint> symbolic-ref --short HEAD
-git -C <mountpoint> status --porcelain=v2
-```
-
-Also perform:
-
-```text
-root readdir
-lookup of one tracked path
-read of a small tracked file
-write/create/delete in a disposable untracked test path
-FSMonitor query
-```
-
-Remove the disposable path.
-
-Only then mark the mount active and return success.
+> A stale code comment in `crates/git-repo/src/lib.rs` still says the filter
+> "defaults to `blob:none`"; the `Default` impl sets `tree:0`. Trust the impl.
 
 ---
 
-# 11. Index and scalability feasibility gate
+# 6. Subsystems
 
-The index is the central scale question. Resolve it with measurements before building broad features.
+Each subsystem is summarized here at spec altitude; its area document owns the
+depth.
 
-Implement and compare these profiles.
+## 6.1 Worktree model — [`worktree-model.md`](worktree-model.md)
 
-## 11.1 Profile A: full index plus FSMonitor
+The `Projection` layers the durable overlay over the fixed baseline HEAD tree.
+`resolve()` follows the order in [§5.2](#52-working-tree-model-baseline--overlay).
+`readdir()` merges baseline and overlay children at O(direct children) with no
+blob fetch. Overlay entries are `File` / `Symlink` / `Dir` / `Tombstone` /
+`BaseRef{oid,mode}`; a clean file or subtree rename is metadata-only (overlay
+re-key plus baseline base-refs at the destination, source tombstoned) and fetches
+no blob contents. `RENAME_NOREPLACE` is honored; `RENAME_EXCHANGE` is rejected.
+Repository paths are raw `RepoPath` byte sequences (never lossily converted to
+UTF-8), so paths with invalid UTF-8, newlines, leading dashes, quotes, and control
+characters round-trip correctly.
 
-Characteristics:
+## 6.2 FUSE semantics — [`fuse-semantics.md`](fuse-semantics.md)
 
-```text
-normal index semantics
-maximum stock-Git compatibility
-O(number of tracked paths) index construction
-possibly O(number of index entries) index parsing
-no working-tree scan after FSMonitor bootstrap
-```
+`TransparentFs` implements these `fuser` operations: `init` (which negotiates
+`FUSE_ATOMIC_O_TRUNC`), `lookup`, `forget`, `getattr`, `setattr`, `readlink`,
+`open`, `create`, `read`, `write`, `flush`, `fsync`, `release`, `mkdir`, `unlink`,
+`rmdir`, `rename`, `symlink`, `opendir`, `readdir`, `releasedir`, `access`, and
+`statfs`. Not implemented (these fall through to the `fuser` default, `ENOSYS`):
+`link`, `mknod`, all xattr ops, `fallocate`, `copy_file_range`, `lseek`, file
+locking (`getlk`/`setlk`/`flock`), `destroy`, and `batch_forget`.
 
-This is the correctness baseline.
+Handles are real (`Handle::Read` / `Handle::Write`, `fh` from 1, never 0); reads
+and writes are serviced strictly by `fh` via `pread`/`pwrite` into an FD, with no
+whole-file `Vec<u8>` buffering. First writable `O_TRUNC` seeds an empty overlay
+file with no baseline fetch; a partial overwrite copies up once and then writes in
+place. Open-unlink and rename-while-open keep working through the FD because
+service does not depend on a path. Inode identity (`InodeTable`) is stable across
+repeated lookups, with a per-inode generation; `ROOT_INO = 1` is the only
+pre-allocated inode. Two fixed bounded pools run callbacks: 16 object-I/O threads
+and 4 metadata threads (so `ls` stays responsive while reads hydrate). There are
+no separate decompress/filter/network pools and no backpressure/cancellation
+machinery.
 
-Evaluate:
+## 6.3 Object fetching — [`object-fetching.md`](object-fetching.md)
 
-```text
-index format v4
-split index
-untracked cache
-FSMonitor-valid bits
-feature.manyFiles
-preload-index behavior
-initial status behavior
-subsequent clean status behavior
-```
+`materialize_path` streams a baseline blob through `cat-file` into a
+content-addressed cache file and serves range reads from its FD via a
+`ContentHandle` (`pread`, bounded RSS). Concurrent faults of the same object are
+coalesced by a per-`ObjectId` single-flight map (`inflight:
+Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>`), so a hundred concurrent reads of one
+missing blob cause one retrieval. Smudge/working-tree content is produced by `git
+cat-file --filters --path --attr-source`. Fetch eligibility is gated by
+`FetchPolicy` (`CacheOnly` / `MustNotFetch` / `AllowNetwork` / `Prefetch`); a
+missing object under an offline policy maps to a bounded filesystem error
+(`OfflineMissingObject → EIO`, `NotFound → ENOENT`).
 
-Find a way to bootstrap FSMonitor-valid state without reading every working-tree blob.
+`getattr` is the one metadata op that may fault: a Git tree entry carries no exact
+working-tree size, so `ls -l` / `stat` of an unmaterialized file faults its blob
+once. This is fundamental to lazy-blob fetching and is separate from `git status`,
+which faults zero blobs (next section).
 
-## 11.2 Profile B: dynamic skip-worktree
+## 6.4 FSMonitor v2 + change journal — [`fsmonitor.md`](fsmonitor.md)
 
-Only investigate this after Profile A works.
+Git's FSMonitor v2 hook receives `(version, previous_token)` and returns a new
+token, a NUL, then the relative paths changed since that token. Responses are
+**inclusive**: false positives are acceptable, false negatives are not. The token
+wire form is `glm1:workspace:epoch:seq:generation`; `epoch` and `generation` are
+fixed at 1 and 0 in this slice.
 
-Potential model:
+The `ChangeJournal` (`<gitdir>/glm-fsmonitor/changes.log`) is a durable
+NUL-separated append log replayed into memory on open. `record()` writes and
+`sync_data()`s **before** the FUSE reply, so an acknowledged mutation is always
+visible to the next query. `query()` returns a full invalidation (`/`) for any
+token it cannot place: an empty token while `seq > 0`, an unparseable token, a
+workspace/epoch/generation mismatch, or a `seq` beyond the current sequence.
 
-```text
-unmaterialized clean paths have skip-worktree
-materialized or modified paths do not
-the virtual filesystem still exposes all paths
-```
+**The zero-blob first-status finding (canonical here).** The *first* clean `git
+status` faults zero blobs, the same as every later one. A freshly `read-tree`'d
+index carries no FSMonitor extension, so without intervention Git stats (and so
+faults) every entry on the first status before writing the extension. The fix,
+applied at mount right after `read-tree`, pre-seeds the FSMonitor index extension
+(`seed_fsmonitor_valid`): every entry is marked `CE_FSMONITOR_VALID` carrying the
+journal's seq-0 token, so Git's `refresh_cache_ent` early-returns before any
+`lstat` and the hook answers "nothing changed" at the seq-0 token. Two carve-outs
+keep it correct: (a) checkout conversion attributes
+(`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are detected by reading the
+tracked `.gitattributes` blobs directly; if any path declares such an attribute
+the entire seed is skipped, so Git's first status checks every path normally and
+never hides a diff — bounded by a 20-second attribute-read timeout; (b) the seeded token
+must match the hook's identity, else Git falls back safely to the eager scan.
+Verified zero-fault on an 81k-file real mount.
 
-This is experimental.
+## 6.5 Git state model — [`git-state-model.md`](git-state-model.md)
 
-Prove behavior for every required Git command. In particular, prove that Git does not:
+The transparent design — `git clone --separate-git-dir` + `core.worktree` + a
+synthetic `.git` gitfile served by the projection — gives stock Git an ordinary
+repository whose working tree happens to be virtual. Git owns all repository state
+([§5.1](#51-two-sources-of-truth)); the projection owns only working-tree bytes.
+Index-only updates leave baseline and overlay untouched; working-tree updates
+flow through FUSE into the overlay exactly as ordinary filesystem operations
+would. We never infer a working-tree update from a changed index.
 
-```text
-clear bits across the entire tree
-reject ordinary git add
-remove projected paths unexpectedly
-write skipped files during conflicts
-misreport deleted or modified paths
-corrupt sparse-index state
-```
+## 6.6 Index strategy — [`index-strategy.md`](index-strategy.md)
 
-Do not require users to pass `git add --sparse`.
+The mount uses a **full real index** built by `git read-tree HEAD` (faulting HEAD
+trees, fetching zero blobs) — the maximum-compatibility correctness baseline.
+`git-store`'s `interop.rs` synthesizes a *separate* throwaway operational index
+(every entry skip-worktree) only to let stock Git run against the shared store off
+the mount hot path; it is exercised by the store integration tests, not the FUSE
+path. Scalability of larger-repo index strategies (sparse / dynamic skip-worktree
+/ a minimal provider extension) is discussed there; the shipped choice is the
+full index.
 
-## 11.3 Profile C: sparse index
+## 6.7 Durability and security — [`durability-security.md`](durability-security.md)
 
-Measure whether a sparse index can represent unmaterialized subtrees while the virtual filesystem still exposes them.
+Overlay durability is per-entry: one atomic JSON sidecar per entry
+(`id_for(path) = sha256(path)+".json"`) under `meta/`, content bytes in native
+files under `content/`, each published temp-file → `fsync` → `rename` with a
+parent-directory fsync so an acknowledged create/rename survives a crash. There is
+no SQLite, no namespace database, and no content-id nonce; the in-memory overlay
+index is a disposable cache rebuilt from the sidecars on open. Authentication uses
+the user's normal credential helper during the initial mount only; FUSE callbacks
+are non-interactive (`GIT_TERMINAL_PROMPT=0`) and gate fetches through
+`FetchPolicy`. The threat model treats repository data as untrusted (path
+traversal, symlink races, decompression bombs, credential redaction); raw paths
+are escaped safely for display and JSON.
 
-Do not assume normal sparse-checkout rules fit this product.
+## 6.8 Deadlock, startup, and recovery — [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md)
 
-## 11.4 Profile D: minimal Git integration
-
-Stock Git may be correct but eager for operations such as branch switching, because it obtains and writes every changed blob itself.
-
-If Profiles A–C cannot meet the large-repository performance requirements, design a minimal, upstreamable Git extension rather than adding a command wrapper.
-
-A possible extension would let Git ask a virtual-working-tree provider to:
-
-```text
-declare paths virtual and clean
-update a projected baseline without writing file bytes
-materialize only paths requiring conflict resolution or local edits
-report changed paths
-invalidate projected paths
-```
-
-Requirements for such an extension:
-
-```text
-plain `git` remains the user command
-the repository advertises the extension explicitly
-unaware Git versions refuse safely if required
-the patch is isolated and documented
-the correctness profile still works with upstream Git
-```
-
-Do not silently ship a private Git fork while claiming upstream Git compatibility.
-
----
-
-# 12. FSMonitor v2 integration
-
-Implement a durable FSMonitor v2 endpoint.
-
-Git invokes it with:
-
-```text
-protocol version
-opaque previous token
-```
-
-It returns:
-
-```text
-new opaque token
-NUL
-zero or more NUL-separated relative paths
-```
-
-The response must be inclusive. False positives are acceptable; false negatives are not.
-
-Record:
-
-```text
-file creation
-content modification
-truncation
-chmod affecting Git mode
-unlink
-old and new names for rename
-directory creation
-directory deletion
-directory rename
-symlink creation or replacement
-```
-
-When the daemon cannot prove continuity, return the full-invalidation path:
+Git processes run *inside* the mount and can trigger FUSE callbacks; callbacks need
+Git objects. The invariants that prevent deadlock:
 
 ```text
-/
+FUSE callbacks never invoke Git porcelain or a worktree-scanning command
+FUSE callbacks never wait on the index lock held by the requesting Git process
+object readers target the native gitdir directly (long-lived cat-file --batch-command)
+GIT_NO_LAZY_FETCH=1 on inspection subprocesses that must not recursively fetch
+all mount/session file descriptors are CLOEXEC and not inherited by children
 ```
 
-Scenarios requiring full invalidation include:
-
-```text
-journal loss
-database rollback
-token from another workspace
-token from a future generation
-journal compaction beyond requested token
-unreconciled daemon crash
-backend event overflow
-external overlay modification
-```
-
-## 12.1 Durability
-
-Store tokens and events in a durable append log or SQLite WAL.
-
-A token must identify:
-
-```text
-workspace
-journal epoch
-monotonic sequence
-projection generation
-```
-
-## 12.2 Initial index state
-
-Develop a measured bootstrap process that marks initial index entries FSMonitor-valid without hashing their working-tree contents.
-
-The first clean status and all subsequent clean statuses must fetch zero blob contents.
-
-**Implementation finding:** the *first* clean status faults zero blobs, the same as every subsequent clean status. The earlier belief that it was fundamentally unachievable was a bootstrap-ordering bug, not a real limit: a freshly `read-tree`'d index carries no FSMonitor extension, so git's "mark all entries valid" pass never runs on the first status and git stats (and faults) every entry before writing the extension. The fix (shipped) pre-seeds the FSMonitor index extension at mount, right after `read-tree`, marking every entry `CE_FSMONITOR_VALID` via `git update-index --fsmonitor-valid` carrying the journal's seq-0 token. Git's `refresh_cache_ent` then early-returns on `CE_FSMONITOR_VALID` before any `lstat`, so the first status faults zero blobs and the hook answers "nothing changed" at the seq-0 token. Two carve-outs keep it correct: (a) paths under a checkout conversion (`filter`/`ident`/`working-tree-encoding`/CRLF `eol`, read via `check-attr --cached`) are excluded from the seed so git checks them normally and never hides a diff; (b) the seeded token must match the hook's identity (workspace, epoch, seq=0, generation), else git safely falls back to the eager scan. Verified zero-fault on an 81k-file (microsoft/TypeScript) real mount.
-
-## 12.3 Untracked paths
-
-Integrate with Git’s untracked cache.
-
-Directory metadata must change when children are created, removed, or renamed.
-
-Do not use one constant synthetic directory mtime forever.
-
-## 12.4 Barrier semantics
-
-Provide an internal barrier that waits until all FUSE operations acknowledged before a captured sequence are visible to the FSMonitor query.
-
-The hook should remain a tiny IPC client. Heavy work belongs in the daemon.
+Bounded worker pools keep the `fuser` dispatch loop free to answer a `FLUSH`
+during a fork/exec (the prior single-threaded deadlock).
 
 ---
 
-# 13. Observe Git directory changes without replacing Git
+# 7. Required plain-Git compatibility surface
 
-Install or chain notification hooks for:
-
-```text
-post-index-change
-reference-transaction
-post-checkout
-post-merge
-post-commit
-post-rewrite
-post-applypatch
-```
-
-These hooks notify the daemon about:
+Do not claim transparent Git compatibility until these commands pass mounted
+end-to-end tests through a real `/dev/fuse` mount without a wrapper. The full
+per-command correctness-and-laziness matrix is in
+[`compatibility.md`](compatibility.md).
 
 ```text
-index replacement
-possible skip-worktree changes
-HEAD movement
-ref transactions
-working-tree-updating operations
-history rewrites
-merge completion
+discovery/inspection : rev-parse --show-toplevel, status [--porcelain=v2],
+                       diff [--cached], log, show, ls-files, cat-file,
+                       branch, tag, remote -v
+staging/commit       : add [path|-A|-u|-p], reset path, restore --staged,
+                       commit [-a|--amend|--fixup|-S], rm [--cached], mv
+branch/worktree       : branch, switch [-c], checkout [-- path], restore,
+                       reset [--soft|--mixed|--hard]
+history              : merge [--abort], rebase [--continue|--abort],
+                       cherry-pick [--continue|--abort], revert, stash [pop]
+remote               : fetch [--prune], pull [--rebase], push
+                       [--force-with-lease|--tags]
+working-tree utils   : clean [-n|-fd], grep, blame, bisect, mergetool, difftool
+maintenance          : fsck, gc, maintenance run, repack, prune
 ```
 
-Hooks are an optimization and synchronization aid, not the only correctness mechanism.
+Plain `git push` is required; there is no bespoke push command and no second lease
+model. Git's refs, remote-tracking refs, reflogs, and push safety are
+authoritative.
 
-Also watch native administrative state such as:
-
-```text
-index
-index.lock
-HEAD
-packed-refs
-refs/
-logs/
-MERGE_HEAD
-CHERRY_PICK_HEAD
-REBASE_HEAD
-sequencer/
-rebase-merge/
-rebase-apply/
-```
-
-On daemon restart or missed events, reconcile from disk.
-
-## 13.1 Preserve user hooks
-
-Do not overwrite or silently disable existing hooks or `core.hooksPath`.
-
-Build a hook multiplexer that:
-
-1. sends a bounded notification to the daemon;
-2. invokes the previously configured user hook with the original arguments, stdin, environment, and exit semantics;
-3. prevents recursive invocation;
-4. does not hold daemon locks while the user hook runs.
-
-Provider notification hooks that cannot affect Git’s result must not alter the user hook’s intended exit status.
+**Eagerness is measured, not hidden.** Branch-changing commands
+(`switch`/`checkout`/`reset --hard`/`merge`/`rebase`) are correct but potentially
+eager: stock Git writes every changed path through the FUSE write path. Measured,
+a branch switch over an M-of-N delta touches O(M) blobs (the delta), not O(N) (the
+repo). A release may ship stock-Git-compatible while labeling branch transitions
+"potentially eager"; it must not claim lazy branch switching until demonstrated.
 
 ---
 
-# 14. FUSE path and inode model
+# 8. Hydration budgets
 
-Implement a stable inode table.
+These are automated assertions, not aspirations.
 
-Each inode record contains at least:
-
-```text
-inode number
-generation
-current namespace identity
-entry type
-link count
-open-handle count
-lookup reference count
-deleted-but-open state
-baseline or overlay source
-```
-
-Requirements:
-
-```text
-repeated lookup returns stable identity
-rename preserves identity
-unlink removes the name but not open handles
-delete and recreate receives a new generation
-forget releases kernel references safely
-branch changes do not reuse stale inode generations
-```
-
-The root `.git` gitfile has a reserved stable inode.
-
-Do not use path lookup as the only way to service an open handle. A file may no longer have a path after unlink.
+| Operation | Budget |
+|-----------|--------|
+| **Mount** (`tree:0`) | fetch zero working-file blobs merely to project the tree; the full-index build does O(tracked paths) metadata work and reports it honestly |
+| **`ls <dir>`** | zero child blobs, zero smudge filters, O(direct children) namespace work |
+| **`ls -l <dir>`** | may fault each blob once for exact size (fundamental); reported distinctly |
+| **Clean `git status --porcelain=v2`** | zero blobs, zero smudge filters, no full per-file stat scan — for the **first** and all subsequent clean statuses (via the seed in [§6.4](#64-fsmonitor-v2--change-journal)) |
+| **`cat path`** | at most the one required blob plus its attribute/filter metadata |
+| **100 concurrent reads of one missing file** | one underlying object retrieval (single-flight) |
+| **`open(O_WRONLY\|O_TRUNC)`** | does not fetch the old blob |
+| **Repeated 4 KiB writes to a 1 GiB file** | no full-file read/rewrite per callback; no allocation proportional to file size |
+| **Clean rename of an unmaterialized file/subtree** | zero blob contents |
+| **`git log` / `branch` / `tag` / `status`** | do not hydrate working-tree blobs to inspect metadata |
 
 ---
 
-# 15. Directory namespace
+# 9. Limitations
 
-Use a persistent, parent-indexed namespace store.
+By-design and deferred behaviors are registered in
+[`limitations.md`](limitations.md). The load-bearing ones:
 
-Queries must support:
-
-```text
-lookup(parent, name)
-children(parent)
-has_children(path)
-rename subtree
-delete subtree
-case collision detection
-```
-
-Do not implement each `readdir` by scanning every dirty path in the workspace.
-
-A directory listing should cost approximately:
-
-```text
-Git entries directly in that directory
-+
-overlay changes directly in that directory
-```
-
-It must not depend on the total number of dirty paths elsewhere.
-
-Persist:
-
-```text
-empty directories
-untracked directories
-tombstones
-rename mappings
-directory generations
-```
+- **`getattr` size hydration is fundamental to lazy blobs.** The exact size of an
+  unmaterialized file requires its blob, so `ls -l` / `stat` faults it once. Not
+  closeable without a server-side size manifest.
+- **Smudge-side `.gitattributes` / LFS serve the raw baseline blob.** A
+  smudge-filtered file (`eol=crlf`, `ident`, an LFS pointer) reads as its stored
+  bytes, not the smudged bytes. Commits stay byte-correct because the clean filter
+  is the inverse, and Git's content comparison stays clean.
+- **Branch transitions are potentially eager** ([§7](#7-required-plain-git-compatibility-surface)).
+- **The change journal has no compaction** and a fixed epoch/generation; bumping
+  the epoch on a detected crash is a future refinement.
+- **LFS end-to-end and nested lazy submodules are deferred** (some submodule tests
+  are `#[ignore]`'d).
 
 ---
 
-# 16. Required Linux FUSE operations
+# 10. Project status
 
-Implement and test:
+Linux-only, real-`/dev/fuse`-CI tested (CI runs on `ubuntu-latest` only). Shipped
+through M0–M7:
 
-```text
-init
-destroy
-lookup
-forget
-getattr
-setattr
-open
-create
-read
-write
-flush
-fsync
-release
-opendir
-readdir
-releasedir
-mkdir
-rmdir
-unlink
-rename and rename2 flags
-symlink
-readlink
-link, or a clearly documented error
-access
-statfs
-getxattr/listxattr/setxattr/removexattr policy
-fallocate policy
-copy_file_range
-lseek
-file locking policy
-```
+- **M0** architecture + a first transparent read-only vertical slice.
+- **M1** one-command clone + detached serve + FUSE mount; stock `git rev-parse`;
+  zero-hydration `readdir`; lazy read.
+- **M2** writable semantics: real handles, copy-on-write, create/write/truncate/
+  append, unlink/open-unlink, rename, directories, symlinks, flush/fsync/release,
+  durable overlay.
+- **M3** stock status/staging/commit via the real index + durable FSMonitor v2.
+- **M4** branch-changing workflows; measured eagerness (O(delta), not O(repo)).
+- **M5** remote + maintenance (fetch/pull/push/gc/…); offline reads; credential
+  recovery via normal `git fetch`.
+- **M6** large-repo index strategy chosen from measurements (the full index);
+  bounded-memory large-file reads.
+- **M7** the shared-object-cache direction is explored but not enabled by default.
 
-Do not call a feature complete merely because editors can save one small file.
+Genuinely deferred: LFS end-to-end, nested lazy submodules, a default-on shared
+object cache, and other platforms (M8 — out of scope; see
+[`future-platforms/`](future-platforms/)).
+
+Build: `cargo build --release -p glm-cli --features fuse` produces
+`git-lazy-mount`; the `git-lazy-mount-fsmonitor` hook is built alongside and must
+sit next to it. Requires libfuse3 and system Git (≥ 2.36).
 
 ---
 
-# 17. Real file-handle design
+# 11. Considered but not built (possible future)
 
-Allocate a unique handle for each successful open.
+The pre-implementation design described considerable machinery the shipped MVP
+deliberately did **not** build. It is recorded here as rationale, **not** as a
+mandate, so the spec does not contradict the code. None of this exists today.
 
-A handle records:
-
-```text
-inode and generation
-open flags
-access mode
-append mode
-source snapshot
-native cache or overlay file descriptor
-dirty ranges or dirty state
-path at open time for diagnostics only
-deleted-but-open status
-```
-
-Possible sources:
-
-```text
-baseline Git blob
-filtered-content cache file
-overlay native file
-new anonymous overlay file
-synthetic .git content
-symlink target
-```
-
-## 17.1 Read-only clean open
-
-For an unmaterialized tracked file:
-
-1. resolve its baseline entry;
-2. resolve filter context;
-3. ensure its Git object is available;
-4. stream or generate the working-tree representation into a verified cache file;
-5. open the cache file;
-6. service range reads from the file descriptor.
-
-Do not allocate a complete in-memory byte vector.
-
-## 17.2 First writable open
-
-For `O_TRUNC`:
-
-```text
-create an empty overlay file
-do not fetch the baseline blob
-```
-
-For a partial overwrite, append, or writable mapping:
-
-```text
-materialize the working-tree representation once
-copy, reflink, or otherwise seed an overlay file
-perform subsequent writes in place
-```
-
-Do not recreate and rename the complete overlay file for each 4 KiB write callback.
-
-## 17.3 Append
-
-Honor `O_APPEND` atomically relative to concurrent writers.
-
-## 17.4 Open then unlink
-
-After unlink:
-
-```text
-namespace lookup fails
-existing handles remain readable and writable
-storage remains until the final release
-```
-
-## 17.5 Rename while open
-
-Existing handles continue to refer to the same file identity.
-
-## 17.6 Flush and fsync
-
-Implement correct distinctions among:
-
-```text
-flush
-fdatasync
-fsync
-release
-directory fsync
-```
-
-Do not claim crash durability for writes the application never fsynced beyond ordinary filesystem guarantees.
+- **Per-user daemon + Unix-socket IPC.** A long-running per-user daemon owning all
+  FUSE sessions, with a versioned, peer-credential-authenticated control socket.
+  *Shipped instead:* a detached hidden `__serve` child per mount; the hook and
+  `sgrep` read the durable journal file directly. A daemon would help only if many
+  mounts needed to share fetch scheduling or an object cache.
+- **SQLite / transactional namespace DB / WAL.** A `state.sqlite` namespace
+  database for overlay metadata, inodes, tombstones, and renames. *Shipped
+  instead:* per-entry atomic JSON sidecars + a NUL-append journal. SQLite would
+  matter only at overlay sizes where per-entry sidecars become a bottleneck.
+- **A rich fetch scheduler.** Per-origin concurrency limits, global bandwidth
+  caps, request priorities, retries, a network circuit breaker, an explicit
+  offline mode, and a credential-refresh state machine. *Shipped instead:*
+  per-`ObjectId` single-flight coalescing and a `FetchPolicy` gate.
+- **Separate decompress / filter / network worker pools** with backpressure and
+  cancellation. *Shipped instead:* two fixed pools (object-IO + metadata).
+- **Cached Git-state views as first-class types** (`IndexCache` / `RefSnapshot` /
+  `OpState`) and a generic `ObjectProvider`/`ensure_objects` trait surface.
+  *Shipped instead:* direct `git-store` calls; parsed state is recomputed, not
+  cached behind a typed layer.
+- **A hook multiplexer** chaining provider notifications
+  (post-index-change/reference-transaction/post-checkout/…) ahead of the user's
+  existing hooks, plus inotify/fanotify gitdir watchers. *Shipped instead:* only
+  `core.fsmonitor`; user hooks and `core.hooksPath` are untouched.
+- **A named mount state machine and recovery state machine** (creating → cloning →
+  … → mounted → recovering → failed), a mount registry, and a `git lazy-mount
+  recover` subcommand. *Shipped instead:* a `MountGeneration` counter, orthogonal
+  per-path state axes, and poll-for-`.git` readiness.
+- **Post-mount observability and prefetch CLI** (`list`/`stats`/`trace`/`prefetch`
+  `--for-offline`/`dehydrate`/`recover`, `--offline`). *Shipped instead:* only
+  `doctor`.
+- **A shared object cache** across workspaces (alternates + leases/keep-refs/grace
+  periods) and a baseline-advancement/compaction pass that dematerializes overlay
+  entries proven to match a new baseline.
+- **Git LFS modes** (smudge/pointer/error) and nested lazy submodules.
+- **A minimal upstreamable Git provider extension** to let Git declare paths
+  virtual-and-clean and update a projected baseline without writing file bytes —
+  the only path to truly lazy (non-eager) branch switching.
+- **Other platforms.** macOS (FSKit) and Windows (ProjFS). FSKit was blocked by an
+  Apple 26.x OS bug; both are retired to [`future-platforms/`](future-platforms/).
 
 ---
 
-# 18. Bounded I/O and callback execution
+# 12. Implementation discipline
 
-Use separate bounded pools or semaphores for:
-
-```text
-fast metadata operations
-native overlay I/O
-Git object decompression
-external filters
-network fetches
-background prefetch
-maintenance
-```
-
-Never run network I/O while holding:
-
-```text
-inode locks
-namespace write transactions
-handle-table locks
-index-state locks
-global database transactions
-```
-
-Never spawn one thread per FUSE request.
-
-Support cancellation when the kernel cancels a request or the requesting process exits.
-
----
-
-# 19. Avoid Git/FUSE subprocess deadlocks
-
-Git processes run inside the mounted tree and therefore may trigger FUSE callbacks.
-
-FUSE callbacks may need Git object access.
-
-Follow these invariants:
-
-```text
-FUSE callbacks never invoke Git porcelain
-FUSE callbacks never invoke a Git command that scans the worktree
-FUSE callbacks never wait for the index lock held by the requesting Git process
-object readers target the native gitdir directly
-dedicated fetch operations are isolated
-all mount/session file descriptors are CLOEXEC
-child processes do not inherit the FUSE session descriptor
-```
-
-Prefer long-lived native-gitdir object readers such as batch `cat-file` sessions.
-
-Set `GIT_NO_LAZY_FETCH=1` on inspection subprocesses that must never recursively initiate a fetch.
-
-Only the dedicated fetch scheduler may intentionally cause network retrieval.
-
----
-
-# 20. Object provider
-
-The object provider must expose streaming interfaces.
-
-Conceptually:
-
-```rust
-trait ObjectProvider {
-    fn tree(
-        &self,
-        oid: &ObjectId,
-        policy: FetchPolicy,
-    ) -> Result<TreeObject>;
-
-    fn object_info(
-        &self,
-        oid: &ObjectId,
-        policy: FetchPolicy,
-    ) -> Result<ObjectInfo>;
-
-    fn open_raw_blob(
-        &self,
-        oid: &ObjectId,
-        policy: FetchPolicy,
-    ) -> Result<Box<dyn ReadSeek + Send>>;
-
-    fn open_worktree_file(
-        &self,
-        oid: &ObjectId,
-        path: &RepoPath,
-        context: &FilterContext,
-        policy: FetchPolicy,
-    ) -> Result<ContentHandle>;
-
-    fn ensure_objects(
-        &self,
-        oids: &[ObjectId],
-        priority: FetchPriority,
-    ) -> Result<EnsureResult>;
-}
-```
-
-Do not use UTF-8 strings as repository path identity.
-
-## 20.1 Fetch scheduler
-
-Implement:
-
-```text
-coalescing of identical object requests
-short batching window for distinct objects
-per-origin concurrency limits
-global bandwidth limits
-request priorities
-cancellation
-bounded retries
-authentication failure state
-offline mode
-network circuit breaker
-structured metrics
-```
-
-One hundred concurrent reads of one missing blob must cause one remote object retrieval.
-
-Waiting callers must receive the original fetch failure, not a later generic “missing object” error.
-
-## 20.2 Caches
-
-Separate:
-
-```text
-Git object database
-parsed tree cache
-filtered working-tree content cache
-optional metadata cache
-LFS object cache
-```
-
-Never store filtered working-tree bytes as a Git blob unless Git’s clean filter has produced that blob.
-
-Cache files must be:
-
-```text
-written to temporary paths
-checksummed or otherwise validated
-fsynced when required
-atomically published
-immune to partially written reuse
-```
-
----
-
-# 21. Metadata and file size
-
-A Git tree entry does not universally provide the exact projected working-tree size.
-
-The size may differ because of:
-
-```text
-CRLF conversion
-working-tree-encoding
-ident
-smudge filters
-Git LFS
-path-dependent attributes
-```
-
-Therefore:
-
-```text
-readdir must never require exact size
-getattr must return correct size
-getattr may cause metadata-triggered hydration when unavoidable
-```
-
-Track hydration reasons separately:
-
-```text
-content read
-metadata lookup
-filter evaluation
-prefetch
-Git command
-background operation
-```
-
-Use fast paths when safe:
-
-```text
-overlay native file -> stat native file
-cached filtered content -> stat cache file
-unfiltered locally present blob -> object size
-known metadata manifest -> validated manifest size
-```
-
-Never return a fake size merely to avoid hydration.
-
-Document that `ls` and `ls -l` may have different hydration behavior.
-
-An optional size manifest is a later optimization, not a correctness dependency.
-
----
-
-# 22. Stable synthetic metadata
-
-For unmaterialized clean files, provide stable synthetic:
-
-```text
-inode
-mode
-mtime
-ctime
-uid
-gid
-size once known
-```
-
-Metadata must remain stable across repeated lookups within a projection generation.
-
-Directory mtime/generation must change when direct children change.
-
-Do not mark a path modified merely because a synthetic timestamp differs from a normal checkout.
-
-Test Git’s racy-clean behavior carefully.
-
----
-
-# 23. Git filters and attributes
-
-Projected tracked files must match a normal Git checkout under the same effective configuration.
-
-Support:
-
-```text
-text
-eol
-working-tree-encoding
-ident
-filter
-binary
-Git LFS
-```
-
-A filtered-content cache key must include at least:
-
-```text
-raw blob object ID
-repository path bytes
-baseline or attribute-source identity
-relevant .gitattributes state
-relevant Git configuration digest
-filter implementation identity
-platform EOL mode
-cache format version
-```
-
-Renaming a file across attribute boundaries must invalidate the old filtered result.
-
-Changing `.gitattributes` must invalidate affected descendants.
-
-Do not use lossy UTF-8 conversion to invoke Git plumbing.
-
-## 23.1 Avoid index-lock recursion
-
-A passive filesystem read may occur while Git holds `index.lock`.
-
-Attribute resolution and smudge filtering in that read must not need to lock or rewrite the index.
-
-## 23.2 External filter trust
-
-External filters execute code.
-
-At mount time, detect whether projected reads may require an executable filter.
-
-Provide an explicit policy:
-
-```text
-trusted
-builtins-only
-error-on-external
-raw, explicitly non-checkout-compatible
-```
-
-Passive hydration must never unexpectedly execute an untrusted command.
-
-Apply resource limits and timeouts to external filters.
-
----
-
-# 24. Git LFS
-
-Support explicit modes:
-
-```text
-smudge
-pointer
-error
-```
-
-In `smudge` mode:
-
-```text
-use installed Git LFS tooling
-fetch on first content access
-avoid credential prompts from a low-level callback
-cache LFS content separately
-report LFS hydration separately
-```
-
-In `pointer` mode, expose the pointer blob.
-
-In `error` mode, return an actionable error.
-
-Plain `git add`, `git commit`, and `git push` must continue to use normal Git LFS behavior.
-
-Do not claim support for LFS locking unless tested.
-
----
-
-# 25. Stock Git index behavior
-
-The real index is authoritative.
-
-The daemon may parse it after atomic replacement and cache:
-
-```text
-stage-0 entries
-unmerged stages 1/2/3
-modes
-object IDs
-skip-worktree bits
-FSMonitor-valid bits
-index checksum
-split-index references
-sparse directory entries
-```
-
-It must not rewrite the index merely to mirror custom workspace state.
-
-## 25.1 Index-only updates
-
-When Git changes the index without updating the worktree, the virtual baseline and overlay remain unchanged.
-
-Examples:
-
-```bash
-git reset --mixed
-git restore --staged
-git rm --cached
-```
-
-## 25.2 Working-tree updates
-
-When Git writes, unlinks, renames, or creates paths through FUSE, those operations change the overlay exactly as ordinary filesystem operations would.
-
-Do not infer worktree updates solely from a changed index.
-
-## 25.3 Conflict stages
-
-During merge, rebase, cherry-pick, or revert:
-
-```text
-stages 1/2/3 remain in the real index
-conflict-marker files exist in the overlay
-MERGE_HEAD and sequencer state remain in the real gitdir
-```
-
-Do not replace this with a custom conflict database as the source of truth.
-
-Additional structured conflict metadata may be cached for diagnostics, but it must be reconstructable.
-
----
-
-# 26. Required plain-Git compatibility surface
-
-Do not claim transparent Git compatibility until the following commands pass mounted end-to-end tests without a wrapper.
-
-## 26.1 Repository discovery and inspection
-
-```bash
-git rev-parse --show-toplevel
-git status
-git status --porcelain=v2
-git diff
-git diff --cached
-git log
-git show
-git ls-files
-git cat-file
-git branch
-git tag
-git remote -v
-```
-
-## 26.2 Staging and committing
-
-```bash
-git add path
-git add -A
-git add -u
-git add -p
-git reset path
-git restore --staged path
-git commit
-git commit -a
-git commit --amend
-git commit --fixup
-git commit -S
-git rm
-git rm --cached
-git mv
-```
-
-## 26.3 Branch and worktree mutation
-
-```bash
-git branch new
-git switch branch
-git switch -c branch
-git checkout branch
-git checkout -- path
-git restore path
-git reset --soft
-git reset --mixed
-git reset --hard
-```
-
-## 26.4 History operations
-
-```bash
-git merge
-git merge --abort
-git rebase
-git rebase --continue
-git rebase --abort
-git cherry-pick
-git cherry-pick --continue
-git cherry-pick --abort
-git revert
-git stash
-git stash pop
-```
-
-## 26.5 Remote operations
-
-```bash
-git fetch
-git fetch --prune
-git pull
-git pull --rebase
-git push
-git push --force-with-lease
-git push --tags
-```
-
-Plain `git push` is required. Do not retain a bespoke push command merely to impose a second lease model.
-
-Git’s refs, remote-tracking refs, reflogs, and normal push safety are authoritative.
-
-## 26.6 Working-tree utilities
-
-```bash
-git clean -n
-git clean -fd
-git grep
-git blame
-git bisect
-git mergetool
-git difftool
-```
-
-## 26.7 Maintenance
-
-Test:
-
-```bash
-git fsck
-git gc
-git maintenance run
-git repack
-git prune --dry-run
-```
-
-With the initial per-workspace object store, these should have ordinary repository semantics.
-
-Disable automatic maintenance only when a measured incompatibility requires it, and document the reason.
-
-## 26.8 Worktrees and submodules
-
-Before 1.0, define and test:
-
-```bash
-git worktree add
-git worktree remove
-git submodule init
-git submodule update
-git submodule foreach
-```
-
-A plain `git worktree add` may initially create a conventional non-lazy worktree, but it must not corrupt the lazy one.
-
-Nested lazy submodules are a later optimization.
-
----
-
-# 27. Checkout, switch, and rebase performance gate
-
-These commands are the hardest transparency test.
-
-For branches with a large tree delta, measure:
-
-```text
-tree objects read
-blob objects fetched
-bytes fetched
-FUSE writes
-paths materialized
-index entries expanded
-wall time
-peak memory
-```
-
-With unmodified Git and a full index, Git may fetch and write all changed files.
-
-Do not conceal that behavior.
-
-The implementation must choose and document one of:
-
-```text
-correct but eager branch transitions
-experimentally proven dynamic virtual/sparse index behavior
-minimal Git provider extension
-```
-
-A release may be stock-Git compatible while labeling branch transitions “potentially eager,” but it must not claim google3-style lazy branch switching until demonstrated.
-
----
-
-# 28. Filesystem semantics required for editors and build tools
-
-Test real behavior from:
-
-```text
-VS Code
-Vim/Neovim
-Emacs
-JetBrains IDEs
-rust-analyzer
-clangd
-TypeScript language server
-ripgrep
-Cargo
-Make
-Ninja
-Bazel, where practical
-formatters
-test runners
-file watchers
-```
-
-Support common editor save patterns:
-
-```text
-open existing file
-write temporary sibling
-fsync temporary file
-rename over original
-fsync parent directory
-delete backup
-```
-
-Also test:
-
-```text
-truncate then write
-append
-partial pwrite
-sparse write
-write after rename
-open then unlink
-rename over open target
-directory rename
-case-only rename
-read while another process writes
-writable mmap
-file locks
-```
-
----
-
-# 29. Rename semantics
-
-Implement:
-
-```text
-file rename
-directory rename
-rename over existing file
-rename over empty directory where legal
-RENAME_NOREPLACE
-RENAME_EXCHANGE, or a documented unsupported error
-case-only rename
-rename with open source and destination handles
-```
-
-A clean file rename should be representable as metadata referring to the same blob without fetching its contents.
-
-A clean subtree rename should not read descendant blobs.
-
-Changing a path may change its Git filter context; invalidate affected filtered cache entries.
-
----
-
-# 30. Symlinks, hard links, and special files
-
-## 30.1 Symlinks
-
-On Linux, project Git symlinks as native symlinks.
-
-Preserve:
-
-```text
-raw target bytes
-broken symlinks
-relative and absolute targets
-```
-
-Never follow repository symlinks for internal overlay writes.
-
-Protect against symlink-swap races.
-
-## 30.2 Hard links
-
-Git does not preserve hard-link identity.
-
-Choose and document one Linux working-tree policy:
-
-```text
-support overlay hard links until commit, then lose identity
-or return a clear unsupported error
-```
-
-Do not silently copy while pretending identity was preserved.
-
-## 30.3 Special files
-
-Reject or explicitly make overlay-only:
-
-```text
-device nodes
-sockets
-FIFOs
-unsupported reparse-style objects
-```
-
----
-
-# 31. Raw repository paths
-
-On Linux, Git paths are byte sequences, not necessarily UTF-8.
-
-Use a type such as:
-
-```rust
-pub struct RepoPath(Vec<u8>);
-```
-
-Requirements:
-
-```text
-no lossy UTF-8 conversion for identity
-NUL-delimited Git plumbing
-safe display escaping
-safe JSON escaping
-no shell command construction
-no `rev:path` strings for arbitrary paths
-no stopping attribute lookup at the first non-UTF-8 component
-```
-
-Test paths containing:
-
-```text
-invalid UTF-8
-newlines
-tabs
-leading dash
-backslash
-quotes
-control characters
-very long components
-```
-
-Reject:
-
-```text
-NUL
-absolute repository paths
-.. traversal
-empty non-root components
-reserved internal control paths
-```
-
----
-
-# 32. Overlay storage and durability
-
-Use native files for writable content and a transactional namespace database.
-
-SQLite WAL is acceptable if used carefully.
-
-The namespace database stores:
-
-```text
-path bytes
-parent identity
-entry type
-content backing identifier
-Git-relevant executable state
-tombstone state
-rename state
-inode identity
-generation
-directory generation
-open-unlinked retention
-```
-
-Do not store large file contents in SQLite.
-
-## 32.1 Single writer
-
-The daemon is the authoritative overlay writer.
-
-CLI tools and hooks communicate through IPC rather than opening and independently rewriting JSON state.
-
-Use interprocess locking for:
-
-```text
-mount ownership
-database migration
-recovery
-daemon startup
-administrative Git initialization
-```
-
-In-process mutexes alone are insufficient.
-
-## 32.2 Recovery
-
-On startup:
-
-1. validate the namespace database;
-2. reconcile temporary content files;
-3. preserve every file containing acknowledged user writes;
-4. reconcile mounted state with the kernel;
-5. reconcile native gitdir state;
-6. invalidate FSMonitor continuity if uncertain;
-7. quarantine ambiguous files instead of deleting them.
-
-Provide:
-
-```bash
-git lazy-mount recover <mountpoint>
-git lazy-mount recover <mountpoint> --export <directory>
-```
-
----
-
-# 33. Optional operation journal
-
-A filesystem recovery journal is allowed.
-
-It must not become a second Git history.
-
-Its purpose is limited to:
-
-```text
-overlay namespace crash recovery
-mount lifecycle
-FSMonitor continuity
-diagnostic audit
-recovery of uncommitted working files
-```
-
-Git refs and reflogs remain the history of commits and branch movement.
-
-Do not implement Jujutsu-style operation history before stock Git transparency works.
-
----
-
-# 34. Shared object cache is a later optimization
-
-After the per-workspace repository passes all transparent workflow tests, add optional object sharing.
-
-The safe shape is:
-
-```text
-per-workspace writable Git object directory
-+
-shared read-mostly object cache as an alternate
-```
-
-Never route arbitrary stock Git writes directly into one global object directory through `GIT_OBJECT_DIRECTORY`.
-
-A shared cache must have explicit protection against pruning objects still required by a workspace.
-
-Use one or more of:
-
-```text
-workspace leases
-keep refs
-append-only cache policy
-reference counting
-grace periods
-pin manifests
-safe dissociation
-```
-
-Test:
-
-```text
-workspace A branch force-updated remotely
-workspace B still references old base
-shared maintenance
-workspace-local gc
-workspace deletion
-offline reads after maintenance
-```
-
-Do not enable shared cache by default until these tests pass.
-
-Sharing is a performance optimization, not part of basic correctness.
-
----
-
-# 35. Authentication and offline behavior
-
-Initial mount may use the user’s normal credential helper interactively.
-
-FUSE callbacks must be noninteractive.
-
-If credentials expire:
-
-```text
-return a bounded filesystem error
-record the failed object and cause
-surface a daemon diagnostic
-allow `git lazy-mount doctor` or normal `git fetch` to refresh credentials
-retry subsequent reads
-```
-
-Offline mode:
-
-```bash
-git lazy-mount <url> <path> --offline
-git lazy-mount prefetch <path> --for-offline
-```
-
-Cached content must remain readable.
-
-Accessing missing content must return a clear offline-missing-object error.
-
-Dirty overlay content must never depend on network access for recovery.
-
----
-
-# 36. Security model
-
-Treat repository data as untrusted.
-
-Protect against:
-
-```text
-path traversal
-symlink races
-malicious Git tree names
-case and normalization attacks
-cache poisoning
-corrupt object responses
-decompression bombs
-unbounded filter output
-hung filters
-credential leakage
-control-socket impersonation
-stale PID files
-mountpoint substitution
-unsafe repository ownership
-```
-
-Cache and workspace directories must be private to the user.
-
-Redact:
-
-```text
-credentials in URLs
-authorization headers
-secret query parameters
-private paths when configured
-file contents
-```
-
-Passive hydration must never run Git hooks.
-
-Hooks run only because the user invoked a Git command that normally invokes them.
-
----
-
-# 37. Observability
-
-Expose:
-
-```bash
-git lazy-mount stats <mountpoint>
-git lazy-mount trace <mountpoint>
-git lazy-mount trace <mountpoint> --pid <pid>
-git lazy-mount doctor <mountpoint>
-```
-
-Track at least:
-
-```text
-tree lookups
-directory listings
-getattr calls
-metadata-triggered hydrations
-content-triggered hydrations
-Git-command-triggered hydrations
-blob objects fetched
-tree objects fetched
-bytes fetched
-coalesced requests
-fetch batches
-filtered-cache hits
-raw-object hits
-read latency
-write latency
-FUSE queue depth
-open handles
-dirty paths
-untracked paths
-tombstones
-overlay bytes
-FSMonitor token and journal size
-FSMonitor full invalidations
-Git index size and format
-Git index parse time
-hook notification lag
-reconciliation events
-daemon restarts
-recovery actions
-```
-
-Every hydration event should identify:
-
-```text
-path, safely escaped
-object ID
-reason
-requesting PID when available
-bytes
-cache result
-latency
-```
-
----
-
-# 38. Hydration budgets
-
-Turn these into automated assertions.
-
-## 38.1 Mount
-
-A blob-none mount must fetch zero working-file blobs merely to project the tree.
-
-A full-index correctness profile may perform O(tracked paths) metadata work, but must report it honestly.
-
-## 38.2 Directory listing
-
-```bash
-ls <directory>
-```
-
-must:
-
-```text
-fetch zero child blobs
-run zero smudge filters
-perform O(direct children) namespace work
-```
-
-## 38.3 Long listing
-
-```bash
-ls -l <directory>
-```
-
-may perform metadata-triggered hydration when exact size is otherwise unavailable.
-
-It must report those hydrations distinctly.
-
-## 38.4 Clean status
-
-After FSMonitor bootstrap:
-
-```bash
-git status --porcelain=v2
-```
-
-must:
-
-```text
-fetch zero blobs
-run zero smudge filters
-avoid statting every projected file
-```
-
-It may still parse a full index in the correctness profile; measure that separately.
-
-**Implementation finding:** the *first* such status fetches zero blobs. The FSMonitor bootstrap above pre-seeds the index extension at mount (every entry `CE_FSMONITOR_VALID` at the seq-0 token), so git's `refresh_cache_ent` early-returns before any `lstat` and the first status faults nothing. The zero-blob, no-full-stat-scan behavior holds for both the first and all subsequent clean statuses.
-
-## 38.5 One file read
-
-```bash
-cat path/to/file
-```
-
-must fetch at most the required blob and required attribute/filter metadata, with no unrelated file contents.
-
-## 38.6 Concurrent reads
-
-One hundred concurrent reads of one missing file must perform one underlying object retrieval.
-
-## 38.7 Truncation
-
-```c
-open(path, O_WRONLY | O_TRUNC)
-```
-
-must not fetch the old blob.
-
-## 38.8 Partial write
-
-Repeated 4 KiB writes to a 1 GiB file in one open session must not read or rewrite the complete file for every callback.
-
-There must be no allocation proportional to 1 GiB.
-
-## 38.9 Clean rename
-
-Renaming an unmaterialized clean file must fetch zero blob contents.
-
-## 38.10 Git inspection
-
-```bash
-git log
-git branch
-git tag
-git status
-```
-
-must not hydrate working-tree blobs merely because they inspect repository metadata.
-
----
-
-# 39. Feasibility experiments before broad implementation
-
-Build executable vertical slices before creating every planned crate.
-
-## Experiment A: real mounted `.git`
-
-Demonstrate:
-
-```bash
-git lazy-mount <local-bare-remote> <mountpoint>
-git -C <mountpoint> rev-parse --show-toplevel
-```
-
-Use a synthetic `.git` gitfile backed by a native administrative directory.
-
-## Experiment B: zero-content readdir
-
-Create a repository with 100,000 files in one or more directories.
-
-Prove that:
-
-```bash
-ls <mountpoint>/large-directory
-```
-
-fetches zero blobs.
-
-## Experiment C: transparent edit and status
-
-```bash
-printf x >> <mountpoint>/tracked.txt
-git -C <mountpoint> status --porcelain=v2
-```
-
-must show the correct modification with no wrapper.
-
-## Experiment D: real staging
-
-```bash
-git -C <mountpoint> add tracked.txt
-git -C <mountpoint> diff --cached
-```
-
-must use the real index.
-
-## Experiment E: interactive staging
-
-Run a real pseudo-terminal test of:
-
-```bash
-git add -p
-```
-
-and stage only one hunk.
-
-## Experiment F: real commit
-
-Run:
-
-```bash
-git commit
-git commit --amend
-```
-
-Verify normal hooks, editor, refs, reflogs, commit graph, and object storage.
-
-There must be no commit-adoption step.
-
-## Experiment G: checkout behavior
-
-Measure stock Git for:
-
-```bash
-git switch
-git checkout
-git reset --hard
-git merge
-git rebase
-```
-
-over a branch changing 100,000 files.
-
-Quantify whether Git hydrates and writes every changed path.
-
-## Experiment H: FSMonitor bootstrap
-
-Prove the first and subsequent clean statuses do not read every working-tree file.
-
-## Experiment I: large-file I/O
-
-Use a multi-gigabyte blob and prove bounded memory, correct range reads, truncation without old-content fetch, and non-quadratic writes.
-
-Do not proceed to macOS or Windows until Experiments A–I have documented results.
-
----
-
-# 40. Test strategy
-
-## 40.1 Differential tests against a normal checkout
-
-For every supported workflow:
-
-1. create a conventional checkout;
-2. create a lazy mount at the same commit;
-3. perform equivalent commands and filesystem operations;
-4. compare:
-
-   * HEAD;
-   * refs and reflogs;
-   * index stages;
-   * status;
-   * working-tree bytes;
-   * file types;
-   * executable bits;
-   * symlinks;
-   * conflict state;
-   * resulting trees and commits.
-
-## 40.2 Real mounted tests
-
-Unit tests and mocked FUSE callbacks are insufficient.
-
-Run real tests through `/dev/fuse` that invoke ordinary executables against the mountpoint.
-
-Use a dedicated Linux CI runner when hosted CI does not expose FUSE.
-
-## 40.3 Git command matrix
-
-For each required Git command, record:
-
-```text
-correctness result
-stock Git version
-exit code
-hydrated objects
-hydrated bytes
-FUSE calls
-index operations
-known limitations
-```
-
-Generate documentation from these test results.
-
-## 40.4 Filesystem model tests
-
-Use property-based and model-based testing for operation sequences:
-
-```text
-create
-open
-read
-write
-truncate
-append
-rename
-unlink
-mkdir
-rmdir
-symlink
-chmod
-fsync
-close
-checkout
-add
-reset
-commit
-crash
-recover
-```
-
-## 40.5 Crash injection
-
-Inject process termination after:
-
-```text
-overlay file creation
-overlay write
-namespace transaction commit
-rename
-unlink
-fsync
-index.lock creation
-index replacement
-ref transaction prepared
-ref transaction committed
-FSMonitor journal append
-mount registry update
-FUSE mount success
-health check
-```
-
-Verify no acknowledged user data is silently lost.
-
-## 40.6 Concurrency tests
-
-Test:
-
-```text
-editor write concurrent with git status
-git add concurrent with file close
-git status concurrent with rename
-two Git commands competing for index.lock
-fetch concurrent with hydration
-daemon restart during read
-unmount with open handles
-multiple processes appending
-```
-
-## 40.7 Path tests
-
-Include:
-
-```text
-invalid UTF-8 on Linux
-newlines
-tabs
-leading dash
-case collisions
-Unicode normalization collisions for future macOS work
-Windows-reserved names for future Windows work
-long paths
-root .git collision attempts
-```
-
-## 40.8 Filter tests
-
-Include:
-
-```text
-CRLF
-working-tree-encoding
-ident
-path-dependent attributes
-modified .gitattributes
-external single-file filter
-long-running process filter
-filter failure
-filter timeout
-LFS pointer
-LFS hydrated content
-```
-
----
-
-# 41. Rust workspace
-
-Use a focused workspace:
-
-```text
-git-lazy-mount/
-  Cargo.toml
-  rust-toolchain.toml
-
-  crates/
-    cli/
-    daemon/
-    ipc/
-    git-repo/
-    git-hooks/
-    worktree/
-    namespace/
-    overlay/
-    object-provider/
-    filtered-cache/
-    fsmonitor/
-    fuse/
-    platform/
-    testkit/
-
-  docs/
-    architecture.md
-    product-contract.md
-    git-state-model.md
-    worktree-model.md
-    index-strategy.md
-    fsmonitor.md
-    fuse-semantics.md
-    object-fetching.md
-    filters-and-lfs.md
-    durability.md
-    security.md
-    performance.md
-    compatibility.md
-    limitations.md
-    adr/
-```
-
-Keep unsafe and platform FFI isolated.
-
-Recommended dependencies may include:
-
-```text
-clap
-tokio or a deliberately chosen bounded runtime
-fuser
-rusqlite
-serde
-tracing
-thiserror
-tempfile
-nix or rustix
-parking_lot where justified
-```
-
-Do not let async abstractions force complete blobs into memory.
-
-Pin the Rust toolchain and document the minimum supported Rust version.
-
-Require:
-
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
-```
-
----
-
-# 42. Linux-first milestones
-
-## Milestone 0: architecture and experiments
-
-Deliver:
-
-```text
-Experiments A–I
-index strategy comparison
-stock Git checkout/switch measurements
-deadlock analysis
-overlay file-handle design
-FSMonitor protocol design
-ADRs
-```
-
-## Milestone 1: transparent read-only vertical slice
-
-Deliver:
-
-```text
-one-command partial clone
-real daemon
-real FUSE mount
-synthetic .git gitfile
-stock git rev-parse
-directory listing without blob hydration
-lazy file read
-bounded object streaming
-```
-
-## Milestone 2: writable filesystem semantics
-
-Deliver:
-
-```text
-real open handles
-copy-on-write
-create/write/truncate/append
-unlink/open-unlink
-rename
-directories
-symlinks
-flush/fsync/release
-durable overlay
-recovery
-```
-
-## Milestone 3: stock status, staging, and commit
-
-Deliver:
-
-```text
-durable FSMonitor v2
-real index
-git status
-git diff
-git add
-git add -p
-git commit
-git commit -a
-git commit --amend
-hooks
-signing
-```
-
-## Milestone 4: branch-changing workflows
-
-Deliver:
-
-```text
-checkout
-switch
-restore
-reset
-merge
-rebase
-cherry-pick
-revert
-stash
-conflicts
-abort and continue flows
-```
-
-Publish measured eagerness for each command.
-
-## Milestone 5: remote and maintenance workflows
-
-Deliver:
-
-```text
-fetch
-pull
-push
-force-with-lease
-tags
-fsck
-gc
-maintenance
-repack
-offline mode
-credential recovery
-```
-
-## Milestone 6: large-repository optimization
-
-Deliver one proven path:
-
-```text
-optimized full index
-dynamic skip-worktree
-sparse index
-or minimal Git provider extension
-```
-
-Do not choose based on architectural preference; choose from measurements.
-
-## Milestone 7: optional shared object cache
-
-Add safe alternates, leases, and cache maintenance only after all earlier milestones pass without sharing.
-
-## Milestone 8: other platforms
-
-Implement macOS and Windows as separate projects after the Linux architecture is proven.
-
-Do not force them through a misleading generic FUSE abstraction.
-
----
-
-# 43. Linux MVP release criteria
-
-The Linux MVP is not complete until all of these pass through a real mount:
-
-1. `git lazy-mount <url> <path>` performs the clone, mount, and validation.
-
-2. The command leaves no required shell environment changes.
-
-3. `git rev-parse --show-toplevel` identifies the mountpoint.
-
-4. A normal `.git` gitfile points to a native administrative directory.
-
-5. Plain `ls` fetches no file blobs.
-
-6. Reading one missing file retrieves no unrelated blobs.
-
-7. An editor atomic save updates the overlay correctly.
-
-8. Plain `git status` sees the edit.
-
-9. Plain `git add` stages it in the real index.
-
-10. Plain `git add -p` stages selected hunks.
-
-11. Plain `git commit` creates and advances a normal branch directly.
-
-12. Plain `git commit --amend` works.
-
-13. Plain `git push` sends the commit to an ordinary remote.
-
-14. Plain `git fetch` and `git pull` work.
-
-15. Plain `git switch` is correct and its hydration behavior is measured.
-
-16. Merge conflicts use the real index’s conflict stages.
-
-17. Rebase abort and continue work.
-
-18. Stash creation and restoration work.
-
-19. `git rm --cached` preserves the working-tree file.
-
-20. `git reset --mixed` changes the index without changing projected bytes.
-
-21. `git reset --hard` replaces projected working state correctly.
-
-22. Open-unlink semantics work.
-
-23. Empty untracked directories survive remount.
-
-24. Partial writes do not rewrite the full file per callback.
-
-25. Multi-gigabyte files do not require multi-gigabyte allocations.
-
-26. Dirty state survives unmount/remount.
-
-27. Dirty state survives an injected daemon crash.
-
-28. FSMonitor survives restart or safely requests full invalidation.
-
-29. No command requires `git lazy-mount git --`.
-
-30. No ordinary workflow requires a custom add, commit, switch, or push command.
-
----
-
-# 44. Do not claim completion when
-
-Do not call the implementation transparent if any of these remain true:
-
-```text
-the mount registry says mounted without a kernel mount
-plain Git cannot discover the repository
-a temporary gitdir is generated per command
-commits must be imported after Git exits
-the custom stage differs from .git/index
-status only works through a wrapper
-push only works through a bespoke command
-ls hydrates every file in a directory
-read allocates the complete blob
-each write rewrites the complete file
-open file handles are path lookups in disguise
-open-unlink fails
-empty directories vanish immediately
-one FUSE callback creates one OS thread
-FSMonitor state disappears silently on restart
-Git paths are converted lossily to UTF-8
-shared-cache maintenance can invalidate active workspaces
-macOS or Windows is called supported without a real mount test
-```
-
----
-
-# 45. Implementation discipline
-
-Before writing broad production code, produce:
-
-1. a concise architecture document;
-2. the two-source-of-truth analysis;
-3. the exact baseline-plus-overlay model;
-4. the real-index integration plan;
-5. the FSMonitor durability protocol;
-6. the FUSE file-handle state machine;
-7. the Git/FUSE deadlock analysis;
-8. the startup and recovery state machines;
-9. the index scalability experiment results;
-10. the plain-Git compatibility matrix;
-11. the hydration-budget test harness;
-12. the Linux vertical-slice implementation.
-
-Then continue directly through the milestones.
-
-Do not stop at design documents.
-
-Do not preserve an old abstraction merely because tests already exist around it.
-
-Port useful test cases, not architectural mistakes.
-
-Prioritize, in order:
+The priority order, highest first:
 
 ```text
 stock Git correctness
@@ -2900,3 +683,13 @@ large-repository performance
 shared-cache optimization
 additional platforms
 ```
+
+The system must never claim to be transparent while any of these hold: a registry
+says "mounted" without a kernel mount; plain Git cannot discover the repository; a
+gitdir is generated per command; commits must be imported after Git exits; the
+custom stage differs from `.git/index`; status only works through a wrapper; push
+only works through a bespoke command; `ls` hydrates every file in a directory;
+read allocates the complete blob; each write rewrites the whole file; open handles
+are path lookups in disguise; open-unlink fails; empty untracked directories
+vanish; one FUSE callback spawns one OS thread; FSMonitor state disappears silently
+on restart; or Git paths are converted lossily to UTF-8.

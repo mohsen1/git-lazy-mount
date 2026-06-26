@@ -1,585 +1,259 @@
-# Object provider, fetch scheduler, filters + LFS, metadata/size
+# Object fetching: materialization, single-flight, streaming, size
 
-This area of the [specification](design.md) covers the object provider,
-metadata & size, filters/attributes, and LFS, with supporting bounded I/O,
-deadlock avoidance, alternates, auth/offline, and hydration budgets. This doc
-specifies the daemon-internal object/content layer. It owns none of Git's
-repository state. It only turns object IDs + filter context into bounded,
-streamable working-tree bytes and correct sizes.
+How the mount turns a baseline object ID into bounded, streamable working-tree
+bytes and a correct file size — without ever cloning the whole repo. This is
+the home for: blob materialization, per-oid single-flight coalescing,
+`ContentHandle` streaming, the `smudge_blob` filter primitive, and exact-size
+metadata. It owns none of Git's repository state; see
+[git-state-model.md](git-state-model.md).
 
-This is a *design*. The streaming-provider shape and the
-residency-authority + coalescing core (`crates/object-provider`,
-`crates/git-store/src/batch.rs`) are reusable substrate. What changes:
-`raw_blob`/`filtered_blob` returning `Vec<u8>` become `ReadSeek` /
-`ContentHandle`; coalescing-by-condvar grows into a real scheduler with
-priorities/limits/retries/circuit-breaker; the five caches are
-separated and given atomic validated publication; filter context grows to the
-full filter-context key. Superseded crates (`stage`, custom `workspace` branch/commit, the
-`git lazy-mount git --` bridge) do not touch this layer.
+This doc is an *explanation* of the shipped fetch/materialize substrate, plus a
+short, clearly-labelled note on a richer object layer that was designed but
+**not built**. Read the "Status today vs. possible future" split below before
+trusting any API name.
 
 ---
 
-## 1. Position in the stack
+## 1. Status today vs. possible future
+
+**Shipped today** (all in `crates/worktree` and `crates/git-store`):
+
+- Per-oid single-flight materialization into a content-addressed cache
+  (`worktree::Projection::materialize_path`).
+- Bounded streaming reads via `worktree::ContentHandle` (`pread`, never a
+  whole-file `Vec<u8>`).
+- The git filter primitive `git-store::GitStore::smudge_blob`
+  (`cat-file --filters --path --attr-source`).
+- A long-lived metadata/contents session `git-store::BatchSession` returning
+  `ObjectInfo { kind, size }`, and the one-shot `GitStore::object_size`.
+- CLOEXEC-hardened subprocesses with lazy-fetch and lock policy
+  (`git-store::proc::harden_fds`, `GIT_NO_LAZY_FETCH`, `GIT_OPTIONAL_LOCKS`,
+  `GIT_TERMINAL_PROMPT=0`).
+- A hydration counter that backs the laziness budgets
+  (`Projection.hydrations`).
+
+**Considered / not built (possible future).** A dedicated network layer was
+sketched but never created: a `FetchScheduler` (per-remote concurrency, token
+bucket, retries, circuit breaker, cancellation), a separated multi-cache set
+with atomic validated publication, a `FilterEngine` with an external-filter
+trust policy, an `LfsEngine`, and a server-side size manifest. **None of these
+crates or types exist** (`object-provider`, `metadata`, `filters`, `fs-fuse`
+are not in the tree). They are summarized once in §6 so the design rationale is
+not lost; do not read them as present-tense behavior.
+
+---
+
+## 2. Position in the stack
 
 ```
-FUSE callback (getattr/read/open)                         (passes FetchPolicy::MustNotFetch)
-  └─ Worktree projection (baseline+overlay)               (resolves path -> (oid, FilterContext))
-       └─ ObjectProvider  ── this doc ────────────────────┐
-            ├─ FetchScheduler   (network, the ONLY fetcher)
-            ├─ CacheSet         (odb/tree/filtered/meta/lfs)
-            ├─ FilterEngine     (git plumbing + trust)
-            └─ LfsEngine        (smudge/pointer/error)
-                 └─ GitStore / BatchSession  (cat-file)       crates/git-store
+FUSE callback (getattr / read / open)        crates/fuse  (TransparentFs)
+  └─ Projection (baseline + overlay)          crates/worktree
+       ├─ materialize_path  (single-flight → content-addressed cache file)
+       ├─ ContentHandle     (pread, bounded RSS)
+       └─ GitStore                            crates/git-store
+            ├─ blob_to_file   (cat-file blob → cache file, streamed)
+            ├─ object_size    (cat-file -s, exact raw size)
+            ├─ smudge_blob    (cat-file --filters --path --attr-source)
+            └─ BatchSession   (cat-file --batch-command, info/contents)
 ```
 
-**Invariant.** A FUSE callback enters this layer with
-`FetchPolicy::MustNotFetch`. Only the `FetchScheduler` may cause network I/O,
-on its own threads, with **no provider/inode/namespace/index lock held**.
-Every git subprocess is `GIT_NO_LAZY_FETCH=1` + CLOEXEC-hardened
-(`git-store/src/proc.rs::harden_fds`, `batch.rs`) except the scheduler's own
-fetch invocation.
+**Network policy.** Fetching today is git's own lazy fetch, triggered when a
+materialization or size lookup is allowed to fault a missing object in. The
+projection passes `allow_fetch` explicitly (`metadata_fetch` for size,
+`true` for content materialization); read-only/offline paths pass `false`.
+`crates/core/src/fetch.rs` defines the richer `FetchPolicy`
+(`MustNotFetch`/`CacheOnly`/`AllowNetwork`/`Prefetch`, `may_fetch()`) as
+vocabulary the future scheduler would consume; today the boolean is the wire.
+
+Every helper git subprocess inherits no FUSE session fd
+(`git-store::proc::harden_fds`, CLOEXEC) and runs with `GIT_OPTIONAL_LOCKS=0`
+so inspection never takes `index.lock`. `BatchSession` additionally runs with
+`GIT_NO_LAZY_FETCH=1`: it must only be asked for objects already known present
+(the caller is the residency authority), or git terminates the session.
 
 ---
 
-## 2. The streaming `ObjectProvider` trait
+## 3. Materialization and single-flight
 
-No method returns `Vec<u8>` for blob/working-tree content (which would allocate
-the complete blob). Identity is `ObjectId` (format-agnostic,
-`core/src/object_id.rs`) and `RepoPath` (raw bytes, `core/src/path.rs`), never
-lossy UTF-8.
+`Projection::open` fixes `baseline_tree` from the HEAD tree once, for the life
+of the projection (`crates/worktree/src/lib.rs:208`). A read of a baseline file
+resolves to a baseline `ObjectId`, then `open_content` materializes it
+(`lib.rs:559`).
 
-```rust
-pub trait ObjectProvider: Send + Sync {
-    /// Parsed tree. Trees are present under blob:none, so the common path
-    /// fetches nothing; a genuine miss may fetch when policy allows.
-    fn tree(&self, oid: &ObjectId, policy: FetchPolicy) -> Result<Arc<TreeObject>>;
+`materialize_path` (`lib.rs:596`) is the core:
 
-    /// Type + RAW object size, no content materialization. For a clean blob
-    /// this is the cat-file size; it is NOT the projected working-tree size.
-    /// Cheap: one `info` on the batch session for a present object.
-    fn object_info(&self, oid: &ObjectId, policy: FetchPolicy) -> Result<ObjectInfo>;
+- **Fast path:** if `cache_dir/<oid hex>` already exists, return it — no fetch,
+  no lock.
+- **Single-flight:** otherwise take the per-oid lock from
+  `inflight: Mutex<HashMap<ObjectId, Arc<Mutex<()>>>>` (`lib.rs:141`). The first
+  caller streams the blob; concurrent callers for the same oid block on that
+  oid's lock and reuse the published file. There is **one** retrieval per
+  missing oid, and no global lock is held across the subprocess.
+- **Stream + atomic publish:** `GitStore::blob_to_file`
+  (`crates/git-store/src/store.rs:322`) runs `cat-file blob` with stdout wired
+  straight to a temp file — git writes the content; this process never buffers
+  it. A successful temp file is `rename`d into place. A partial file is never
+  observed under the final name.
+- **Hydration accounting:** each real materialization bumps `Projection.hydrations`
+  (`lib.rs:133`, `lib.rs:615`). This counter is the signal behind the budget
+  assertions ("`ls` = 0 hydrations, `cat` ≥ 1").
 
-    /// Seekable reader over the RAW (unfiltered) blob bytes. Backed by an
-    /// on-disk handle; never an in-memory Vec. Used for raw mode, pointer
-    /// inspection, and as the filter pipeline's source.
-    fn open_raw_blob(&self, oid: &ObjectId, policy: FetchPolicy)
-        -> Result<Box<dyn ReadSeek + Send>>;
+The mount serves the **raw baseline blob** here (`blob_to_file` reads the
+unfiltered object). Smudge-side `.gitattributes` conversions
+(`eol=crlf`/`ident`/`working-tree-encoding`/custom `filter=`/LFS) therefore
+diverge on read, while commits stay byte-correct because git's clean filter is
+the inverse. See [compatibility.md](compatibility.md) and
+[limitations.md](limitations.md) for that contract; the filter primitive that
+would close the read-side gap is `smudge_blob` (§5).
 
-    /// Seekable reader over the PROJECTED working-tree bytes (filters + LFS
-    /// applied per `context`) a normal checkout would write. Served from
-    /// the filtered-content cache file; range reads hit the fd.
-    fn open_worktree_file(
-        &self,
-        oid: &ObjectId,
-        path: &RepoPath,
-        context: &FilterContext,
-        policy: FetchPolicy,
-    ) -> Result<ContentHandle>;
+**Invariants (shipped tests):**
 
-    /// Ensure objects are present locally, coalescing/batching/prioritizing.
-    /// The sole fetch entry point used by prefetch and by metadata/content
-    /// paths that escalate from MustNotFetch.
-    fn ensure_objects(&self, oids: &[ObjectId], priority: FetchPriority)
-        -> Result<EnsureResult>;
-
-    fn is_present(&self, oid: &ObjectId) -> bool;
-    fn metrics(&self) -> MetricsSnapshot;
-}
-```
-
-### Supporting types
-
-```rust
-/// Seek + buffered read; the unit of all content I/O.
-pub trait ReadSeek: Read + Seek {}
-impl<T: Read + Seek> ReadSeek for T {}
-
-/// A resolved working-tree representation, opened against a published,
-/// validated cache file (or an overlay/native file; see fast paths below).
-pub struct ContentHandle {
-    pub reader: Box<dyn ReadSeek + Send>,
-    pub size: u64,                 // EXACT projected size, never synthetic
-    pub source: ContentSource,     // for metrics + getattr fast-path classification
-    pub size_source: SizeSource,   // Local | RawObject | FilteredHydration | Manifest
-}
-
-pub enum ContentSource { OverlayFile, FilteredCache, RawPresentBlob, Lfs, Symlink }
-
-/// `object_info` reply (already in git-store/src/batch.rs).
-pub struct ObjectInfo { pub kind: ObjectKind, pub size: u64 }   // size = RAW
-
-pub struct EnsureResult {            // already in object-provider/src/lib.rs
-    pub fetched: usize,
-    pub already_present: usize,
-    pub coalesced: usize,
-}
-```
-
-`FetchPolicy` / `FetchPriority` keep the existing shapes
-(`core/src/fetch.rs`): `MustNotFetch ⊂ CacheOnly` for fs callbacks,
-`AllowNetwork`/`Prefetch` for the scheduler; `Interactive > Prefetch >
-Background`. `MustNotFetch.may_fetch() == false` is load-bearing. A passive
-read that misses returns `offline_missing_object` rather than escalating.
-
-### Trait invariants (regression tests)
-
-- **T1, no full-blob allocation.** `open_raw_blob`/`open_worktree_file` peak
-  RSS is bounded by a fixed buffer, independent of blob size. A
-  multi-GiB blob read in 64 KiB ranges allocates O(1).
-- **T2, `object_info` never materializes.** Calling it on a present blob runs
-  one `info` (no `contents`), 0 filter runs, 0 fetches.
-- **T3, identity is bytes.** A `RepoPath` with invalid UTF-8 round-trips
-  through `open_worktree_file` and reaches git plumbing without lossy
-  conversion.
-- **T4, `tree` is fetch-free under blob:none** for trees already present;
-  parsed trees come from the parsed-tree cache after first parse.
+- `open_content_serves_blob_bytes_from_a_cache_fd`
+  (`crates/worktree/src/lib.rs:1214`) — content is served from the cache fd.
+- `partial_clone_fetches_trees_but_not_blobs`
+  (`crates/git-store/tests/store_integration.rs:37`) — under `tree:0`, trees and
+  blobs are absent until faulted.
 
 ---
 
-## 3. Fetch scheduler
+## 4. Bounded streaming: `ContentHandle`
 
-Today's coalescing lives inline in `GitObjectProvider::ensure_objects`
-(`object-provider/src/lib.rs`): an in-flight `HashSet` + `Condvar`, fetch with
-no lock held. The design extracts a dedicated `FetchScheduler` owning the
-network budget. ADR-0002 (synchronous, thread-based) and ADR-0006 (residency
-authority) still hold; this adds the remaining scheduler pieces (per-remote
-limits, retries, circuit breaker). Bounded streaming-to-temp already ships:
-reading a 64 MiB baseline blob grows daemon RSS by ~2 MiB, not 64 MiB
-(streamed `cat-file` → cache file → `pread`), so large-file reads are O(1) in
-memory.
+`ContentHandle` (`crates/worktree/src/lib.rs:155`) is the unit of all content
+I/O on the read path. It is either the tiny synthetic `.git` bytes in memory or
+an open `File` over the cache. `read_at(offset, len)` is a `pread`
+(`lib.rs:180`): it allocates a buffer of **`len`** (the FUSE request size),
+never the file size. Reading a 64 MiB blob in request-sized ranges grows RSS by
+roughly one request-sized buffer, not the blob size — large-file reads are O(1)
+in memory.
 
-```rust
-pub struct FetchScheduler {
-    origins: HashMap<OriginId, OriginState>,   // per-remote concurrency + breaker + auth
-    inflight: Mutex<HashMap<ObjectId, Arc<FetchSlot>>>,  // coalescing map
-    waiters: Condvar,                          // OR a per-slot completion gate
-    rate: TokenBucket,                         // global bandwidth limit
-    cancel: CancellationRegistry,              // by request id / requesting pid
-    cfg: SchedulerConfig,
-    metrics: Metrics,
-}
-
-struct FetchSlot {
-    oid: ObjectId,
-    state: Mutex<SlotState>,                    // Queued | InFlight | Done | Failed(Error)
-    done: Condvar,
-    waiters: AtomicUsize,
-    priority: FetchPriority,                    // max-priority of joined requests
-}
-```
-
-### 3.1 Coalescing + batching
-
-- **Coalescing.** A request for an `oid` already in `inflight` joins its
-  `FetchSlot` (increment `waiters`, bump `priority` to the max) and blocks on
-  `slot.done`. *Exactly one* network retrieval per oid.
-  - **Invariant S1:** 100 concurrent `ensure_objects([X])` for
-    one missing `X` ⇒ **1** `fetch_invocation`, 99 `coalesced_waits`. Already
-    covered by `object-provider/tests/provider_integration.rs`; keep it.
-- **Batching window.** Distinct missing oids arriving within
-  `cfg.batch_window` (default 5 ms, capped at `cfg.max_batch` oids) drain into
-  one `git fetch <oids…>` invocation per origin.
-  - **Invariant S2:** N distinct missing oids requested together ⇒ 1
-    invocation (existing test: distinct objects batch).
-- A waiter is released the instant *its* oid resolves, even if the batch carries
-  others (per-slot `done`, not a single global condvar), so an interactive read
-  never waits on an unrelated slow object in the same batch.
-
-### 3.2 Per-origin concurrency, bandwidth, priority
-
-- `OriginState.semaphore` caps concurrent fetch invocations per remote
-  (`cfg.per_origin_concurrency`, default 4). Distinct from the local/decompress
-  pools: network has its own budget.
-- `TokenBucket` enforces `cfg.max_bytes_per_sec` globally; the fetch worker
-  acquires tokens before reading the wire.
-- A ready queue is ordered by `FetchPriority` then arrival (FIFO within a
-  priority). `Background` prefetch yields to `Interactive` and may be dropped
-  under pressure. Priority only orders *queued* work; an in-flight
-  fetch is never preempted (its waiters would lose their result).
-
-### 3.3 Cancellation
-
-- Every request carries a `RequestId` and optional requesting `pid`. The kernel
-  cancelling a FUSE op, or the requesting process exiting, fires
-  `cancel.cancel(request_id)`.
-- Cancellation removes a *queued* slot; an *in-flight* fetch keeps running (so
-  another waiter / the cache still benefits) but the cancelled caller returns
-  promptly with a cancelled error. The last waiter leaving an in-flight
-  background-only slot may abort it.
-
-### 3.4 Retries, auth, offline, circuit breaker: state machine
-
-Per-origin state. Transitions on a fetch invocation's classified result
-(`git-store/src/proc.rs::classify` already maps stderr to
-`Authentication` / `OfflineMissingObject` / `RemoteMissingObject` / …).
-
-| State        | Event                                   | Action                                                              | Next         |
-|--------------|-----------------------------------------|---------------------------------------------------------------------|--------------|
-| `Closed`     | fetch ok                                | mark present; wake waiters with success                             | `Closed`     |
-| `Closed`     | transient (offline/timeout/5xx)         | retry w/ exp. backoff+jitter, ≤ `cfg.max_retries` (default 3)        | `Closed`     |
-| `Closed`     | retries exhausted                       | record `last_failure`; **fail all joined waiters with it**          | `HalfOpen?`  |
-| `Closed`     | ≥ `cfg.breaker_threshold` consec. fails | open breaker                                                        | `Open`       |
-| `Closed`     | auth failure                            | enter `AuthBlocked`; fail waiters with the auth error               | `AuthBlocked`|
-| `Closed`     | `remote_missing_object` (hard)          | **do not retry**; fail waiters; object truly absent                 | `Closed`     |
-| `Open`       | any fetch request                       | fail fast with `last_failure` (no network) until `cooldown` elapsed | `Open`       |
-| `Open`       | cooldown elapsed                        | allow one trial                                                     | `HalfOpen`   |
-| `HalfOpen`   | trial ok                                | close breaker                                                       | `Closed`     |
-| `HalfOpen`   | trial fails                             | re-open, extend cooldown                                            | `Open`       |
-| `AuthBlocked`| `git lazy-mount doctor` / successful refresh | clear; allow retries                                           | `Closed`     |
-| `AuthBlocked`| passive fetch request                   | fail fast with the recorded auth error (no prompt)                  | `AuthBlocked`|
-
-- **Offline (`--offline`):** the scheduler is constructed in an offline
-  mode where every origin starts `Open` with infinite cooldown; only cache reads
-  succeed; a miss returns `offline_missing_object`. `prefetch --for-offline`
-  temporarily lifts this for an explicit user op.
-- **Never prompt from a callback.** Auth interaction happens only
-  during the initial mount or an explicit `git fetch`/`doctor`. The scheduler
-  records `AuthBlocked` and surfaces a daemon diagnostic.
-
-### 3.5 The original-failure invariant
-
-> Waiting callers must receive the **original** fetch failure, not a later
-> generic "missing object" error.
-
-The `FetchSlot` stores the *classified `Error`* from the failing fetch.
-Every joined waiter returns a **clone of that error** (preserving code,
-`recommended_action`, redacted context; see `core/src/error.rs`). The current code
-violates this: after a failed fetch it re-checks presence and returns a fresh
-`RemoteMissingObject` (`object-provider/src/lib.rs::ensure_present_locally`).
-
-- **Invariant S3:** inject an auth-failing fetch with 50 concurrent
-  waiters ⇒ all 50 receive `ErrorCode::Authentication` with the original
-  action string, **not** `remote_missing_object`. (New regression test;
-  `core::Error` needs a `clone()` for the propagated error, or store
-  `Arc<Error>` in the slot.)
-
-### 3.6 Scheduler invariants
-
-- **S4, no lock across network.** A debug assertion / lock-order
-  lint: the fetch invocation runs with `inflight`/`origins`/provider locks
-  released (already the rule in `ensure_objects`).
-- **S5, breaker fails fast.** With an `Open` origin, an `AllowNetwork` request
-  returns in < 1 ms without spawning git.
-- **S6, cancellation is prompt.** A cancelled queued request returns within the
-  batch window; it does not wait for the origin semaphore.
-- **S7, bounded retries.** A permanently-offline origin makes ≤ `max_retries`
-  invocations per request then fails; no unbounded loop.
+**Invariant.** Peak RSS for a read is bounded by the request length,
+independent of blob size. The `fuse` read path services strictly by file
+handle via `pread`/`pwrite` (no whole-file buffering); see
+[fuse-semantics.md](fuse-semantics.md).
 
 ---
 
-## 4. Cache separation + atomic validated publication
+## 5. Filters, attributes, and exact size
 
-Five caches, distinct keyspaces and lifetimes. Per-workspace under
-`workspaces/<id>/` (architecture.md on-disk layout): `git/` (odb),
-`filtered-cache/`, plus tree/meta/lfs subdirs. **Never** store filtered bytes as
-a git blob unless git's *clean* filter produced it.
+### 5.1 The filter primitive
 
-| Cache              | Key                                                              | Backing                        | Producer / source                       |
-|--------------------|-----------------------------------------------------------------|--------------------------------|-----------------------------------------|
-| **odb**            | `ObjectId`                                                       | git's own object store         | clone/fetch via `GitStore`              |
-| **parsed-tree**    | `(object-format, tree oid, PARSER_VERSION)`                     | `metadata::TreeCache` (+disk)  | `tree()` first parse                    |
-| **filtered**       | `FilterContext::cache_key()` (sha256)                           | validated file in `filtered-cache/` | `open_worktree_file` (filters/LFS) |
-| **metadata**       | `ObjectId` → `{raw_size, kind}`; opt. manifest                  | small kv / sqlite              | `object_info`; optional size manifest   |
-| **LFS**            | LFS pointer `oid`+size                                          | file in `lfs/` (or git-lfs's)  | `LfsEngine` smudge                      |
+`GitStore::smudge_blob` (`crates/git-store/src/store.rs:356`) is the shipped
+filtering primitive: `cat-file --filters --path=<p> --attr-source=<src>`, which
+returns exactly the bytes a normal checkout would write. `--attr-source` lets
+`.gitattributes` resolve from a tree-ish (e.g. the workspace base commit) even
+in a bare shared store whose `HEAD` need not match — essential for correct
+attribute resolution without a worktree. Byte-level filtering stays git's job;
+the mount does not reimplement clean/smudge drivers, EOL, encoding, or `ident`.
 
-The existing `TreeCache` (`metadata/src/lib.rs`) already keys by
-`(format, oid, PARSER_VERSION)` with negative caching and atomic
-tempfile→`persist` writes; reuse as-is for parsed-tree.
+`smudge_blob` requires a UTF-8 path (it is passed to `cat-file --path`); a
+non-UTF-8 path returns `InvalidRepositoryPath` and the caller must fall back to
+a raw read. It is plumbing available to callers; the projection read path
+currently materializes the raw blob (§3), so smudge conversions are not applied
+on read today.
 
-### 4.1 Atomic validated publication
+### 5.2 Size and metadata
 
-Every cache *file* (filtered, lfs, tree-on-disk, future size manifest) is
-published with this exact protocol: temp path, validate, fsync, atomic
-publish, and the result is immune to partial reuse.
+A tree entry carries **no size**. The two metadata paths are deliberately split:
 
-```rust
-fn publish(dir: &Path, key: &str, write: impl FnOnce(&mut File) -> Result<Validation>)
-    -> Result<PathBuf>
-{
-    let mut tmp = NamedTempFile::new_in(dir)?;        // 1. unique temp in SAME dir
-    let v = write(tmp.as_file_mut())?;                // 2. stream content (bounded)
-    v.verify()?;                                      // 3. validate (size + digest)
-    tmp.as_file().sync_all()?;                        // 4. fsync content
-    let final_path = dir.join(key);
-    tmp.persist(&final_path)?;                        // 5. atomic rename (publish)
-    sync_dir(dir)?;                                   // 6. fsync dir (durable name)
-    Ok(final_path)
-}
-```
+- **`readdir` never resolves a size.** `Projection::readdir`
+  (`crates/worktree/src/lib.rs:484`) merges baseline-tree children with overlay
+  children and returns name + kind + inode only — O(direct children), **zero**
+  blob fetches. The FUSE side (`crates/fuse/src/mount.rs:533`) emits names +
+  d_type + inode. So `ls` of a huge directory fetches nothing.
+- **`getattr` returns an exact size and may fault once.** `attr_of`
+  (`lib.rs:405`) resolves the size: an overlay file is `fstat`ed (no fetch); a
+  baseline file calls `GitStore::object_size` (`store.rs:305`,
+  `cat-file -s`) — the exact raw object size, read from the object header only,
+  no content. Under `tree:0` the blob may be absent, so the first `ls -l` /
+  `stat` of an unmaterialized file faults its blob in once (gated by
+  `metadata_fetch`, `lib.rs:137`). This is fundamental to lazy-blob fetching,
+  not a closeable gap — an exact projected size needs the object's bytes.
 
-- **Validation** (`Validation`): the bytes written hash to the expected content
-  digest **and** length matches the recorded `size`. For the filtered cache the
-  digest is over the *produced* bytes and is stored in a sidecar / xattr so a
-  reader can re-verify; a file whose digest mismatches is treated as absent and
-  rebuilt (guarding against cache poisoning and partially written reuse).
-- A reader **only** opens the final published path. A crash mid-write leaves a
-  temp file that recovery reconciles/sweeps, never the final name.
-- `metadata::TreeCache::put` already follows tempfile→fsync→persist; extend it
-  with the dir-fsync + digest step for the format unifier.
+`object_size` never fakes a value: a cache-only miss returns a structured
+offline/missing error (mapped to `EIO`/`ENOENT` via `core::ErrorCode`), never a
+zero or a guess.
 
-### 4.2 Cache invariants (regression tests)
+First writable `open` / `O_TRUNC` seeds an empty overlay file and does **not**
+fetch the baseline blob, so size becomes a local `fstat`.
 
-- **C1, no torn reads.** Kill the process between steps 2 and 5; on restart the
-  key is absent (not half-written) and rebuilds cleanly (crash injection).
-- **C2, filtered bytes are never a git blob.** A filtered-cache entry is a
-  plain file under `filtered-cache/`, addressed by `cache_key()`, with no
-  corresponding `hash-object -w`.
-- **C3, digest gate.** Corrupting a published filtered file flips it to
-  "absent" on next open and triggers rebuild, never serving poison.
-- **C4, key isolation.** Two paths with different `.gitattributes` but the same
-  raw blob get **different** filtered keys.
+**Invariant (shipped test):** `large_directory_readdir_fetches_zero_blobs`
+(`crates/worktree/src/lib.rs:1550`) — a large directory listing performs no blob
+fetches.
 
----
+### 5.3 First `git status` faults zero blobs
 
-## 5. Git filters & attributes
+The mount pre-seeds the index FSMonitor extension after `read-tree HEAD` so the
+**first** clean `git status` faults zero blobs (separate from the `ls -l` size
+fault above). That seed, its conversion-attribute carve-out, and the
+full-invalidation rules are owned by [fsmonitor.md](fsmonitor.md); the real
+index build is [index-strategy.md](index-strategy.md). This doc does not
+re-derive them.
 
-Byte-level filtering stays git's job (`GitStore::smudge_blob` →
-`cat-file --filters --path=<p> --attr-source=<src>`, ADR-0007); this layer
-decides **whether** to run external code, composes the **cache key**, and avoids
-**index-lock recursion**. Supported conversions: `text`, `eol`,
-`working-tree-encoding`, `ident`, `filter` (clean/smudge drivers), `binary`,
-Git LFS.
+### 5.4 Batch metadata session
 
-### 5.1 Filtered-cache key composition
-
-`filters::FilterContext::cache_key()` already exists and hashes blob+path+
-attr_source+config_digest+filter_identity+eol_mode+format_version. The key
-must include **at least** these; map 1:1 and close the gaps:
-
-| required input                      | `FilterContext` field        | Notes / gap to close                                      |
-|-------------------------------------|------------------------------|-----------------------------------------------------------|
-| raw blob object ID                  | `raw_blob` (+format)         | present                                                   |
-| repository path **bytes**           | `path.as_bytes()`            | present; raw bytes, NUL-separated in hash                 |
-| baseline/attribute-source identity  | `attr_source`                | the base-commit/tree id (ADR-0007); present               |
-| relevant `.gitattributes` state     | *(via `attr_source`)*        | **gap:** must also fold a digest of the *effective* attr  |
-|                                     |                              | stack for `path` so an overlay-modified `.gitattributes`  |
-|                                     |                              | (not yet committed) invalidates: add `attr_digest`        |
-| relevant Git config digest          | `config_digest`              | present; covers autocrlf/eol/encoding/filter.* config     |
-| filter implementation identity      | `filter_identity`            | present; e.g. `lfs`, or `clean=<cmd>` version             |
-| platform EOL mode                   | `eol_mode`                   | present (`native`/`crlf`/`lf`); accounts for the eol      |
-|                                     |                              | size delta in `docs/feasibility/file-metadata.md`         |
-| cache format version                | `format_version`            | present                                                   |
-
-- **Rename across attribute boundaries.** A clean rename changes
-  `path`, hence `cache_key()`, so the new path's filtered result is recomputed
-  and the old key's entry is no longer referenced, which invalidates the old
-  result. The overlay rename mapping does *not* fetch descendant blobs;
-  only a *read* of the renamed path resolves a (possibly different)
-  filtered key.
-- **`.gitattributes` change invalidates descendants.** Two mechanisms:
-  (a) committing/checkout advances `attr_source`, changing every descendant key;
-  (b) an overlay-local edit to `.gitattributes` is folded into `attr_digest` for
-  paths under that directory. Either way descendant keys move.
-
-### 5.2 External-filter trust policy
-
-`filters::{FilterMode, decide, TrustStore}` implement this; wire it to the
-four-mode vocabulary:
-
-| policy                       | `FilterMode`        | Behavior                                                            |
-|------------------------------|---------------------|--------------------------------------------------------------------|
-| `trusted`                    | `Faithful` + trust  | run external clean/smudge drivers; matches a real checkout         |
-| `builtins-only`              | `DenyExternal`      | run git built-ins (eol/encoding/ident); **refuse** external driver |
-| `error-on-external`          | `DenyExternal`      | same, but the refusal is surfaced as an actionable error (default) |
-| `raw` (non-checkout-compat.) | `Raw`               | serve raw blob; explicitly **does not** match a checkout            |
-
-- **Passive hydration never runs untrusted code.** At mount,
-  `detect_external_filter_required()` scans `.gitattributes` for `filter=`
-  drivers; if present and the repo is untrusted, projected reads of those paths
-  return `FilterFailure` with the grant-trust action (`filters::refusal_error`)
-  rather than executing the command. Trust is per-repo and persisted
-  (`TrustStore`, keyed by `RepoId`).
-- **Resource limits.** External filters run under the dedicated
-  filter pool with a wall-clock timeout, an output-size cap (anti
-  decompression/expansion bomb), and a memory cap; a breach is `FilterFailure`
-  (and, for LFS, `LfsFailure`). The filter never inherits the mount fd
-  (`harden_fds`).
-
-### 5.3 Index-lock recursion avoidance
-
-A passive read can occur while the user's git holds `index.lock`. Attribute
-resolution + smudge in that read **must not** lock or rewrite the index. Rules:
-
-- Resolve attributes from the **bare gitdir** via `--attr-source=<commit>`
-  (ADR-0007), reading `<commit>:<dir>/.gitattributes` tree objects. That is a
-  read-only object path that never touches the index or worktree.
-- `GitStore` runs with `GIT_OPTIONAL_LOCKS=0` (already set in `git()`), so
-  inspection subprocesses never *take* the index lock.
-- The smudge invocation is `cat-file --filters` (object-level), **not** `git
-  checkout`/`checkout-index`/`add` (which lock the index). It reads a blob and
-  applies filters; no index mutation.
-- `ensure_attributes_present` (`object-provider/src/lib.rs`) pre-faults the
-  `.gitattributes` blobs along the path with the *scheduler* (coalescing,
-  `GIT_NO_LAZY_FETCH`) so the smudge itself runs cache-only and never spawns a
-  recursive lazy-fetch (the deadlock this design warns about).
-
-### 5.4 Filter invariants (regression tests)
-
-- **F1, checkout parity.** Projected bytes for a path equal `git checkout`'s
-  bytes under the same config, for CRLF, `working-tree-encoding`, `ident`, and a
-  clean/smudge driver (differential test).
-- **F2, untrusted external refused, not executed.** A repo with `filter=evil`
-  attribute, untrusted ⇒ read returns `FilterFailure`; the command never runs.
-  Assert via a sentinel side-effect file the filter would create.
-- **F3, no index lock taken.** Hold `index.lock` externally, then read a
-  filtered file ⇒ succeeds; the read takes no index lock.
-- **F4, non-UTF-8 path filters.** A non-UTF-8 path with a `.gitattributes`
-  rule still resolves attributes (no "stop at first non-UTF-8 component");
-  if `cat-file --path` cannot accept the bytes, fall back to raw with a recorded
-  reason rather than silently wrong bytes.
-- **F5, `.gitattributes` edit invalidates.** Editing an overlay
-  `.gitattributes` changes the filtered result of affected descendants on next
-  read.
+`BatchSession` (`crates/git-store/src/batch.rs`) is a long-lived
+`cat-file --batch-command` process exposing `info(oid) -> Option<ObjectInfo>`
+and `contents(oid)`. `ObjectInfo { kind, size }` (`batch.rs:16`) reports the
+**raw** object size and type with no content materialization on `info`. Because
+it runs `GIT_NO_LAZY_FETCH=1`, it must only be queried for present objects;
+`Ok(None)` means locally missing. Test:
+`batch_session_serves_local_and_reports_missing`
+(`crates/git-store/tests/store_integration.rs:299`).
 
 ---
 
-## 6. Metadata & size
+## 6. Considered / not built (possible future)
 
-A tree entry has **no size**; the size a program sees is the *filtered
-working-tree* size, which differs under CRLF / encoding / ident / smudge / LFS /
-path-attrs. (Measured in `docs/feasibility/file-metadata.md`: the same blob
-projects to a different byte count under an `lf` vs `crlf` eol mode.) Therefore:
+The following layer was designed but never implemented. It is preserved here as
+rationale only — there is no `object-provider`, `metadata`, `filters`, or
+`fs-fuse` crate, and no `FetchScheduler`, `FilterEngine`, `LfsEngine`,
+`TreeCache`, `TrustStore`, or size manifest in the tree. If revisited, the
+shipped substrate above (single-flight, `ContentHandle`, `smudge_blob`,
+`BatchSession`) is the natural foundation.
 
-### 6.1 The three rules
-
-- **`readdir` never requires exact size.** It returns names +
-  inode + d_type only (`fs-fuse/src/adapter.rs::readdir` already does;
-  `TreeObject` cost is O(direct entries)). **0 child blobs, 0 smudge filters.**
-- **`getattr` must return the correct size.** It may cause
-  metadata-triggered hydration when the size is otherwise unknowable. The exact
-  size of an unmaterialized blob is *fundamentally* not derivable under a
-  blob:none clone, since it requires the object's bytes, so `getattr` (`ls -l`,
-  `stat`) faults each such blob once. This is by design, not a closeable gap;
-  closing it would need a server-side size manifest.
-- **Never fake a size.** No zero, no raw-size-as-projected
-  approximation. `metadata::MetadataMode::Exact` is the default and
-  `workspace.file_size()` enforces "no fake size" today; keep that contract.
-
-The **first** clean `git status` after a mount faults **zero** blobs: the mount
-pre-seeds the FSMonitor index extension right after `read-tree` (marking every
-entry `CE_FSMONITOR_VALID` with the journal's seq-0 token), so git's
-`refresh_cache_ent` early-returns on the valid bit before any `lstat`, and the
-hook answers "nothing changed" at the bootstrap token. The earlier eager-first-status
-behavior was a bootstrap-ordering bug (a freshly `read-tree`'d index carries no
-FSMonitor extension, so git's "mark all entries valid" pass never ran on the first
-status), not a fundamental limit; it is fixed. Paths under a checkout conversion
-(`filter`/`ident`/`working-tree-encoding`/CRLF `eol`) are excluded from the seed so
-git checks them normally and never hides a diff. Subsequent clean statuses are also
-zero-blob: git records the populated stat data and the FSMonitor hook (which replays
-the daemon's durable change journal) lets git skip the redundant full-tree scan.
-The `ls -l`/`stat` size fault above is separate: `git status` no longer stats seeded
-entries, but a `getattr` on an unmaterialized file still faults its blob once for the
-size.
-
-### 6.2 `getattr` size resolution: decision table
-
-Resolve in this order; **stop at the first that yields an exact size** (records
-`SizeSource` for the hydration ledger):
-
-| # | Condition                                                | Size source                | Fetch? | `SizeSource`         |
-|---|----------------------------------------------------------|----------------------------|--------|----------------------|
-| 1 | overlay native file (locally written/materialized)       | `fstat` the overlay file   | no     | `Local`              |
-| 2 | published filtered-cache entry exists for this key       | `fstat` the cache file     | no     | `FilteredCache`→`Local` |
-| 3 | symlink                                                   | length of target blob bytes| maybe* | `RawObject`/hydrate  |
-| 4 | clean blob, **no transform** applies (binary/no-filter)  | `object_info` raw size     | maybe† | `RawObject`          |
-| 5 | size manifest present + validated (optional)             | manifest entry             | no     | `Manifest`           |
-| 6 | any transform applies (crlf/encoding/ident/smudge/LFS)   | materialize → filtered len | yes    | `FilteredHydration`  |
-
-\* A symlink's projected size is its target-byte length = blob content length;
-needs the (tiny) blob. † Raw size needs the object locally; under blob:none a
-never-read blob may be absent, so escalating here is the *getattr-may-hydrate*
-allowance. When `getattr` arrives with `MustNotFetch` and the size is
-unknown, return the structured `offline_missing_object`/EIO rather than a fake
-size. The fast paths 1/2/5 cover the common warm cases.
-
-"No transform applies" (row 4) is decided by checking the effective attributes
-for `path` (text/eol/encoding/ident/filter unset and not LFS); this is an
-attribute lookup (object-level, no index; see index-lock avoidance above), not
-a content read.
-
-### 6.3 Fast paths and the `open` path
-
-- `open_worktree_file` returns a `ContentHandle` whose `size` is exact; `getattr`
-  after open is `fstat` (row 1/2). First writable open / `O_TRUNC` seeds an empty
-  overlay file and **does not fetch the baseline blob**, so size
-  becomes `Local`.
-- `ls` vs `ls -l` hydration differs and that is documented: `ls` → readdir
-  (rows none, 0 fetch); `ls -l` → getattr per entry (may hit row 6). Both report
-  hydrations distinctly in metrics.
-
-### 6.4 Metadata invariants (regression tests)
-
-- **M1, readdir is fetch-free.** `ls` of a 100k-file dir ⇒ 0 blob
-  fetches, 0 filtered reads, O(direct children) tree work.
-- **M2, getattr exact + classified.** `ls -l` of a CRLF text file reports the
-  *filtered* size and records a `FilteredHydration`; a binary no-filter file
-  reports raw size with **no** filter run (rows 4 vs 6).
-- **M3, never fake.** No code path returns size 0 / raw-as-filtered for a file
-  needing a transform; `file_size()` cannot be satisfied by a guess.
-- **M4, overlay/cache fast paths fetch nothing.** getattr on a materialized or
-  cached file performs only `fstat` (rows 1/2), 0 network.
-- **M5, synthetic metadata stability.** Repeated getattr within a
-  projection generation returns identical inode/mode/mtime; a synthetic-time
-  mismatch never marks the file dirty (racy-clean care).
+- **FetchScheduler.** Replace git's implicit lazy fetch with a single network
+  authority owning per-remote concurrency, a global token bucket, priority
+  ordering (interactive > prefetch > background), bounded retries with backoff,
+  a per-origin circuit breaker, and request cancellation. The current per-oid
+  single-flight lock would become its coalescing map. Motivating rule: only the
+  scheduler causes network I/O, with no projection/inode lock held — partly
+  realized today (no lock is held across `blob_to_file`).
+- **Original-failure propagation.** A scheduler slot would store the *classified*
+  error (`git-store::proc::classify`, `proc.rs:140`, already maps stderr to
+  `Authentication`/`OfflineMissingObject`/`UnsupportedRemoteCapability`) and hand
+  every coalesced waiter a clone, instead of a later generic "missing object".
+- **Separated caches + atomic validated publication.** Distinct keyspaces (odb,
+  parsed-tree, filtered, metadata, LFS), each file published via
+  temp → validate (size + digest) → fsync → atomic rename → dir-fsync, with a
+  digest gate that treats a corrupt entry as absent. Today only the
+  content-addressed blob cache exists, published temp → rename (no digest gate).
+- **FilterEngine + trust policy.** Route reads through `smudge_blob` for
+  checkout parity, compose a full filtered-cache key (raw oid + path bytes +
+  attr-source + effective-attr digest + config digest + filter identity + EOL
+  mode), and gate external `filter=` drivers behind a persisted per-repo trust
+  decision (run / refuse-with-actionable-error / raw), with resource limits.
+  None of this is built; the mount serves raw bytes (§3).
+- **LfsEngine.** Explicit `smudge` / `pointer` / `error` modes for Git LFS with
+  a separate cache and hydration class. Not built; plain `git add`/`commit`/`push`
+  use the user's own git-lfs through stock git.
+- **Size manifest.** A validated server-side size index that would let `getattr`
+  return an exact size without faulting the blob. Not built; the per-blob
+  `cat-file -s` fault (§5.2) is the current cost.
+- **Streaming trait surface.** A generic `ReadSeek`/provider trait over content.
+  `ContentHandle` already gives bounded, seekable reads, so much of this shape
+  is effectively shipped without the trait.
 
 ---
 
-## 7. Git LFS
+## See also
 
-Three explicit modes; LFS content is cached separately
-and reported as a distinct hydration class.
-
-| Mode      | Behavior                                                                                       |
-|-----------|------------------------------------------------------------------------------------------------|
-| `smudge`  | use installed `git-lfs`; fetch real content on first access; cache in `lfs/`; no callback auth prompt |
-| `pointer` | expose the raw pointer blob (the ≈130-byte `version … oid sha256:… size …` text) via `open_raw_blob` |
-| `error`   | return an actionable `LfsFailure` (`git lazy-mount …` action)                                  |
-
-- **Detection.** A path is LFS when its `filter` attribute is `lfs` and the raw
-  blob is a valid LFS pointer. Pointer parse is cheap (read the small pointer
-  blob via `open_raw_blob`).
-- **smudge fetch.** LFS object download goes through the
-  `FetchScheduler`/LFS engine, **noninteractive** in a callback (no credential
-  prompt; auth handled at mount or explicit op). A missing LFS object offline ⇒
-  `offline_missing_object`/`LfsFailure`, and never a hang.
-- **Cache key.** Filtered/LFS key includes `filter_identity = "lfs"` and the
-  pointer oid so a pointer change invalidates the materialized content.
-- **Plain git LFS untouched.** `git add`/`commit`/`push` continue to use
-  the user's normal git-lfs via stock git; this layer only serves *reads*. LFS
-  **locking** is not claimed unless tested.
-
-### LFS invariants
-
-- **L1, pointer mode is fetch-free.** `pointer` mode read returns the pointer
-  bytes with 0 LFS network.
-- **L2, smudge caches + classifies.** First `smudge` read fetches once, caches
-  in `lfs/`, records an LFS hydration; second read is cache-only.
-- **L3, error mode is actionable.** `error` mode read returns `LfsFailure` with
-  a recommended action and never hangs.
-
----
-
-## 8. Summary of testable invariants (→ regression suite)
-
-Trait: **T1–T4**. Scheduler: **S1–S7** (S1 coalescing, S2 batching, S3
-original-failure, S4 no-lock-across-net, S5 breaker, S6 cancellation, S7 bounded
-retries). Cache: **C1–C4** (crash-atomic, never-a-blob, digest gate, key
-isolation). Filters: **F1–F5** (checkout parity, untrusted-refused, no
-index-lock, non-UTF-8, attr-invalidate). Metadata: **M1–M5** (fetch-free
-readdir, exact+classified getattr, never-fake, fast paths, synthetic stability).
-LFS: **L1–L3**. These back the hydration budgets and the
-`requirements-checklist.md` items 5, 6, 24, 25 + budget rows.
-
-## 9. Reuse / change ledger
-
-| Component                          | Status   | Action                                                              |
-|------------------------------------|----------|--------------------------------------------------------------------|
-| `object-provider` coalescing core  | reuse    | extract `FetchScheduler`; add priorities/limits/breaker/retries    |
-| `ensure_objects` original-failure  | **fix**  | store `Arc<Error>` in the slot; propagate to all waiters (S3)      |
-| `raw_blob`/`filtered_blob` → Vec    | **change**| replace with `open_raw_blob`/`open_worktree_file` → ReadSeek/Handle |
-| `git-store::{batch,store}`         | reuse    | `BatchSession`, `smudge_blob`, `--attr-source`, `harden_fds`        |
-| `metadata::TreeCache`              | reuse    | parsed-tree cache; add dir-fsync+digest to the publish helper       |
-| `metadata::{MetadataMode,SizeSource}`| reuse  | drive the getattr size table                                       |
-| `filters::{FilterContext,decide,TrustStore}`| reuse | add `attr_digest` to the key; map to the 4-mode policy         |
-| LFS engine                          | **new**  | `smudge`/`pointer`/`error` over the scheduler + `lfs/` cache        |
-| Superseded: `stage`, custom `workspace`, `git lazy-mount git --` | drop | not part of this layer                       |
+- [worktree-model.md](worktree-model.md) — baseline/overlay, BaseRef, rename.
+- [fuse-semantics.md](fuse-semantics.md) — FUSE ops, handles, the two pools.
+- [fsmonitor.md](fsmonitor.md) — the zero-blob first-status seed (canonical).
+- [index-strategy.md](index-strategy.md) — `read-tree HEAD`, interop bridge.
+- [compatibility.md](compatibility.md) / [limitations.md](limitations.md) —
+  smudge divergence and the lazy-size fault as documented behavior.
+- [durability-security.md](durability-security.md) — auth/offline gating,
+  `GIT_TERMINAL_PROMPT=0`.
+- [design.md](design.md) — the lean spec this area expands.
+</content>

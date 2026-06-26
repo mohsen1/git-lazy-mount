@@ -1,7 +1,13 @@
 # macOS FSKit on-device build & validation (issue #19)
 
+> **Retired — historical record.** The macOS FSKit backend and its crates
+> (`fs-fskit`, `glm-fskit-ffi`, `glm-daemon`, the `FskitOps` engine) were
+> removed; git-lazy-mount is Linux-only. This page is kept as a runbook for a
+> possible future revisit — the signing runbook and the Apple-bug blocker
+> analysis below are the hard-won, still-valuable parts.
+
 How to build, sign, install, and register the macOS FSKit backend on real Apple
-hardware, plus the current OS-level blocker. Validated on macOS 26.4.1
+hardware, plus the OS-level blocker that stopped it. Validated on macOS 26.4.1
 (25E253), Xcode 26.5 SDK, Apple silicon.
 
 ## Result summary
@@ -79,14 +85,15 @@ cp -R DerivedData/Build/Products/Release/GitLazyMount.app /Applications/
 open /Applications/GitLazyMount.app
 pluginkit -mAv -p com.apple.fskit.fsmodule | grep gitlazymount   # → "+ …GitLazyMountFS"
 ```
-(`crates/fs-fskit/extension/build.sh` automates the Rust staticlib + xcodegen +
-this build.)
+(In the retired prototype, `crates/fs-fskit/extension/build.sh` automated the
+Rust staticlib + xcodegen + this build. That crate and script no longer exist.)
 
 ## Architecture note: sandbox vs. `git`
 
 FSKit extensions are sandboxed (`com.apple.security.app-sandbox` is mandatory).
-The current `glm-fskit-ffi` opens the workspace and runs `git` in-process,
-which the sandbox restricts. Production should proxy FSKit callbacks to
-`glm-daemon` over XPC/IPC so `git` runs outside the sandbox. The engine split
-(`FskitOps` vs. daemon) already supports this. The in-process FFI is the
-validation shim that let us prove build/sign/registration end-to-end.
+In the retired prototype, `glm-fskit-ffi` opened the workspace and ran `git`
+in-process, which the sandbox restricts. A production design would have proxied
+FSKit callbacks to a `glm-daemon` over XPC/IPC so `git` ran outside the sandbox;
+the prototype's engine split (`FskitOps` vs. daemon) was meant to support this.
+The in-process FFI was the validation shim that proved build/sign/registration
+end-to-end before the work was retired.
