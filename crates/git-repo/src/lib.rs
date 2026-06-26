@@ -360,7 +360,11 @@ impl AdminRepo {
         let paths: Vec<Vec<u8>> = all.to_vec();
         let writer = std::thread::spawn(move || {
             for p in &paths {
-                if stdin.write_all(p).and_then(|()| stdin.write_all(&[0])).is_err() {
+                if stdin
+                    .write_all(p)
+                    .and_then(|()| stdin.write_all(&[0]))
+                    .is_err()
+                {
                     break;
                 }
             }
