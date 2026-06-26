@@ -50,8 +50,7 @@ Storage is split:
     c<pid>-<seq>            native content blobs, served by FD
 ```
 
-There is **no** SQLite database, no `namespace.sqlite`, no `entries` table, and
-no SQL schema anywhere in the tree. The entry shape is the `OverlayEntry` enum:
+The entry shape is the `OverlayEntry` enum:
 
 ```rust
 pub enum OverlayEntry {
@@ -135,12 +134,10 @@ clones, builds the index, seeds FSMonitor, then spawns a **detached hidden
 reparented to init and not waited on. That child opens the `AdminRepo`,
 `ChangeJournal`, and `Projection`, then calls `glm_fuse::mount`, which blocks
 until unmount. The only CLI verbs are the default mount form, `Unmount`,
-`Doctor`, and the internal `__serve`; there is no `list`, `recover`, or
-`prefetch`, and no `--offline` flag.
+`Doctor`, and the internal `__serve`.
 
 Single-writer discipline is in-process: one `__serve` child holds the mount and
-is the only overlay writer. There is no `WorkspaceLock`, no `locks/` directory,
-no `flock` set, and no `boot_id` stale-lock logic. Startup and its
+is the only overlay writer. Startup and its
 deadlock-avoidance invariants are documented in
 [`deadlock-startup-recovery.md`](deadlock-startup-recovery.md).
 
@@ -208,8 +205,7 @@ credential helper and later reads of the same object succeed without a remount.
 ## 4. Synthetic metadata and racy-clean
 
 `getattr` is served by the projection's `attr_of` (`crates/worktree`) and the
-mount's `fuse_attr` (`crates/fuse/src/mount.rs`). There is no `SyntheticMeta`,
-`SyntheticTime`, or `SizeState` struct; the behaviour is:
+mount's `fuse_attr` (`crates/fuse/src/mount.rs`). The behaviour is:
 
 - A **clean** (unmaterialized) entry reports a stable mode and a fixed
   `UNIX_EPOCH` mtime — never the wall clock — so re-reading it never advances its

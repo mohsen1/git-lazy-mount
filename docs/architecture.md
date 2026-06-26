@@ -186,11 +186,11 @@ detail is in [`index-strategy.md`](index-strategy.md).
 
 ## Status
 
-Linux-only, real-`/dev/fuse`-CI tested on `ubuntu-latest`. Not supported yet: a
+Linux-only, real-`/dev/fuse`-CI tested on `ubuntu-latest`. Not supported: a
 shared object cache across workspaces, full submodule support, and end-to-end
 LFS (bounded by the smudge-side raw-baseline behavior). Windows (ProjFS) and
-macOS (FSKit) backend notes survive under
-[`future-platforms/`](future-platforms/) purely as roads not taken.
+macOS (FSKit) backend notes live under
+[`future-platforms/`](future-platforms/).
 
 Per-command compatibility and the laziness matrix live in
 [`compatibility.md`](compatibility.md); the by-design / fundamental / deferred

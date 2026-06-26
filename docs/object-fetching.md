@@ -40,7 +40,7 @@ FUSE callback (getattr / read / open)        crates/fuse  (TransparentFs)
             └─ BatchSession   (cat-file --batch-command, info/contents)
 ```
 
-**Network policy.** Fetching today is git's own lazy fetch, triggered when a
+**Network policy.** Fetching is git's own lazy fetch, triggered when a
 materialization or size lookup is allowed to fault a missing object in. The
 projection passes `allow_fetch` explicitly (`metadata_fetch` for size,
 `true` for content materialization); read-only/offline paths pass `false`.
@@ -86,8 +86,8 @@ unfiltered object). Smudge-side `.gitattributes` conversions
 (`eol=crlf`/`ident`/`working-tree-encoding`/custom `filter=`/LFS) therefore
 diverge on read, while commits stay byte-correct because git's clean filter is
 the inverse. See [compatibility.md](compatibility.md) and
-[limitations.md](limitations.md) for that contract; the filter primitive that
-would close the read-side gap is `smudge_blob` (§4).
+[limitations.md](limitations.md) for that contract; the read-side filter
+primitive is `smudge_blob` (§4).
 
 **Invariants (shipped tests):**
 
@@ -131,8 +131,7 @@ the mount does not reimplement clean/smudge drivers, EOL, encoding, or `ident`.
 `smudge_blob` requires a UTF-8 path (it is passed to `cat-file --path`); a
 non-UTF-8 path returns `InvalidRepositoryPath` and the caller must fall back to
 a raw read. It is plumbing available to callers; the projection read path
-currently materializes the raw blob (§2), so smudge conversions are not applied
-on read today.
+materializes the raw blob (§2), so smudge conversions are not applied on read.
 
 ### 4.2 Size and metadata
 

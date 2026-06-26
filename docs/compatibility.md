@@ -48,19 +48,18 @@ exercised. Laziness is the *measured* fetch behavior.
 | `worktree add` (linked) | correct | potentially eager (the linked checkout hydrates) | `survey_advanced` |
 | `.gitattributes` clean filter (`text=auto`) | correct | bounded | `survey_advanced` |
 | `.gitattributes` smudge (eol/ident/custom) | partial: raw bytes served, but commits stay correct because the clean filter is the inverse (see [limitations.md](limitations.md)) | n/a | `survey_advanced` |
-| `submodule` add/status/update | partial: not yet validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
+| `submodule` add/status/update | partial: not validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
 
 In-place edits of the same byte size are detected correctly. Overlay files
 report their real on-disk mtime, so git's racy-clean logic re-checks content.
-A constant mtime would have hidden such edits.
 
 ## Notes
 
-- **Newly classified as correct**: `cherry` (range), `am`/`apply`, `notes`,
+- **Correct through real mounts**: `cherry` (range), `am`/`apply`, `notes`,
   `replace`, `cherry-pick` ranges, `tag`/`describe`/`archive`, and `bisect` all
-  pass through real mounts. The remaining gaps are genuinely deferred: deep
-  **LFS** (an external `filter=lfs` driver) needs a git-lfs/server integration,
-  and full **submodule** workflows are still partial (test `#[ignore]`'d).
+  pass through real mounts. **LFS** (an external `filter=lfs` driver) needs a
+  git-lfs/server integration, and full **submodule** workflows are partial
+  (test `#[ignore]`'d).
 
 - **Eagerness**: branch-changing commands (`switch`/`checkout`/`reset --hard`/
   `merge`/`rebase`) are correct but potentially eager — stock git writes every

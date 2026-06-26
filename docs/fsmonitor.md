@@ -114,8 +114,7 @@ glm1:<workspace>:<epoch>:<seq>:<generation>
   change is one increment.
 - `epoch` and `generation` are **fixed at `1` and `0`** everywhere — the CLI
   seed, the serve process, and the hook all call `ChangeJournal::open(.., 1, 0)`.
-  They are carried in the token (and compared on query) so a future incarnation
-  can start using them without a wire-format change, but today they never move.
+  They are carried in the token and compared on query.
 
 A reset or truncated log does not need an epoch bump to stay correct: a token
 whose `seq` exceeds the current journal length is rejected as a future seq (see
@@ -146,10 +145,8 @@ whole server side. It holds no locks across I/O and does no `git` call. With
 7. Otherwise return the **inclusive, sorted, deduplicated** set of recorded paths
    with `token.seq < seq <= cur_seq`, plus a fresh token at `cur_seq`.
 
-That is the complete list of full-invalidation branches — there is no rollback
-detection, no compaction floor, no future-generation-vs-delta logic, no
-queue-overflow or reconcile-on-restart state. Those do not exist in the code.
-These branches are exercised by `full_invalidation_on_unplaceable_tokens` and
+That is the complete list of full-invalidation branches. These branches are
+exercised by `full_invalidation_on_unplaceable_tokens` and
 `changes_since_token_are_inclusive` in the `journal.rs` test module.
 
 ### What gets recorded
@@ -181,19 +178,15 @@ that path.
 
 ## 4. Bootstrap: the first `git status` is zero-blob
 
-This is the canonical description of the seed; the `query()` doc-comment
-summarizes it, and this section is the source of truth.
-
 The **first** clean `git status` faults **zero** blobs, the same as every repeat.
 A freshly `read-tree`'d index carries **no FSMonitor extension**, so git's "mark
 every entry valid" pass (which runs only when the extension is read from disk)
 never runs on the first status. Without it, git stats every entry — and under a
 lazy clone, `getattr` would fault each blob for its size — and only *then* writes
 the extension. The hook's "nothing changed" reply cannot help, because the valid
-bits were never set going in. An early `GIT_TRACE_FSMONITOR` reading was misread
-as a fundamental limit; it was a **bootstrap-ordering** problem.
+bits were never set going in. It is a **bootstrap-ordering** problem.
 
-The fix is to **pre-seed** the extension at mount, right after `read-tree`
+The mount **pre-seeds** the extension at mount, right after `read-tree`
 ([`AdminRepo::seed_fsmonitor_valid`](../crates/git-repo/src/lib.rs)): pipe every
 tracked path through `git update-index -z --fsmonitor-valid --stdin`, which sets
 each entry's `CE_FSMONITOR_VALID` bit and records the hook's current (seq-0)
@@ -265,7 +258,7 @@ FSMonitor query path must stay off the worktree.
   journal's synchronous-record rule): [durability-security.md](durability-security.md).
 - The `read-tree HEAD` index build the seed runs against, and the throwaway
   operational-index interop bridge
-  ([`crates/git-store/src/interop.rs`](../crates/git-store/src/interop.rs), which
-  still exists and is exercised by `store_integration.rs`):
+  ([`crates/git-store/src/interop.rs`](../crates/git-store/src/interop.rs),
+  exercised by `store_integration.rs`):
   [index-strategy.md](index-strategy.md).
 - Per-command compatibility and laziness: [compatibility.md](compatibility.md).

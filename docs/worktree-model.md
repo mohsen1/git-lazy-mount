@@ -104,9 +104,9 @@ Notes:
 - The baseline walk reads only **tree** objects, never blob contents. Tree
   objects for the committed baseline are fetchable/present after the default
   `tree:0` partial clone (`crates/git-repo/src/lib.rs:50`), which `build_index`
-  faults at mount via `read-tree HEAD`. (A `blob:none` clone would instead
-  download every tree from all of history — slow and large; `tree:0` keeps the
-  baseline cheap. See [index-strategy.md](index-strategy.md).)
+  faults at mount via `read-tree HEAD`. (`tree:0` keeps the baseline cheap: it
+  faults trees on demand rather than downloading every tree from all of history.
+  See [index-strategy.md](index-strategy.md).)
 - **Implied / overlay directories**: a created `a/b/c` makes `a/b` a directory
   because `mkdir`/`create` records the parent overlay `Dir` entries; resolution
   and `readdir` then merge them with the baseline.
@@ -283,8 +283,7 @@ Neither `link` nor `mknod` is implemented in the FUSE layer
 (`crates/fuse/src/mount.rs`), so the fuser default applies and both return
 **`ENOSYS`**. Git preserves neither hard-link identity nor device/fifo/socket
 nodes (no such `GitMode`), so refusing them keeps everything the projection
-serves representable as Git content. If ever supported they would be overlay-only
-and explicitly non-committable. See [limitations.md](limitations.md).
+serves representable as Git content. See [limitations.md](limitations.md).
 
 ---
 

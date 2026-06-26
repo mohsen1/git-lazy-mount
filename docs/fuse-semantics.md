@@ -84,8 +84,7 @@ methods named in the table.
 `removexattr`), `fallocate`, `copy_file_range`, `lseek` (`SEEK_DATA`/`SEEK_HOLE`),
 file locking (`getlk`/`setlk`/`flock`), `destroy`, and `batch_forget` are **not**
 implemented; they fall through to `fuser`'s default and return `ENOSYS`. Standard
-editor/build workflows do not require them. Advisory locking and `lseek`
-hole-punching are candidate future work (see the note in §5).
+editor/build workflows do not require them.
 
 `RENAME_EXCHANGE` is explicitly rejected inside `Projection::rename` with
 `UnsupportedOperation` (which maps to errno 95, `EOPNOTSUPP`) rather than
@@ -125,8 +124,8 @@ Identity rules:
   `lookups == 0 && path.is_none()`. `ROOT_INO` is never freed (FS-INO-5).
 - **Generation.** `bump_generation` raises only the table-wide counter used at
   the next allocation; existing entries keep their generation, so open handles
-  are unaffected. The shipped `Projection` fixes its baseline at open and does
-  not advance it, so this is currently exercised only by the unit test.
+  are unaffected. `Projection` fixes its baseline at open and does not advance
+  it.
 
 There is no reserved synthetic-`.git` inode. The synthetic `.git` is protected
 in `Projection::child_path`, which rejects any mutating op whose path is the root

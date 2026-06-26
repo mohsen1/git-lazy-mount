@@ -22,4 +22,4 @@ New here? Start with the [project README](../README.md). It covers what this is,
 ## Reference
 
 - [Specification](design.md): the lean, authoritative design the implementation is built and tested against.
-- [Roads not taken](future-platforms/): the project is Linux-only; the Windows ([ProjFS](future-platforms/windows.md)) and macOS ([FSKit](future-platforms/macos.md), [on-device](future-platforms/macos-fskit-ondevice.md)) backends were retired and these notes survive only as history.
+- [Other platforms](future-platforms/): the project is Linux-only. Notes on the Windows ([ProjFS](future-platforms/windows.md)) and macOS ([FSKit](future-platforms/macos.md), [on-device](future-platforms/macos-fskit-ondevice.md)) backends.

@@ -8,8 +8,7 @@ wedging the filesystem that serves it. Companion docs:
 [`object-fetching.md`](object-fetching.md), [`fsmonitor.md`](fsmonitor.md).
 
 This is explanation grounded in code. Each `INV-…` below is an invariant the
-shipped system upholds; where a regression test exists or is intended, it is
-named. The deadlock invariants are the substantive content here — there is **no
+shipped system upholds; where a regression test exists, it is named. The deadlock invariants are the substantive content here — there is **no
 daemon, registry, persisted state machine, recovery command, or namespace DB**.
 
 The reusable substrate the rest of this doc leans on is real:
@@ -35,7 +34,7 @@ requesting process holds is a cycle: `serve → git → kernel → serve`.
 
 Two concrete cycles, both real in the current tree:
 
-1. **Inherited-fd FLUSH deadlock** (fixed by `proc.rs::harden_fds`). A `git`
+1. **Inherited-fd FLUSH deadlock** (prevented by `proc.rs::harden_fds`). A `git`
    subprocess forked by a callback inherits a file the *kernel* has open on this
    mount. At `exec` the kernel closes that descriptor, issuing a `FLUSH` back to
    the serving process. If the only thread that can answer `FLUSH` is the one
@@ -127,7 +126,7 @@ There are **no** separate decompress/filter/network pools and **no**
 backpressure/cancellation machinery. `META_THREADS` exists so `readdir` stays
 responsive under heavy object IO.
 
-### 1.4 `FetchPolicy`: a vocabulary type, not yet an enforced gate
+### 1.4 `FetchPolicy`: a vocabulary type, not an enforced gate
 
 `crates/core/src/fetch.rs` defines `FetchPolicy` (`CacheOnly`, `AllowNetwork`,
 `Prefetch`, `MustNotFetch`) with `may_fetch()`. It is the intended vocabulary for
@@ -139,10 +138,8 @@ In the shipped code that rule is **enforced positionally, not by the type**:
 passive object access hard-codes `GIT_NO_LAZY_FETCH=1` (`BatchSession`,
 `GitStore::git(no_lazy=true)`), and hydration hard-codes `allow_fetch=true`.
 Nothing outside `crates/core` consumes `FetchPolicy` as a gate — `grep FetchPolicy
-crates/{fuse,worktree,git-store}` finds no call sites. Treat it as a defined
-vocabulary type that is **not yet wired** as the single enforcement point. (If it
-is ever wired, INV-D4/D5 become a property of the type system instead of a
-property of each call site.)
+crates/{fuse,worktree,git-store}` finds no call sites. It is a defined
+vocabulary type that is **not wired** as the single enforcement point.
 
 ---
 
@@ -171,10 +168,6 @@ fails fast (`crates/cli/src/main.rs:143-149`).
    (`crates/cli/src/main.rs:155-168`, rationale at
    `crates/git-repo/src/lib.rs:44-49`). `--no-single-branch` is added when
    `--depth` is set; `GIT_TERMINAL_PROMPT=0` throughout.
-
-   > A stale comment at `crates/git-repo/src/lib.rs:33` still says "defaults to
-   > `blob:none`"; the `Default` impl actually sets `tree:0` (`lib.rs:50`). Trust
-   > the impl.
 
 3. **Build the real index.** `repo.build_index()` runs `git read-tree HEAD`
    against the admin gitdir. This faults the HEAD trees and **zero blobs**, then

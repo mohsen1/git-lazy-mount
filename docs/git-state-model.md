@@ -2,7 +2,7 @@
 
 This is part of the broader [specification](design.md). Overview:
 [`architecture.md`](./architecture.md). This doc explains the **ownership
-boundary** between stock Git and the mount, and why the shipped transparent
+boundary** between stock Git and the mount, and why the transparent
 design needs no daemon-side copy of Git state to honor it.
 
 ---

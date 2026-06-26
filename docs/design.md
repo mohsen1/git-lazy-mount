@@ -14,14 +14,13 @@ Files materialize (hydrate) on read or edit.
 
 This is the authoritative specification. It is written to match the shipped code;
 where it summarizes a subsystem, the linked area document under [`docs/`](.) owns
-the implementation detail. macOS (FSKit) and Windows (ProjFS) backends were
-explored and retired — their notes survive only as roads not taken under
-[`future-platforms/`](future-platforms/).
+the implementation detail. macOS (FSKit) and Windows (ProjFS) backends are out of
+scope; notes on them live under [`future-platforms/`](future-platforms/).
 
-The design is deliberately clean rather than an incremental refactor: there is no
-custom stage, no custom branch/commit state, no commit-adoption bridge, and no
-headless-first architecture. The real `.git/index` is the only stage; stock Git
-owns refs, HEAD, commits, merges, and conflict stages.
+The design is deliberately clean: there is no custom stage, no custom
+branch/commit state, no commit-adoption bridge, and no headless-first
+architecture. The real `.git/index` is the only stage; stock Git owns refs, HEAD,
+commits, merges, and conflict stages.
 
 The executable is named `git-lazy-mount`, so Git exposes it as `git lazy-mount`.
 
@@ -95,7 +94,7 @@ normal Git configuration, hooks, refs, and reflogs
 core.fsmonitor
 the real Git index
 normal partial-clone configuration
-normal alternates (a possible later optimization)
+normal alternates
 ```
 
 Not allowed as the product design:
@@ -364,9 +363,6 @@ git lazy-mount <url> <path> --filter blob:none
 git lazy-mount <url> <path> --allow-full-object-clone
 ```
 
-> A stale code comment in `crates/git-repo/src/lib.rs` still says the filter
-> "defaults to `blob:none`"; the `Default` impl sets `tree:0`. Trust the impl.
-
 ---
 
 # 6. Subsystems
@@ -523,7 +519,7 @@ all mount/session file descriptors are CLOEXEC and not inherited by children
 ```
 
 Bounded worker pools keep the `fuser` dispatch loop free to answer a `FLUSH`
-during a fork/exec (the prior single-threaded deadlock).
+during a fork/exec.
 
 ---
 

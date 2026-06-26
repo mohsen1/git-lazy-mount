@@ -1,7 +1,7 @@
 # Current limitations
 
 What constrains `git-lazy-mount` today: costs that are fundamental to lazy-blob
-fetching, behaviors that are by-design, and capabilities not yet supported. For
+fetching, behaviors that are by-design, and capabilities that are not supported. For
 what works per command, see [`compatibility.md`](compatibility.md).
 
 ## Fundamental costs of lazy fetching
@@ -29,11 +29,11 @@ what works per command, see [`compatibility.md`](compatibility.md).
   is the inverse) and **commits remain byte-correct**; only working-tree *reads*
   of these files diverge. Applying smudge at materialize time would make
   `getattr` size depend on filter output, breaking lazy stat and
-  rename-without-fetch — a correct fix needs filter-aware lazy sizing. When any
+  rename-without-fetch. When any
   such conversion attribute is present, the first-status FSMonitor seed is
   skipped entirely, so Git checks these files normally.
 
-## Not supported yet
+## Not supported
 
 - **End-to-end Git LFS and custom `filter=` drivers.** The *clean* filter and the
   native `text` / `eol` / `ident` attributes work, but an external `filter=lfs`
