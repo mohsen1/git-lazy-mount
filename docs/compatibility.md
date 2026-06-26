@@ -47,7 +47,7 @@ exercised. Laziness is the *measured* fetch behavior.
 | `fsck` / `gc` / `repack` / `maintenance` / `prune` | correct | fully lazy (object store only) | `survey_maintenance` |
 | `worktree add` (linked) | correct | potentially eager (the linked checkout hydrates) | `survey_advanced` |
 | `.gitattributes` clean filter (`text=auto`) | correct | bounded | `survey_advanced` |
-| `.gitattributes` smudge (eol/ident/custom) | partial: raw bytes served, but commits stay correct because the clean filter is the inverse ([limitations.md](limitations.md) R7) | n/a | `survey_advanced` |
+| `.gitattributes` smudge (eol/ident/custom) | partial: raw bytes served, but commits stay correct because the clean filter is the inverse (see [limitations.md](limitations.md)) | n/a | `survey_advanced` |
 | `submodule` add/status/update | partial: not yet validated end-to-end through the mount | n/a | `survey_advanced` (`#[ignore]`) |
 
 In-place edits of the same byte size are detected correctly. Overlay files
@@ -64,11 +64,10 @@ A constant mtime would have hidden such edits.
 
 - **Eagerness**: branch-changing commands (`switch`/`checkout`/`reset --hard`/
   `merge`/`rebase`) are correct but potentially eager — stock git writes every
-  changed path through the FUSE write path. Measured bounded by the delta, not
-  the repo. See [limitations.md](limitations.md) P3.
+  changed path through the FUSE write path. Bounded by the delta, not the repo.
+  See [limitations.md](limitations.md).
 
 - **Zero-blob first status**: the first clean `git status` faults zero blobs,
   same as every repeat, because the FSMonitor index extension is pre-seeded at
   mount (paths under a smudge conversion are carved out). The mechanism is owned
-  by [fsmonitor.md](fsmonitor.md); see also [limitations.md](limitations.md)
-  P1/R7.
+  by [fsmonitor.md](fsmonitor.md); see also [limitations.md](limitations.md).
