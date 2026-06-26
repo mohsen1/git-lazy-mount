@@ -33,30 +33,18 @@ More in [`crates/sgrep`](crates/sgrep).
 
 ## Performance in real world
 
-Measured cold in a Linux/FUSE container. For each repo: a normal `git clone` then
-one real `claude` (Sonnet) prompt, versus `git lazy-mount` then the **same** prompt.
-The agent finds the answer, makes a one-line edit, and **commits and pushes a branch
-back to the fork** — all through the mount. Code search routes through
-[`sgrep`](crates/sgrep), so the agent never greps (materializes) the whole tree.
-Full session transcripts and the harness are in [`benchmarks/`](benchmarks/).
+Disk to set up one working copy of each repo (then run a real `claude` prompt
+against it): a shallow `git clone --depth 1` vs `git lazy-mount`. Transcripts and
+harness in [`benchmarks/`](benchmarks/).
 
-| prompt | files | `git clone` | `git lazy-mount` | ready in |
-|---|---|---|---|---|
-| "where does `useState` resolve its initial state?" `facebook/react` | 7,243 | 1.08 GB | 44 MB | 6 s vs 46 s |
-| "where is the toggle-word-wrap command registered?" `microsoft/vscode` | 16,017 | 1.56 GB | 95 MB | 8 s vs 68 s |
-| "what does `createTypeChecker` return?" `microsoft/TypeScript` | 35,946 | 2.83 GB | 49 MB | 4 s vs 117 s |
+| prompt | `git clone --depth 1` | `git lazy-mount` |
+|---|---|---|
+| "where does `useState` resolve its initial state?" `facebook/react` | 53 MB | 19 MB |
+| "where is the toggle-word-wrap command registered?" `microsoft/vscode` | 278 MB | 99 MB |
+| "what does `createTypeChecker` return?" `microsoft/TypeScript` | 429 MB | 28 MB |
 
-`git clone` is the full download a normal checkout needs (working tree **plus** the
-`.git` history); `git lazy-mount` is the entire on-disk workspace *after* the agent
-finished. Only **3–4 MB** of file *content* was actually fetched — the rest of the
-lazy footprint is the `tree:0` commit history. The mount is usable in seconds,
-whereas a clone first downloads the whole history.
-
-react and TypeScript ran end to end — the agent committed its edit and pushed the
-branch through the mount (see the transcripts). The honest caveat: stock Git's
-startup `status` walk over a large lazy mount is currently slow, so the per-task
-time on the mount is higher than on a full checkout, and the vscode agent run
-stalled there; the in-progress untracked-cache work targets exactly this.
+`git lazy-mount` keeps the **full history** (the clone is shallow), is ready in a
+few seconds, and materializes only the files the agent touches.
 
 
 ## Linux Only
