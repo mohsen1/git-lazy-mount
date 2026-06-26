@@ -1098,6 +1098,8 @@ mod tests {
             &CloneOptions::default(),
         )
         .unwrap();
+        // tree:0 clone fetches no trees; fault the HEAD trees in before projecting.
+        repo.build_index().unwrap();
         let j = journal::ChangeJournal::open(tmp.path().join("journal"), "ws", 1, 0).unwrap();
         let proj = Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay"))
             .unwrap()
