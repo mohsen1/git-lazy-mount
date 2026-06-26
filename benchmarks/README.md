@@ -40,18 +40,23 @@ All six runs completed end to end, including the lazy runs on the 16k-file vscod
 and the 81k-file TypeScript trees — each agent searched, edited, committed, and
 **pushed** a branch through the mount.
 
-### Setup vs task time
+### End-to-end time
 
-Mounting is near-instant. The per-task time on the mount is higher than on a local
-checkout — the working-tree walk crosses FUSE per file, and Git faults any missing
-objects on demand — and grows with the file count, so TypeScript's 81k-file walk
-dominates its task:
+Like `git lazy-mount`, a full `git clone` keeps the whole history — but it must
+download it all before the task can start, where the mount is ready in seconds.
+That head start outweighs the mount's slower per-file work, so **end to end** (set
+up, then run the prompt) the mount finishes first:
 
-| repo | clone | mount | full-clone task | lazy-mount task |
-|---|---|---|---|---|
-| react | 58 s | 3 s | 57 s | 73 s |
-| vscode | 168 s | 7 s | 189 s | 246 s |
-| TypeScript | 170 s | 4 s | 559 s | 691 s |
+| repo | full `git clone` + task | `git lazy-mount` + task |
+|---|---|---|
+| react | 58 + 57 = **115 s** | 3 + 73 = **76 s** |
+| vscode | 168 + 189 = **357 s** | 7 + 246 = **253 s** |
+| TypeScript | 170 + 559 = **729 s** | 4 + 691 = **695 s** |
+
+The task portion alone is higher on the mount — the working-tree walk crosses FUSE
+per file and Git faults any missing objects on demand, growing with the file count
+(TypeScript's 81k-file walk dominates) — but the instant mount more than offsets it,
+on top of the order-of-magnitude smaller disk.
 
 ## Transcripts
 
