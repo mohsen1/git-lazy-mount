@@ -17,14 +17,11 @@ git config --global user.email "glm-bench@users.noreply.github.com"
 git config --global --add safe.directory '*'
 git config --global credential.helper "!f(){ echo username=x-access-token; echo password=${GH_TOKEN}; };f"
 
-# sgrep -> query the UPSTREAM index (the fork is not indexed on Sourcegraph)
-if [ -f /usr/local/bin/sgrep ] && [ ! -f /usr/local/bin/sgrep-bin ]; then
-  cp /usr/local/bin/sgrep /usr/local/bin/sgrep-bin 2>/dev/null || sudo cp /usr/local/bin/sgrep /usr/local/bin/sgrep-bin 2>/dev/null || true
-fi
+# sgrep -> query the UPSTREAM index; wrapper calls the real binary by ABSOLUTE path.
 mkdir -p "$HOME/bin"
 cat > "$HOME/bin/sgrep" <<EOF
 #!/usr/bin/env bash
-exec /usr/local/bin/sgrep-bin --repo "$UPSTREAM" "\$@"
+exec /usr/local/bin/sgrep --repo "$UPSTREAM" "\$@"
 EOF
 chmod +x "$HOME/bin/sgrep"
 export PATH="$HOME/bin:$PATH"
@@ -54,8 +51,8 @@ Once you have located the answer:
    git checkout -b $branch && git add -A && git commit -m \"glm-bench: note where the answer lives\" && git push -u origin $branch
 Work autonomously and concisely. End by printing one line: ANSWER: <file:line — short summary>."
   ( cd "$dir" && timeout 1200 claude --model sonnet "${ALLOW[@]}" \
-        --output-format stream-json --verbose -p "$prompt" ) \
-        > "$OUT/${pfx}.transcript.jsonl" 2> "$OUT/${pfx}.claude.err"
+        --output-format stream-json --verbose -p "$prompt" 2> "$OUT/${pfx}.claude.err" \
+      | python3 -u /bench/ts_prepend.py ) > "$OUT/${pfx}.transcript.tsv"
 }
 dub(){ du -sb "$1" 2>/dev/null | cut -f1; }
 mib(){ python3 -c "print(round(${1:-0}/1048576,1))"; }

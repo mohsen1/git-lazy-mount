@@ -7,5 +7,7 @@ cd "$(dirname "$0")"
 key="$1"; mkdir -p "out/$key"; chmod 777 "out/$key"
 docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
   --env-file .benchenv \
-  -v "$PWD/bench_repo.sh:/bench/bench_repo.sh:ro" -v "$PWD/out/$key:/out" \
+  -v "$PWD/bench_repo.sh:/bench/bench_repo.sh:ro" \
+  -v "$PWD/ts_prepend.py:/bench/ts_prepend.py:ro" \
+  -v "$PWD/out/$key:/out" \
   glm-bench bash /bench/bench_repo.sh "$@"

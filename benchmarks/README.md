@@ -13,54 +13,60 @@ Each repo is set up two ways and given the **same** real `claude` (Sonnet) promp
 The prompt asks the agent to find where some piece of code lives (the questions in
 the README), add a one-line clarifying comment at that site, and `git commit` +
 `git push` a branch — all of which, in the lazy case, run **through the mount**.
-The agent navigates to the answer surgically (targeted `ls` + reading only the
-files it needs), so it materializes a few MB rather than the whole tree. (For an
-explicit "search without reading every file" tool, see [`sgrep`](../crates/sgrep);
-it was not exercised in these runs.)
+Code search goes through [`sgrep`](../crates/sgrep), which queries a cloud index and
+reads **zero** local files, so the agent only materializes the file it edits.
 
 Run cold in a privileged Ubuntu 24.04 container with `/dev/fuse`, on the current
-upstream repos.
+upstream repos; the agent's commit is pushed to a fork.
 
 ## Results
 
-Disk to get a ready working copy (before the agent task):
+| repo | files | `git clone --depth 1` | `git lazy-mount` | file content fetched |
+|---|---|---|---|---|
+| facebook/react | 7,243 | 53 MB | 19 MB → 36 MB | 3 MB |
+| microsoft/vscode | 16,018 | 278 MB | 98 MB → 159 MB | 1 MB |
+| microsoft/TypeScript | 81,369 | 429 MB | 28 MB → 87 MB | 10 MB |
 
-| repo | files | `git clone --depth 1` | `git lazy-mount` |
-|---|---|---|---|
-| facebook/react | 7,243 | 53 MB | 19 MB |
-| microsoft/vscode | 16,018 | 278 MB | 99 MB |
-| microsoft/TypeScript | 35,946 | 429 MB | 28 MB |
+`git lazy-mount` is the on-disk workspace **right after mounting → after the agent
+finished**. It keeps the **full commit history** (the clone is shallow) yet starts
+smaller than even a shallow clone. Of the lazy footprint, only **1–10 MB** is actual
+file *content* (sgrep answers the search; the agent reads just the one file it
+edits) — the rest is the `tree:0` commit history, plus the trees Git faults while
+building and pushing the commit (the mount→after-task growth). A normal full
+`git clone` would be **1.08 / 1.63 / 3.4 GB** — what lazy-mount avoids while keeping
+that history.
 
-`git lazy-mount` keeps the **full commit history** (the clone is shallow) and is
-ready in a few seconds. The agent task then materializes only the files it touches
-— for react and TypeScript the lazy workspace grew to ~44 MB / ~49 MB after the
-agent edited a file and pushed a branch (git faults a few trees to build and send
-the commit).
+All six runs completed end to end, including the lazy runs on the 16k-file vscode
+and the 81k-file TypeScript trees — each agent searched, edited, committed, and
+**pushed** a branch through the mount.
 
-## A bug this surfaced (now fixed)
+### Setup vs task time
 
-The first vscode lazy run **wedged** in `git status`: vscode's `.gitattributes` has
-a few `eol=crlf` lines, and the FSMonitor seed was *all-or-nothing*, so all 16k
-files went unseeded and the first `git status` size-faulted every blob. Fixed by
-seeding **per-path** (carve out only the genuinely-converted files) —
-[#60](https://github.com/mohsen1/git-lazy-mount/pull/60). With that fix vscode lazy
-`git status` completes instead of hanging.
+Mounting is near-instant; the per-task time on the mount is higher than on a local
+checkout, because Git faults trees on demand as it walks/commits:
+
+| repo | clone | mount | full-clone task | lazy-mount task |
+|---|---|---|---|---|
+| react | 58 s | 8 s | 57 s | 187 s |
+| vscode | 168 s | 7 s | 189 s | 301 s |
+| TypeScript | 170 s | 4 s | 559 s | 913 s |
 
 ## Transcripts
 
-Full `claude` session transcripts (every tool call and result):
+Full `claude` session transcripts (every tool call + result, with `[+Ns]` time
+offsets from the start):
 
 - [`transcripts/react-full.md`](transcripts/react-full.md) · [`react-lazy.md`](transcripts/react-lazy.md)
+- [`transcripts/vscode-full.md`](transcripts/vscode-full.md) · [`vscode-lazy.md`](transcripts/vscode-lazy.md)
 - [`transcripts/typescript-full.md`](transcripts/typescript-full.md) · [`typescript-lazy.md`](transcripts/typescript-lazy.md)
-- [`transcripts/vscode-full.md`](transcripts/vscode-full.md)
 
 ## Reproduce
 
 ```bash
 cd benchmarks
-docker build -t glm-bench .                 # ubuntu + rust + git-lazy-mount + claude (non-root)
+docker build -t glm-bench .                 # ubuntu + rust + git-lazy-mount + sgrep + claude (non-root)
 printf 'ANTHROPIC_API_KEY=...\nGH_TOKEN=...\n' > .benchenv && chmod 600 .benchenv
-./run.sh react  <clone-source>  <push-fork>  <upstream>  <branch>  '<prompt>'
+./run.sh react  facebook/react  <your-fork>/react  facebook/react  main  'where does `useState` resolve its initial state?'
 ```
 
 See [`bench_repo.sh`](bench_repo.sh) for the per-repo driver and [`run.sh`](run.sh)
