@@ -17,7 +17,7 @@ use fuser::{
 use glm_core::{Error, ErrorCode, Result};
 use glm_worktree::{Attr, ContentHandle, Kind, Projection};
 
-use crate::pool::Pool;
+use glm_fs_common::Pool;
 
 /// Attribute/entry cache lifetime handed to the kernel.
 const TTL: Duration = Duration::from_secs(1);
@@ -153,7 +153,14 @@ impl Filesystem for TransparentFs {
         let name = name.as_bytes().to_vec();
         let (uid, gid) = (req.uid(), req.gid());
         self.pool.spawn(move || match proj.lookup(parent, &name) {
-            Ok(Some(a)) => reply.entry(&TTL, &fuse_attr(&a, uid, gid), a.generation),
+            Ok(Some(a)) => {
+                reply.entry(&TTL, &fuse_attr(&a, uid, gid), a.generation);
+                // A cold-dentry stat-walk faults sizes via lookup; warm the
+                // siblings so git's serial walk hits the size cache.
+                if matches!(a.kind, Kind::File { .. } | Kind::Symlink) {
+                    proj.prefetch_siblings(a.ino);
+                }
+            }
             Ok(None) => reply.error(libc::ENOENT),
             Err(e) => reply.error(errno(&e)),
         });
@@ -168,7 +175,12 @@ impl Filesystem for TransparentFs {
         let handles = Arc::clone(&self.handles);
         let (uid, gid) = (req.uid(), req.gid());
         self.pool.spawn(move || match proj.getattr(ino) {
-            Ok(a) => reply.attr(&TTL, &fuse_attr(&a, uid, gid)),
+            Ok(a) => {
+                reply.attr(&TTL, &fuse_attr(&a, uid, gid));
+                if matches!(a.kind, Kind::File { .. } | Kind::Symlink) {
+                    proj.prefetch_siblings(ino);
+                }
+            }
             Err(e) => {
                 // Deleted-but-open fallback: if the path is gone but an
                 // fd is still open on this inode, serve a regular-file attr sized
