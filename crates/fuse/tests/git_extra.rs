@@ -83,10 +83,12 @@ impl Mounted {
             &CloneOptions::default(),
         )
         .unwrap();
+        // Fault the HEAD trees into the gitdir (the default `tree:0` clone fetches
+        // none) before projecting, exactly as the real mount flow does.
+        repo.build_index().unwrap();
         let proj = Arc::new(
             Projection::open(repo, tmp.path().join("cache"), tmp.path().join("overlay")).unwrap(),
         );
-        proj.repo().build_index().unwrap();
         let mount = spawn_mount(Arc::clone(&proj), &mnt).unwrap();
         assert!(wait_until(|| mnt.join(".git").exists()), "mount not ready");
         git(&mnt, &["config", "user.email", "t@example.com"]);
