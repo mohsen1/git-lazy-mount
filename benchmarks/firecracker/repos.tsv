@@ -1,0 +1,20 @@
+react	facebook/react	where does `useState` resolve its initial state?
+vscode	microsoft/vscode	where is the toggle-word-wrap command registered?
+typescript	microsoft/TypeScript	what does `createTypeChecker` return?
+go	golang/go	where is the `append` builtin implemented in the compiler?
+rust	rust-lang/rust	where is the borrow checker entry point `do_mir_borrowck`?
+cpython	python/cpython	where is the dict object's subscript (`__getitem__`) implemented?
+node	nodejs/node	where is `process.nextTick` implemented?
+kubernetes	kubernetes/kubernetes	where is the `kubectl apply` command defined?
+deno	denoland/deno	where is the `Deno.readFile` op registered?
+svelte	sveltejs/svelte	where does the compiler handle `{#each}` blocks?
+vue	vuejs/core	where is the `ref()` reactivity primitive defined?
+angular	angular/angular	where is the `NgIf` directive implemented?
+godot	godotengine/godot	where is the `Node._ready` lifecycle invoked?
+flutter	flutter/flutter	where is the `setState` method defined?
+swift	apple/swift	where is `String.append` implemented in the standard library?
+llvm	llvm/llvm-project	where is the InstCombine pass entry point?
+tensorflow	tensorflow/tensorflow	where is the `MatMul` op kernel registered?
+pytorch	pytorch/pytorch	where is `torch.cat` implemented?
+elasticsearch	elastic/elasticsearch	where is the `_search` REST action registered?
+redis	redis/redis	where is the `SET` command implemented?

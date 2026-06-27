@@ -48,7 +48,7 @@ few seconds, and materializes only the files the agent touches.
 
 Across **20 repositories** (from `facebook/react` to the 179k-file LLVM tree),
 checking out full history costs **23 GB of `git clone`** vs **1.3 GB of lazy
-mounts — 18× less** — and each mounts in 2–23 s:
+mounts — 18× less** — and each mounts in 1–22 s (measured in Firecracker microVMs):
 
 ![Disk to work on each repo: full git clone vs git lazy-mount](benchmarks/charts/disk.svg)
 

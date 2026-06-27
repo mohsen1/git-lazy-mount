@@ -21,49 +21,50 @@ upstream repos; the agent's commit is pushed to a fork.
 
 ## Across 20 repositories
 
-`git lazy-mount` against 20 well-known repositories (703–179,000 files, across
-JS/TS, Go, Rust, C/C++, Python, Dart, Java): time and disk to get a working copy,
-then the same `sgrep`-driven "find where the code lives and add a comment" agent
-task on the mount.
+`git lazy-mount` vs `git clone` for 20 well-known repositories (703–179,000 files,
+across JS/TS, Go, Rust, C/C++, Python, Dart, Java) — each measured cold in **its own
+Firecracker microVM** (KVM, `/dev/fuse`), comparing the disk and time to get a
+working copy.
 
 ![Disk: full git clone vs git lazy-mount, per repo](charts/disk.svg)
 
 ![Time to a ready working copy: shallow clone vs lazy-mount, per repo](charts/time.svg)
 
 Checking out all 20 with full history costs **23 GB via `git clone`** vs **1.3 GB
-of lazy mounts — 18× less** — and each mount is ready in **2–23 s**, even the
+of lazy mounts — 18× less** — and each mount is ready in **1–22 s**, even the
 179k-file LLVM tree (the working-tree walk is served from the in-process tree cache
 rather than re-read per directory, so it no longer scales with file count).
 
-| repo | files | full `git clone` | `git lazy-mount` | mount | agent task |
-|---|---:|---:|---:|---:|---:|
-| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,153 | 4,160 MB | **283 MB** | 23 s | 228 s |
-| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 2,891 MB | **22 MB** | 3 s | 674 s |
-| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 1,803 MB | **49 MB** | 6 s | 408 s |
-| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,314 | 1,635 MB | **111 MB** | 6 s | 297 s |
-| [nodejs/node](https://github.com/nodejs/node) | 49,407 | 1,468 MB | **79 MB** | 9 s | 273 s |
-| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 1,449 MB | **73 MB** | 14 s | 118 s |
-| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 1,414 MB | **66 MB** | 8 s | 452 s |
-| [apple/swift](https://github.com/apple/swift) | 31,564 | 1,321 MB | **101 MB** | 6 s | 118 s |
-| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,489 | 1,308 MB | **70 MB** | 5 s | 718 s |
-| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,031 | 1,273 MB | **93 MB** | 8 s | 79 s |
-| [facebook/react](https://github.com/facebook/react) | 7,243 | 977 MB | **18 MB** | 3 s | 82 s |
-| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,549 | 906 MB | **143 MB** | 17 s | 168 s |
-| [python/cpython](https://github.com/python/cpython) | 5,829 | 819 MB | **78 MB** | 7 s | 257 s |
-| [angular/angular](https://github.com/angular/angular) | 10,605 | 629 MB | **19 MB** | 3 s | 116 s |
-| [flutter/flutter](https://github.com/flutter/flutter) | 16,021 | 438 MB | **55 MB** | 6 s | 214 s |
-| [golang/go](https://github.com/golang/go) | 15,596 | 433 MB | **35 MB** | 6 s | 96 s |
-| [denoland/deno](https://github.com/denoland/deno) | 14,300 | 233 MB | **18 MB** | 4 s | 142 s |
-| [redis/redis](https://github.com/redis/redis) | 1,818 | 209 MB | **8 MB** | 3 s | 263 s |
-| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 118 MB | **8 MB** | 3 s | 96 s |
-| [vuejs/core](https://github.com/vuejs/core) | 703 | 42 MB | **4 MB** | 2 s | 62 s |
+| repo | files | full `git clone` | `git lazy-mount` | mount |
+|---|---:|---:|---:|---:|
+| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,153 | 4,160 MB | **283 MB** | 19 s |
+| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 2,891 MB | **22 MB** | 2 s |
+| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 1,803 MB | **49 MB** | 22 s |
+| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,314 | 1,635 MB | **111 MB** | 7 s |
+| [nodejs/node](https://github.com/nodejs/node) | 49,407 | 1,468 MB | **79 MB** | 6 s |
+| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 1,449 MB | **73 MB** | 12 s |
+| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 1,414 MB | **66 MB** | 6 s |
+| [apple/swift](https://github.com/apple/swift) | 31,564 | 1,321 MB | **101 MB** | 21 s |
+| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,489 | 1,308 MB | **70 MB** | 5 s |
+| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,031 | 1,273 MB | **93 MB** | 6 s |
+| [facebook/react](https://github.com/facebook/react) | 7,243 | 977 MB | **18 MB** | 2 s |
+| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,549 | 906 MB | **143 MB** | 12 s |
+| [python/cpython](https://github.com/python/cpython) | 5,829 | 819 MB | **78 MB** | 5 s |
+| [angular/angular](https://github.com/angular/angular) | 10,605 | 629 MB | **19 MB** | 6 s |
+| [flutter/flutter](https://github.com/flutter/flutter) | 16,021 | 438 MB | **55 MB** | 5 s |
+| [golang/go](https://github.com/golang/go) | 15,596 | 433 MB | **35 MB** | 3 s |
+| [denoland/deno](https://github.com/denoland/deno) | 14,300 | 233 MB | **18 MB** | 6 s |
+| [redis/redis](https://github.com/redis/redis) | 1,818 | 209 MB | **8 MB** | 22 s |
+| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 118 MB | **8 MB** | 9 s |
+| [vuejs/core](https://github.com/vuejs/core) | 703 | 42 MB | **4 MB** | 1 s |
 
 `git clone` is the **full** clone download (the repo's reported size — the
 apples-to-apples baseline, since lazy-mount keeps full history too); `git
 lazy-mount` is the on-disk workspace right after mounting. The time chart compares
 against `git clone --depth 1` (the *fastest* clone, which drops history); a full
-clone takes far longer. Each run: cold, in a privileged Ubuntu container with
-`/dev/fuse`, on the current upstream repo.
+clone takes far longer. Each repo runs cold in a fresh Firecracker microVM on a KVM
+host (the harness is in [`firecracker/`](firecracker/)); the 3-repo deep dive below
+adds the full `sgrep`-driven agent task.
 
 ## Results (deep dive — 3 repos)
 
