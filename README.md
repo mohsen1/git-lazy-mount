@@ -33,27 +33,15 @@ More in [`crates/sgrep`](crates/sgrep).
 
 ## Performance in real world
 
-Disk to set up one working copy of each repo (then run a real `claude` prompt
-against it): a shallow `git clone --depth 1` vs `git lazy-mount`. Transcripts and
-harness in [`benchmarks/`](benchmarks/).
-
-| prompt | `git clone --depth 1` | `git lazy-mount` |
-|---|---|---|
-| "where does `useState` resolve its initial state?" `facebook/react` | 53 MB | 19 MB |
-| "where is the toggle-word-wrap command registered?" `microsoft/vscode` | 278 MB | 99 MB |
-| "what does `createTypeChecker` return?" `microsoft/TypeScript` | 429 MB | 28 MB |
-
-`git lazy-mount` keeps the **full history** (the clone is shallow), is ready in a
-few seconds, and materializes only the files the agent touches.
-
-Across **20 repositories** (from `facebook/react` to the 179k-file LLVM tree),
-checking out full history costs **23 GB of `git clone`** vs **1.3 GB of lazy
-mounts — 18× less** — and each mounts in 1–22 s (measured in Firecracker microVMs):
+Across **20 repositories** — `facebook/react` to the 179k-file LLVM tree — a full
+`git clone` totals **23 GB** vs **1.3 GB of lazy mounts (18× less)**, and each
+mounts in **1–22 s** (measured in Firecracker microVMs):
 
 ![Disk to work on each repo: full git clone vs git lazy-mount](benchmarks/charts/disk.svg)
 
-Full 20-repo data, the time chart, and transcripts are in
-[`benchmarks/`](benchmarks/#across-20-repositories).
+Lazy mounts keep **full history**, are ready in seconds, and materialize only the
+files you touch. Full data, the time chart, and agent transcripts:
+[`benchmarks/`](benchmarks/).
 
 
 ## Linux Only

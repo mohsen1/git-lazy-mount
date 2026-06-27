@@ -5,19 +5,16 @@ were measured, with full agent transcripts.
 
 ## What is measured
 
-Each repo is set up two ways and given the **same** real `claude` (Sonnet) prompt:
+Two benchmarks, run cold on the current upstream repos:
 
-1. a shallow `git clone --depth 1`, then the prompt;
-2. `git lazy-mount`, then the prompt.
-
-The prompt asks the agent to find where some piece of code lives (the questions in
-the README), add a one-line clarifying comment at that site, and `git commit` +
-`git push` a branch — all of which, in the lazy case, run **through the mount**.
-Code search goes through [`sgrep`](../crates/sgrep), which queries a cloud index and
-reads **zero** local files, so the agent only materializes the file it edits.
-
-Run cold in a privileged Ubuntu 24.04 container with `/dev/fuse`, on the current
-upstream repos; the agent's commit is pushed to a fork.
+- **[20 repositories](#across-20-repositories)** — disk and time to get a working
+  copy: a full `git clone` vs `git lazy-mount`, each in its own **Firecracker
+  microVM** (KVM, `/dev/fuse`).
+- **[3-repo deep dive](#results-deep-dive--3-repos)** — the full workflow in a
+  `/dev/fuse` container: a real `claude` (Sonnet) prompt finds where some code
+  lives, edits it, then **commits + pushes through the mount**. Code search goes
+  through [`sgrep`](../crates/sgrep) (a cloud index, **zero** local reads), so the
+  agent materializes only the file it edits.
 
 ## Across 20 repositories
 
@@ -79,9 +76,9 @@ finished**. It keeps the **full commit history** (the clone is shallow) yet star
 smaller than even a shallow clone. Of the lazy footprint, only **1–9 MB** is actual
 file *content* (sgrep answers the search; the agent reads just the one file it
 edits) — the rest is the `tree:0` commit history, plus the trees Git faults while
-building and pushing the commit (the mount→after-task growth). A normal full
-`git clone` would be **1.08 / 1.63 / 3.4 GB** — what lazy-mount avoids while keeping
-that history.
+building and pushing the commit (the mount→after-task growth). A full `git clone`
+with the same history is an order of magnitude larger (see the table above) — what
+lazy-mount avoids.
 
 All six runs completed end to end, including the lazy runs on the 16k-file vscode
 and the 81k-file TypeScript trees — each agent searched, edited, committed, and
