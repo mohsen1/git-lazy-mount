@@ -1,7 +1,9 @@
 //! `GitStore`: the authoritative adapter over the `git` binary.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use glm_core::{Error, ErrorCode, GitMode, ObjectFormat, ObjectId, Result, TreeObject};
 
@@ -48,11 +50,36 @@ pub struct CommitParams {
     pub sign: bool,
 }
 
-/// A bare Git object store. Cheap to clone (just paths + format).
-#[derive(Clone, Debug)]
+/// A bare Git object store. Cheap to clone (paths + format + a shared, refcounted
+/// tree reader).
+#[derive(Clone)]
 pub struct GitStore {
     git_dir: PathBuf,
     format: ObjectFormat,
+    /// Shared cache + persistent `cat-file` session for tree reads, so a metadata
+    /// walk reads each baseline tree from RAM (or one pipe round-trip) instead of
+    /// forking `git cat-file` per read. Shared across clones — the store is cloned
+    /// into every FUSE callback.
+    trees: Arc<TreeReader>,
+}
+
+impl std::fmt::Debug for GitStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitStore")
+            .field("git_dir", &self.git_dir)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Cache of parsed tree objects plus a long-lived `cat-file` session. A tree is
+/// immutable for a given oid, so the cache is keyed by oid and never invalidated.
+#[derive(Default)]
+struct TreeReader {
+    cache: Mutex<HashMap<ObjectId, Arc<TreeObject>>>,
+    /// Lazily spawned, respawned on death. `None` until first use or after a
+    /// session terminates (e.g. queried for a missing promisor object).
+    batch: Mutex<Option<BatchSession>>,
 }
 
 impl GitStore {
@@ -60,7 +87,11 @@ impl GitStore {
     pub fn open(git_dir: impl Into<PathBuf>) -> Result<GitStore> {
         let git_dir = git_dir.into();
         let format = detect_format(&git_dir)?;
-        Ok(GitStore { git_dir, format })
+        Ok(GitStore {
+            git_dir,
+            format,
+            trees: Arc::new(TreeReader::default()),
+        })
     }
 
     /// Initialize a new bare store. No physical checkout is created.
@@ -80,7 +111,11 @@ impl GitStore {
         cmd.arg(&git_dir);
         run_checked(cmd, None, "init --bare")?;
         let format = detect_format(&git_dir)?;
-        Ok(GitStore { git_dir, format })
+        Ok(GitStore {
+            git_dir,
+            format,
+            trees: Arc::new(TreeReader::default()),
+        })
     }
 
     /// The bare git directory.
@@ -91,6 +126,16 @@ impl GitStore {
     /// The repository's object format.
     pub fn format(&self) -> &ObjectFormat {
         &self.format
+    }
+
+    /// Number of trees currently memoized by [`read_tree`](Self::read_tree).
+    /// Observability for tests/metrics; the cache is keyed by (immutable) oid.
+    pub fn cached_tree_count(&self) -> usize {
+        self.trees
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Build a `git` command targeting this store with a non-interactive,
@@ -277,14 +322,81 @@ impl GitStore {
     }
 
     /// Read a tree object and parse it. Honors lazy-fetch policy.
+    ///
+    /// Trees are immutable by oid, so a parsed tree is cached and reused. A
+    /// cache miss is served from a persistent `cat-file` session (one pipe
+    /// round-trip, no fork) when the tree is locally present; otherwise it falls
+    /// back to a one-shot `cat-file` that can lazy-fetch a missing promisor tree
+    /// (when `allow_fetch`). This is what keeps a big-repo metadata walk from
+    /// spawning a process per directory read.
     pub fn read_tree(&self, oid: &ObjectId, allow_fetch: bool) -> Result<TreeObject> {
+        if let Some(t) = self
+            .trees
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(oid)
+        {
+            return Ok((**t).clone());
+        }
+        if let Some(parsed) = self.read_tree_batched(oid)? {
+            self.cache_tree(oid, &parsed);
+            return Ok(parsed);
+        }
+        // Not locally present (or no session): a one-shot read that can fetch.
         let mut cmd = self.git(!allow_fetch);
         cmd.args(["cat-file", "tree", &oid.to_hex()]);
         let r = run(cmd, None)?;
         if !r.status_ok {
             return Err(missing_or_offline(oid, allow_fetch, &r.stderr));
         }
-        tree_parse::parse_tree(oid.clone(), &r.stdout, &self.format)
+        let parsed = tree_parse::parse_tree(oid.clone(), &r.stdout, &self.format)?;
+        self.cache_tree(oid, &parsed);
+        Ok(parsed)
+    }
+
+    fn cache_tree(&self, oid: &ObjectId, tree: &TreeObject) {
+        self.trees
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(oid.clone(), Arc::new(tree.clone()));
+    }
+
+    /// Read a tree through the shared `cat-file` session (no fork). `Ok(None)`
+    /// means the object is not locally present (the caller falls back to a
+    /// fetch-capable read) or the session is unavailable. A session that dies is
+    /// cleared so the next call respawns it.
+    fn read_tree_batched(&self, oid: &ObjectId) -> Result<Option<TreeObject>> {
+        let mut guard = self
+            .trees
+            .batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if guard.as_ref().is_some_and(|s| !s.is_alive()) {
+            *guard = None;
+        }
+        if guard.is_none() {
+            match BatchSession::spawn(&self.git_dir, self.format.clone()) {
+                Ok(s) => *guard = Some(s),
+                Err(_) => return Ok(None), // no session — caller forks
+            }
+        }
+        let session = guard.as_mut().expect("session present");
+        match session.contents(oid) {
+            Ok(Some((info, bytes))) if info.kind == "tree" => Ok(Some(tree_parse::parse_tree(
+                oid.clone(),
+                &bytes,
+                &self.format,
+            )?)),
+            // Not a tree, or locally missing: let the one-shot path handle it
+            // (it produces the canonical error / does the lazy fetch).
+            Ok(_) => Ok(None),
+            Err(_) => {
+                *guard = None; // session terminated; respawn next time
+                Ok(None)
+            }
+        }
     }
 
     /// Read raw blob bytes (no working-tree filters). Honors lazy-fetch policy.

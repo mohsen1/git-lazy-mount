@@ -205,6 +205,12 @@ fn configure_fsmonitor(gitdir: &Path) -> bool {
     };
     set("core.fsmonitor", hook);
     set("core.fsmonitorHookVersion", "2");
+    // Enable the untracked cache (the `UNTR` index extension), gated behind the
+    // FSMonitor hook that supplies its invalidation: once the post-mount warm
+    // populates it, a repeat `git status`/`git add -A` skips the untracked-
+    // directory walk for every unchanged directory. The hook reports which paths
+    // changed, so a new untracked file still invalidates exactly its directory.
+    set("core.untrackedCache", "true");
     true
 }
 
@@ -267,6 +273,17 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
     if git_stdout(mountpoint, &["rev-parse", "--is-inside-work-tree"])? != "true" {
         return Err("health check failed: not inside work tree".into());
     }
+
+    // Warm git's untracked cache with a real `git status` over the LIVE mount.
+    // The cache cannot be seeded offline (git stamps each cached directory with
+    // its live stat_data and re-validates on read; a synthetic seed records
+    // stats that don't match the FUSE dirs, so git re-walks). The only thing that
+    // writes a trustworthy `UNTR` is a real walk over the mounted directories, so
+    // we trigger one — detached and niced so the first walk doesn't steal
+    // foreground CPU. Once it completes, with `core.untrackedCache=true` every
+    // later `git status` skips the walk. Best-effort: never fails the mount.
+    warm_untracked_cache(mountpoint);
+
     let branch = git_stdout(mountpoint, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
     println!(
         "Mounted {} at {} (branch {}). Plain `git` now works here.",
@@ -275,6 +292,45 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
         branch
     );
     Ok(())
+}
+
+/// Spawn a detached, low-priority `git status` on the live mount to warm git's
+/// untracked cache (see the call site for why it cannot be seeded offline).
+/// Prefers `nice -n 19`; falls back to normal priority if `nice` is unavailable.
+/// Detached (never waited on) and strictly best-effort — on a spawn error we log
+/// one line and return; the mount must never fail because of the warm.
+#[cfg(feature = "fuse")]
+fn warm_untracked_cache(mountpoint: &Path) {
+    use std::process::Stdio;
+    let mp = mountpoint.to_string_lossy().into_owned();
+    let git_args = [
+        "-C",
+        &mp,
+        "-c",
+        "core.untrackedCache=true",
+        "status",
+        "--porcelain",
+    ];
+    let mut nice = Command::new("nice");
+    nice.args(["-n", "19", "git"])
+        .args(git_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if nice.spawn().is_ok() {
+        return;
+    }
+    let spawned = Command::new("git")
+        .args(git_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(e) = spawned {
+        eprintln!(
+            "git-lazy-mount: untracked-cache warm not started ({e}); first `git status` untracked walk will be eager"
+        );
+    }
 }
 
 #[cfg(not(feature = "fuse"))]
