@@ -23,9 +23,9 @@ upstream repos; the agent's commit is pushed to a fork.
 
 | repo | files | `git clone --depth 1` | `git lazy-mount` | file content fetched |
 |---|---|---|---|---|
-| facebook/react | 7,243 | 53 MB | 19 MB → 36 MB | 3 MB |
-| microsoft/vscode | 16,018 | 278 MB | 98 MB → 158 MB | 1 MB |
-| microsoft/TypeScript | 81,369 | 429 MB | 28 MB → 87 MB | 9 MB |
+| facebook/react | 7,243 | 53 MB | 18 MB → 36 MB | 3 MB |
+| microsoft/vscode | 16,018 | 278 MB | 97 MB → 159 MB | 1 MB |
+| microsoft/TypeScript | 81,369 | 429 MB | 23 MB → 82 MB | 9 MB |
 
 `git lazy-mount` is the on-disk workspace **right after mounting → after the agent
 finished**. It keeps the **full commit history** (the clone is shallow) yet starts
@@ -44,19 +44,22 @@ and the 81k-file TypeScript trees — each agent searched, edited, committed, an
 
 Like `git lazy-mount`, a full `git clone` keeps the whole history — but it must
 download it all before the task can start, where the mount is ready in seconds.
-That head start outweighs the mount's slower per-file work, so **end to end** (set
-up, then run the prompt) the mount finishes first:
+That head start, plus a metadata path that serves git's working-tree walk from
+cache rather than re-reading the tree per directory, lets the mount finish first
+**end to end** (set up, then run the prompt):
 
 | repo | full `git clone` + task | `git lazy-mount` + task |
 |---|---|---|
-| react | 58 + 57 = **115 s** | 3 + 73 = **76 s** |
-| vscode | 168 + 189 = **357 s** | 7 + 246 = **253 s** |
-| TypeScript | 170 + 559 = **729 s** | 4 + 691 = **695 s** |
+| react | 58 + 57 = **115 s** | 4 + 76 = **80 s** |
+| vscode | 168 + 189 = **357 s** | 8 + 169 = **177 s** |
+| TypeScript | 170 + 559 = **729 s** | 3 + 645 = **648 s** |
 
-The task portion alone is higher on the mount — the working-tree walk crosses FUSE
-per file and Git faults any missing objects on demand, growing with the file count
-(TypeScript's 81k-file walk dominates) — but the instant mount more than offsets it,
-on top of the order-of-magnitude smaller disk.
+The task portion alone is still somewhat higher on the mount — file reads cross
+FUSE and Git faults the trees it needs to build and push the commit on demand — but
+the instant mount more than offsets it, on top of the order-of-magnitude smaller
+disk. The per-directory walk itself is cheap (the mount serves it from a tree
+cache), so the cost no longer scales with the file count the way a per-file walk
+would.
 
 ## Transcripts
 
