@@ -85,6 +85,99 @@ fn partial_clone_fetches_trees_but_not_blobs() {
     );
 }
 
+/// Resolve `HEAD`'s root tree oid for a freshly fetched store.
+fn root_tree(store: &GitStore) -> ObjectId {
+    let head = store
+        .resolve_ref("refs/remotes/origin/main")
+        .unwrap()
+        .expect("origin/main resolves");
+    store
+        .rev_parse(&format!("{}^{{tree}}", head.to_hex()))
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn read_tree_memoizes_and_serves_repeat_reads_from_cache() {
+    // A tree is immutable per oid, so read_tree parses it once and serves later
+    // reads of the same oid from the cache — this is what collapses the O(depth)
+    // re-reads of a directory walk (the root tree gets re-read thousands of times).
+    let remote = glm_testkit::seed_remote(&[
+        ("a.txt", b"A\n"),
+        ("src/lib.rs", b"fn x() {}\n"),
+        ("src/deep/mod.rs", b"// deep\n"),
+    ]);
+    let (_tmp, store) = lazy_store(&remote);
+    let root = root_tree(&store);
+
+    assert_eq!(store.cached_tree_count(), 0, "cache starts cold");
+    let first = store.read_tree(&root, false).unwrap();
+    assert_eq!(store.cached_tree_count(), 1, "root tree memoized");
+
+    // A repeat read of the same oid is a cache hit: identical, no new entry.
+    let again = store.read_tree(&root, false).unwrap();
+    assert_eq!(
+        first.entries, again.entries,
+        "cached read matches the first"
+    );
+    assert_eq!(
+        store.cached_tree_count(),
+        1,
+        "repeat read does not re-parse"
+    );
+
+    // A distinct subtree adds exactly one entry; re-reading it adds none.
+    let src = first.entry(b"src").unwrap().object_id.clone();
+    store.read_tree(&src, false).unwrap();
+    assert_eq!(store.cached_tree_count(), 2);
+    store.read_tree(&src, false).unwrap();
+    assert_eq!(store.cached_tree_count(), 2, "subtree re-read is cached");
+}
+
+#[test]
+fn cached_read_matches_a_cold_read() {
+    // The batched/cached path must produce exactly the same parse as a brand-new
+    // store reading the same tree cold (its own empty cache) — no divergence
+    // between the `cat-file --batch` body and a one-shot `cat-file tree`.
+    let remote = glm_testkit::seed_remote(&[("a.txt", b"A\n"), ("b/c.txt", b"C\n")]);
+    let (_tmp, warm) = lazy_store(&remote);
+    let root = root_tree(&warm);
+
+    let via_cache = warm.read_tree(&root, false).unwrap(); // batch + memoize
+    let cold = GitStore::open(warm.git_dir()).unwrap(); // fresh, empty cache
+    let fresh = cold.read_tree(&root, false).unwrap();
+    assert_eq!(via_cache.entries, fresh.entries);
+}
+
+#[test]
+fn read_tree_on_a_non_tree_errors_and_caches_nothing() {
+    // A blob oid is not a tree: the session sees `kind=blob` and we fall back to
+    // the one-shot read, which rejects it. The failed read must not poison the
+    // cache.
+    let remote = glm_testkit::seed_remote(&[("a.txt", b"hello\n")]);
+    let (_tmp, store) = lazy_store(&remote);
+    let root = root_tree(&store);
+    let blob = store
+        .read_tree(&root, false)
+        .unwrap()
+        .entry(b"a.txt")
+        .unwrap()
+        .object_id
+        .clone();
+    store.fetch_objects(std::slice::from_ref(&blob)).unwrap(); // make it locally present
+
+    let before = store.cached_tree_count();
+    assert!(
+        store.read_tree(&blob, false).is_err(),
+        "a blob oid is not a tree"
+    );
+    assert_eq!(
+        store.cached_tree_count(),
+        before,
+        "a failed read caches nothing"
+    );
+}
+
 #[test]
 fn write_tree_commit_and_cas_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();

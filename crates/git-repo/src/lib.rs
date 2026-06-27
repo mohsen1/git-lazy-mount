@@ -112,6 +112,13 @@ impl AdminRepo {
         let store = GitStore::open(&gitdir)?;
         store.set_config("core.worktree", &worktree.to_string_lossy())?;
         store.set_config("core.bare", "false")?;
+        // Index-format settings for a large working tree (set before `build_index`
+        // so the index it writes already uses them): the compact v4 path-prefix
+        // encoding and `skipHash` (omit the trailing index checksum) shrink the
+        // index and speed every later rewrite — the bulk of `git add -A`'s cost
+        // once the directory walk is cheap.
+        store.set_config("index.version", "4")?;
+        store.set_config("index.skipHash", "true")?;
         // A `file://` promisor needs this for *lazy* fetches too (not just the
         // initial clone) — otherwise a later blob fault is refused.
         if is_local_url(url) {
