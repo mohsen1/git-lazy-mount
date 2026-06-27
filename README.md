@@ -46,6 +46,15 @@ harness in [`benchmarks/`](benchmarks/).
 `git lazy-mount` keeps the **full history** (the clone is shallow), is ready in a
 few seconds, and materializes only the files the agent touches.
 
+Across **20 repositories** (from `facebook/react` to the 179k-file LLVM tree),
+checking out full history costs **23 GB of `git clone`** vs **1.3 GB of lazy
+mounts — 18× less** — and each mounts in 2–23 s:
+
+![Disk to work on each repo: full git clone vs git lazy-mount](benchmarks/charts/disk.svg)
+
+Full 20-repo data, the time chart, and transcripts are in
+[`benchmarks/`](benchmarks/#across-20-repositories).
+
 
 ## Linux Only
 
