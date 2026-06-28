@@ -23,6 +23,12 @@ use glm_git_store::GitStore;
 /// throttled promisor fetch cannot stall the mount. On timeout the seed is skipped
 /// and the first status falls back to the eager scan.
 const SEED_ATTR_READ_TIMEOUT_SECS: u64 = 20;
+/// Parallel workers used to warm tracked `.gitattributes` blobs before the seed
+/// reads them. Under a `tree:0` clone each blob is a separate promisor round-trip,
+/// so a repo with many `.gitattributes` (e.g. kubernetes' 15) serializes into
+/// seconds on the mount-return path; faulting them concurrently collapses that to
+/// roughly a single round-trip.
+const SEED_ATTR_PREFETCH_WORKERS: usize = 8;
 
 /// Options for the transparent clone.
 #[derive(Debug, Clone)]
@@ -228,6 +234,34 @@ impl AdminRepo {
             .collect())
     }
 
+    /// Fault every tracked `.gitattributes` blob concurrently (best-effort). The
+    /// FSMonitor seed reads these serially; under a `tree:0` clone each read is a
+    /// promisor round-trip, which on a repo with many `.gitattributes` (kubernetes:
+    /// 15 files, ~10s serial) is the dominant mount-return cost. Warming them in
+    /// parallel collapses that to roughly one round-trip. Errors are ignored — the
+    /// serial reads that follow surface any genuine failure.
+    fn prefetch_attr_blobs(&self, all: &[Vec<u8>]) {
+        let attrs: Vec<&[u8]> = all
+            .iter()
+            .filter(|p| p.rsplit(|&b| b == b'/').next() == Some(b".gitattributes".as_slice()))
+            .map(|p| p.as_slice())
+            .collect();
+        if attrs.len() < 2 {
+            return;
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let workers = attrs.len().min(SEED_ATTR_PREFETCH_WORKERS);
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&p) = attrs.get(i) else { break };
+                    let _ = self.read_index_blob(p);
+                });
+            }
+        });
+    }
+
     /// Seed the FSMonitor index extension so the **first** `git status`/`git diff`
     /// faults zero blobs.
     ///
@@ -248,6 +282,12 @@ impl AdminRepo {
         if all.is_empty() {
             return Ok(());
         }
+        // The seed then reads every tracked `.gitattributes` blob serially (in
+        // `declares_conversion_attributes`, then `conversion_paths`). Under a
+        // `tree:0` clone each is a promisor round-trip, so on a repo with many of
+        // them that serial chain dominates the mount-return path. Warm them all
+        // concurrently first so the reads below hit local objects.
+        self.prefetch_attr_blobs(&all);
         // A checkout conversion (clean/smudge `filter`, `ident`,
         // `working-tree-encoding`, or CRLF `eol`) makes a file's working-tree bytes
         // differ from its stored blob, so seeding it valid could hide a real diff.
