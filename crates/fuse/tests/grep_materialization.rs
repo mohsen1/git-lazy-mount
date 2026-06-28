@@ -3,9 +3,12 @@
 //! materialize every file?
 //!
 //! Each scenario gets its OWN fresh mount (so blob-fault counts don't carry
-//! over via the cache) and we read the projection's `hydrations()` blob-fault
-//! counter around an external command run over the real `/dev/fuse` mount. Tools
-//! that aren't installed (e.g. `rg` in a minimal CI image) are skipped.
+//! over via the cache) and we read the projection's blob-materialization
+//! counters around an external command run over the real `/dev/fuse` mount:
+//! `hydrations()` (on-demand faults) and `hydrate_warms()` (the read-ahead
+//! hydrator's speculative warms). A content search materializes ~every file in
+//! their SUM — the read-ahead just shifts most faults off the on-demand counter.
+//! Tools that aren't installed (e.g. `rg` in a minimal CI image) are skipped.
 //!
 //! Run with: `cargo test -p glm-fuse --features fuse --test grep_materialization -- --nocapture`
 #![cfg(feature = "fuse")]
@@ -52,7 +55,7 @@ fn du_kb(p: &Path) -> u64 {
 
 /// Mount a fresh lazy copy of the corpus, run `make_cmd(mnt)` over it, and return
 /// (blobs faulted, wall time, cache KiB). `None` if the command isn't installed.
-fn measure<F>(make_cmd: F) -> Option<(u64, Duration, u64)>
+fn measure<F>(make_cmd: F) -> Option<(u64, u64, Duration, u64)>
 where
     F: FnOnce(&Path) -> Command,
 {
@@ -95,21 +98,30 @@ where
         .output();
 
     let h0 = proj.hydrations();
+    let w0 = proj.hydrate_warms();
     let t = Instant::now();
     let ran = make_cmd(&mnt).output();
     let dt = t.elapsed();
-    let faults = proj.hydrations() - h0;
+    // On-demand faults (`hydrations`) vs. total content materialized (on-demand +
+    // the read-ahead hydrator's speculative warms). A content search defeats
+    // laziness in TOTAL even though the read-ahead shifts most faults off the
+    // on-demand counter (its opens hit the pre-warmed cache).
+    let ondemand = proj.hydrations() - h0;
+    let total = ondemand + (proj.hydrate_warms() - w0);
     let kb = du_kb(&cache);
     mount.unmount();
     let _ = remote;
-    ran.ok().map(|_| (faults, dt, kb))
+    ran.ok().map(|_| (ondemand, total, dt, kb))
 }
 
-fn report(label: &str, m: Option<(u64, Duration, u64)>) -> Option<u64> {
+fn report(label: &str, m: Option<(u64, u64, Duration, u64)>) -> Option<(u64, u64)> {
     match m {
-        Some((f, t, kb)) => {
-            eprintln!("{label:<28} {f:>5} blobs faulted, {t:?}, {kb} KiB cached");
-            Some(f)
+        Some((ondemand, total, t, kb)) => {
+            eprintln!(
+                "{label:<28} {ondemand:>5} on-demand + {:>5} read-ahead = {total:>5} total, {t:?}, {kb} KiB cached",
+                total - ondemand
+            );
+            Some((ondemand, total))
         }
         None => {
             eprintln!("{label:<28} (command not installed — skipped)");
@@ -170,16 +182,26 @@ fn grep_over_lazy_mount_materializes_every_file() {
     eprintln!("=== END (repo has {N} files) ===\n");
 
     // Controls (find/cat are always present).
-    if let Some(f) = find {
-        assert_eq!(f, 0, "readdir must fault zero blobs");
+    if let Some((_, total)) = find {
+        assert_eq!(total, 0, "readdir (no open) must materialize zero blobs");
     }
-    if let Some(f) = cat {
-        assert_eq!(f, 1, "reading one file must fault exactly one blob");
+    if let Some((ondemand, _)) = cat {
+        // Exactly one file is read on demand. (The read-ahead hydrator may warm
+        // that file's source siblings off the on-demand counter — see `total`.)
+        assert_eq!(
+            ondemand, 1,
+            "reading one file must fault exactly one blob on demand"
+        );
     }
 
     // At least one content-search tool runs; every one that does must
-    // materialize ~the whole repo.
-    let content: Vec<u64> = [rg, git_grep, grep_r].into_iter().flatten().collect();
+    // materialize ~the whole repo in TOTAL (on-demand faults + read-ahead warms),
+    // since a content search reads every file regardless of who fetched it.
+    let content: Vec<u64> = [rg, git_grep, grep_r]
+        .into_iter()
+        .flatten()
+        .map(|(_, total)| total)
+        .collect();
     assert!(
         !content.is_empty(),
         "no content-search tool available to measure"

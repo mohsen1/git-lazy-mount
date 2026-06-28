@@ -56,6 +56,23 @@ const PREFETCH_DIR_CAP: usize = 512;
 /// keeping a big-repo mount far smaller than a clone.
 const PREFETCH_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
+/// Workers for the read-ahead content hydrator (see `readahead_on_open`). A
+/// dedicated pool, separate from the size-fault `prefetch_pool`, so speculative
+/// content fetches never starve the cheap `cat-file -s` size-faults that keep
+/// `git status` responsive. Matches ArtifactFS's `--hydration-concurrency`
+/// default of 4.
+const HYDRATE_THREADS: usize = 4;
+/// Cap on source siblings whose *content* is warmed per directory.
+const HYDRATE_DIR_CAP: usize = 256;
+/// Total bytes the read-ahead hydrator may fault over a mount's life. Content is
+/// far larger than the size headers `PREFETCH_BYTE_BUDGET` caps, so this is
+/// bigger; past it, reads fall back to git's own serial faults — laziness is
+/// preserved (a recursive build cannot materialize the whole repo this way).
+const HYDRATE_BYTE_BUDGET: u64 = 256 * 1024 * 1024;
+/// Skip warming a blob whose already-known size exceeds this. Read-ahead targets
+/// quick-to-read source/manifests, not large generated or binary files.
+const HYDRATE_LARGE_BLOB: u64 = 4 * 1024 * 1024;
+
 /// The reserved name of the synthetic gitfile at the projection root.
 pub const GITFILE_NAME: &[u8] = b".git";
 
@@ -179,6 +196,18 @@ pub struct Projection {
     /// Total bytes faulted by the speculative prefetch so far, capped at
     /// `PREFETCH_BYTE_BUDGET` so a whole-tree walk cannot eagerly fetch the repo.
     prefetch_bytes: AtomicU64,
+    /// Dedicated pool for the read-ahead content hydrator (`readahead_on_open`),
+    /// kept apart from `prefetch_pool` so content warms never starve size-faults.
+    hydrate_pool: Pool,
+    /// Total bytes the read-ahead hydrator has faulted, capped at
+    /// `HYDRATE_BYTE_BUDGET`.
+    hydrate_bytes: AtomicU64,
+    /// Count of speculative content warms (read-ahead). Kept distinct from
+    /// `hydrations` (on-demand materializations only) so `ls`/stat-walk == 0
+    /// assertions stay valid: read-ahead increments only this counter.
+    hydrate_warms: AtomicU64,
+    /// Directories whose source siblings' content has been warmed (arm once).
+    hydrated_dirs: Mutex<HashSet<RepoPath>>,
     /// Optional FSMonitor change journal. When present, every worktree
     /// mutation is recorded **synchronously** (before the FUSE reply) so the
     /// `git-lazy-mount-fsmonitor` hook, reading the same durable log, always sees
@@ -272,6 +301,10 @@ impl Projection {
             dir_stat_counts: Mutex::new(HashMap::new()),
             prefetch_pool: Pool::new(PREFETCH_THREADS),
             prefetch_bytes: AtomicU64::new(0),
+            hydrate_pool: Pool::new(HYDRATE_THREADS),
+            hydrate_bytes: AtomicU64::new(0),
+            hydrate_warms: AtomicU64::new(0),
+            hydrated_dirs: Mutex::new(HashSet::new()),
             journal: None,
         })
     }
@@ -308,6 +341,13 @@ impl Projection {
     /// Number of content hydrations so far (cache-miss blob materializations).
     pub fn hydrations(&self) -> u64 {
         self.hydrations.load(Ordering::Relaxed)
+    }
+
+    /// Count of speculative content warms performed by the read-ahead hydrator.
+    /// Disjoint from [`hydrations`](Self::hydrations) (on-demand only); total
+    /// blob materializations are `hydrations() + hydrate_warms()`.
+    pub fn hydrate_warms(&self) -> u64 {
+        self.hydrate_warms.load(Ordering::Relaxed)
     }
 
     /// Release `n` kernel lookup references on `ino`.
@@ -604,6 +644,166 @@ impl Projection {
         }
     }
 
+    /// Read-ahead trigger: a real read-`open()` of a clean baseline file is strong
+    /// evidence the directory's source siblings are about to be read (grep, a
+    /// build, an editor indexing). Warm their content in parallel, ahead of those
+    /// reads, so each subsequent `open()` is a cache hit instead of a fresh serial
+    /// promisor fault. Wired *only* into `open` (never `getattr`/`lookup`/
+    /// `readdir`), so a stat-walk (`git status`/`add -A`) and a plain `ls` warm no
+    /// content. Arm-once per directory; bounded by `HYDRATE_BYTE_BUDGET`.
+    pub fn readahead_on_open(self: &Arc<Self>, ino: u64) {
+        let Ok(path) = self.path_of(ino) else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if self.hydrate_bytes.load(Ordering::Relaxed) >= HYDRATE_BYTE_BUDGET {
+            return; // speculative budget spent; reads fault inline from here
+        }
+        if !self
+            .hydrated_dirs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(parent.clone())
+        {
+            return; // already warmed this directory
+        }
+        // Weak capture: a warm job must never be the last owner of the Projection
+        // (that would drop it — and its hydrate pool — from a pool worker), and it
+        // lets queued work no-op promptly once the mount is torn down.
+        let weak = Arc::downgrade(self);
+        self.hydrate_pool.spawn(move || {
+            if let Some(me) = weak.upgrade() {
+                me.warm_dir_content_siblings(&parent);
+            }
+        });
+    }
+
+    /// Read `parent`'s baseline tree (already local — no fetch) and fan out a
+    /// bounded, prioritized, deduplicated parallel *content* warm for each source
+    /// sibling not already cached or shadowed by the overlay. Manifests first,
+    /// then source, then other; binaries and known-large blobs are skipped.
+    /// Best-effort: every job ignores its error, and a foreground read of any blob
+    /// not yet warmed still faults inline (coalescing via the per-oid lock).
+    fn warm_dir_content_siblings(self: &Arc<Self>, parent: &RepoPath) {
+        let tree = match self.resolve(parent) {
+            Ok(Some(Resolved::Dir {
+                baseline_tree: Some(t),
+            })) => t,
+            _ => return,
+        };
+        let Ok(obj) = self.repo.store().read_tree(&tree, false) else {
+            return;
+        };
+        // Gather eligible entries with a priority tier, then spawn in tier order
+        // (the pool is FIFO, so spawn order == drain order == priority).
+        let mut eligible: Vec<(u8, ObjectId, RepoPath)> = Vec::new();
+        for e in obj.entries {
+            match e.mode {
+                GitMode::Regular | GitMode::Executable | GitMode::Symlink => {}
+                _ => continue, // trees/gitlinks have no content to warm
+            }
+            let Some(tier) = Self::content_priority(&e.name) else {
+                continue; // binary/media/archive — skip
+            };
+            let Ok(child) = parent.join(&e.name) else {
+                continue;
+            };
+            if self.overlay.lookup(&child).is_some() {
+                continue; // an overlay entry decides this name
+            }
+            let oid = e.object_id.clone();
+            if self.cache_dir.join(oid.to_hex()).exists() {
+                continue; // already materialized
+            }
+            // Skip blobs already known to be large (size learned from a prior
+            // size-fault); read-ahead targets quick-to-read source.
+            if let Some(&sz) = self
+                .size_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&oid)
+            {
+                if sz > HYDRATE_LARGE_BLOB {
+                    continue;
+                }
+            }
+            eligible.push((tier, oid, child));
+        }
+        eligible.sort_by_key(|(tier, _, _)| *tier);
+        for (_, oid, child) in eligible.into_iter().take(HYDRATE_DIR_CAP) {
+            if self.hydrate_bytes.load(Ordering::Relaxed) >= HYDRATE_BYTE_BUDGET {
+                break;
+            }
+            let weak = Arc::downgrade(self);
+            self.hydrate_pool.spawn(move || {
+                let Some(me) = weak.upgrade() else { return };
+                // Re-check the budget at run time: the enqueue-time check lags the
+                // in-flight faults, so this caps overshoot to the concurrent batch.
+                if me.hydrate_bytes.load(Ordering::Relaxed) >= HYDRATE_BYTE_BUDGET {
+                    return;
+                }
+                // Re-check the overlay: the path may have been written while queued.
+                // Harmless if missed — the cache is oid-keyed, so warming a stale
+                // path is wasteful, never wrong (the read re-resolves to the overlay).
+                if me.overlay.lookup(&child).is_some() {
+                    return;
+                }
+                if let Ok(path) = me.materialize_path_speculative(&oid) {
+                    if let Ok(md) = std::fs::metadata(&path) {
+                        me.hydrate_bytes.fetch_add(md.len(), Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Classify a directory entry for read-ahead: `None` skips it (binary/media/
+    /// archive — large and unlikely to be code-read), else a tier used as spawn
+    /// order: 0 = manifests/lockfiles (warm first), 1 = source/text, 2 = other.
+    fn content_priority(name: &[u8]) -> Option<u8> {
+        let lower = name.to_ascii_lowercase();
+        let ends = |suf: &[u8]| lower.ends_with(suf);
+        const SKIP: &[&[u8]] = &[
+            b".png", b".jpg", b".jpeg", b".gif", b".webp", b".bmp", b".tiff", b".ico", b".pdf",
+            b".zip", b".tar", b".gz", b".bz2", b".xz", b".zst", b".7z", b".wasm", b".a", b".o",
+            b".so", b".dylib", b".dll", b".exe", b".bin", b".class", b".jar", b".mp3", b".mp4",
+            b".mov", b".wav", b".woff", b".woff2", b".ttf", b".otf", b".eot",
+        ];
+        if SKIP.iter().any(|s| ends(s)) {
+            return None;
+        }
+        const MANIFEST: &[&[u8]] = &[
+            b"cargo.toml",
+            b"cargo.lock",
+            b"package.json",
+            b"package-lock.json",
+            b"go.mod",
+            b"go.sum",
+            b"pyproject.toml",
+            b"requirements.txt",
+            b"makefile",
+            b"pom.xml",
+            b"build.gradle",
+            b"tsconfig.json",
+            b"setup.py",
+        ];
+        if MANIFEST.contains(&lower.as_slice()) || lower.starts_with(b"readme") || ends(b".lock") {
+            return Some(0);
+        }
+        const SOURCE: &[&[u8]] = &[
+            b".rs", b".go", b".ts", b".tsx", b".js", b".jsx", b".mjs", b".cjs", b".py", b".c",
+            b".h", b".cc", b".cpp", b".hpp", b".cxx", b".java", b".rb", b".sh", b".bash", b".toml",
+            b".yaml", b".yml", b".json", b".md", b".txt", b".proto", b".sql", b".css", b".scss",
+            b".html", b".kt", b".swift", b".scala", b".php", b".lua", b".ex", b".exs",
+        ];
+        if SOURCE.iter().any(|s| ends(s)) {
+            return Some(1);
+        }
+        Some(2)
+    }
+
     fn attr_of(&self, ino: u64, generation: u64, r: &Resolved) -> Result<Attr> {
         let (kind, size, mtime) = match r {
             Resolved::Dir { .. } => (Kind::Dir, 0, UNIX_EPOCH),
@@ -789,8 +989,22 @@ impl Projection {
     }
 
     /// Ensure the blob is present in the content-addressed cache and return its
-    /// path (used to seed a copy-up). The cache is keyed by oid.
+    /// path (used to seed a copy-up). The cache is keyed by oid. On-demand path:
+    /// counts toward [`hydrations`](Self::hydrations).
     fn materialize_path(&self, oid: &ObjectId) -> Result<PathBuf> {
+        self.materialize_path_inner(oid, &self.hydrations)
+    }
+
+    /// Same as [`materialize_path`](Self::materialize_path) but attributes the
+    /// fetch to the speculative read-ahead counter ([`hydrate_warms`]). Used by
+    /// the background hydrator so a warm never inflates the on-demand `hydrations`
+    /// signal that the budget/`ls`==0 tests assert on. Coalesces with a concurrent
+    /// on-demand `materialize_path` of the same oid via the shared per-oid lock.
+    fn materialize_path_speculative(&self, oid: &ObjectId) -> Result<PathBuf> {
+        self.materialize_path_inner(oid, &self.hydrate_warms)
+    }
+
+    fn materialize_path_inner(&self, oid: &ObjectId, counter: &AtomicU64) -> Result<PathBuf> {
         let final_path = self.cache_dir.join(oid.to_hex());
         if final_path.exists() {
             return Ok(final_path); // fast path: already published
@@ -809,7 +1023,7 @@ impl Projection {
         let tmp = self
             .cache_dir
             .join(format!(".{}.{}.tmp", oid.to_hex(), seq));
-        self.hydrations.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(1, Ordering::Relaxed);
         self.repo.store().blob_to_file(oid, true, &tmp)?;
         if let Err(e) = std::fs::rename(&tmp, &final_path) {
             let _ = std::fs::remove_file(&tmp);
@@ -1330,6 +1544,17 @@ mod tests {
         p.size_faults()
     }
 
+    // Like `await_faults` but for the read-ahead content hydrator's warm counter.
+    fn await_warms(p: &Projection, target: u64) -> u64 {
+        for _ in 0..500 {
+            if p.hydrate_warms() >= target {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        p.hydrate_warms()
+    }
+
     #[test]
     fn stat_walk_warms_siblings_without_hydrating() {
         // Stat-ing past the per-directory threshold arms a speculative prefetch
@@ -1404,6 +1629,155 @@ mod tests {
             "a single stay-below-threshold stat faults only itself"
         );
         assert_eq!(p.hydrations(), 0, "no content materialized");
+    }
+
+    #[test]
+    fn open_warms_source_siblings_content() {
+        // Read-opening one source file arms a read-ahead that materializes the
+        // CONTENT of the directory's source siblings in parallel, so a later open
+        // of any of them is a pure cache hit (no new on-demand hydration).
+        const N: usize = 12;
+        let files = dir_of(N);
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(s, c)| (s.as_str(), c.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"dir").unwrap().unwrap().ino;
+
+        // Read-open one file: f00 materializes on demand; the rest warm in the bg.
+        let ino = p.lookup(dir, b"f00.txt").unwrap().unwrap().ino;
+        p.open_content(ino).unwrap();
+        p.readahead_on_open(ino);
+
+        let warms = await_warms(&p, (N - 1) as u64);
+        assert_eq!(
+            warms,
+            (N - 1) as u64,
+            "read-ahead warmed every source sibling once"
+        );
+        assert_eq!(p.hydrations(), 1, "only the opened file faulted on demand");
+
+        // A later open of a warmed sibling is a cache hit — hydrations unchanged.
+        let before = p.hydrations();
+        let ino2 = p.lookup(dir, b"f07.txt").unwrap().unwrap().ino;
+        p.open_content(ino2).unwrap();
+        assert_eq!(p.hydrations(), before, "warmed sibling open is a cache hit");
+    }
+
+    #[test]
+    fn readahead_skips_binary_siblings() {
+        // The read-ahead warms source/text but skips known-binary extensions, so a
+        // directory of code beside a large asset never pulls the asset speculatively.
+        let files: Vec<(&str, &[u8])> = vec![
+            ("d/a.txt", b"alpha\n"),
+            ("d/b.txt", b"bravo\n"),
+            ("d/c.txt", b"charlie\n"),
+            ("d/logo.png", b"\x89PNG not really\n"),
+        ];
+        let (_t, _r, p) = projection_of(&files);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"d").unwrap().unwrap().ino;
+        let ino = p.lookup(dir, b"a.txt").unwrap().unwrap().ino;
+        p.open_content(ino).unwrap();
+        p.readahead_on_open(ino);
+
+        // Two text siblings (b, c) warm; the .png is skipped.
+        let warms = await_warms(&p, 2);
+        assert_eq!(warms, 2, "both text siblings warmed");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(p.hydrate_warms(), 2, "the binary sibling was not warmed");
+    }
+
+    #[test]
+    fn readahead_skips_overlay_shadowed_siblings() {
+        // A sibling written (copied up into the overlay) is decided by the overlay,
+        // so the read-ahead must not warm its now-stale baseline blob.
+        let files: Vec<(&str, &[u8])> = vec![
+            ("d/a.txt", b"alpha\n"),
+            ("d/b.txt", b"bravo\n"),
+            ("d/c.txt", b"charlie\n"),
+        ];
+        let (_t, _r, p) = projection_of(&files);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"d").unwrap().unwrap().ino;
+
+        // Copy b.txt up into the overlay (a write-open), then read-open a neighbor.
+        let bino = p.lookup(dir, b"b.txt").unwrap().unwrap().ino;
+        p.open_write(bino, false).unwrap();
+
+        let aino = p.lookup(dir, b"a.txt").unwrap().unwrap().ino;
+        p.open_content(aino).unwrap();
+        p.readahead_on_open(aino);
+
+        // Only c.txt warms (a is on-demand, b is overlay-shadowed).
+        let warms = await_warms(&p, 1);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(
+            warms, 1,
+            "only the non-shadowed sibling warmed; the overlay path was skipped"
+        );
+        assert_eq!(
+            p.hydrate_warms(),
+            1,
+            "no extra warm of the shadowed sibling"
+        );
+    }
+
+    #[test]
+    fn stat_walk_and_readdir_warm_no_content() {
+        // The read-ahead is wired only to open(); a stat-walk (getattr) and an ls
+        // (readdir) must warm ZERO content, preserving the laziness invariant.
+        const N: usize = 20;
+        let files = dir_of(N);
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(s, c)| (s.as_str(), c.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"dir").unwrap().unwrap().ino;
+
+        p.readdir(dir).unwrap(); // ls
+        for i in 0..N {
+            let name = format!("f{i:02}.txt");
+            let ino = p.lookup(dir, name.as_bytes()).unwrap().unwrap().ino;
+            p.getattr(ino).unwrap();
+            p.prefetch_siblings(ino); // size-prefetch (sizes only)
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(p.hydrate_warms(), 0, "stat-walk + ls warm zero content");
+    }
+
+    #[test]
+    fn readahead_arms_once_per_directory() {
+        // Opening a second file in an already-warmed directory does not re-fan-out.
+        const N: usize = 8;
+        let files = dir_of(N);
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(s, c)| (s.as_str(), c.as_slice()))
+            .collect();
+        let (_t, _r, p) = projection_of(&refs);
+        let p = Arc::new(p);
+        let dir = p.lookup(p.root_ino(), b"dir").unwrap().unwrap().ino;
+
+        let i0 = p.lookup(dir, b"f00.txt").unwrap().unwrap().ino;
+        p.open_content(i0).unwrap();
+        p.readahead_on_open(i0);
+        assert_eq!(await_warms(&p, (N - 1) as u64), (N - 1) as u64);
+
+        // A second open in the same dir is a cache hit and re-arming is a no-op.
+        let i1 = p.lookup(dir, b"f01.txt").unwrap().unwrap().ino;
+        p.open_content(i1).unwrap();
+        p.readahead_on_open(i1);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(
+            p.hydrate_warms(),
+            (N - 1) as u64,
+            "directory armed only once; no second fan-out"
+        );
     }
 
     #[test]

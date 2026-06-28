@@ -270,6 +270,12 @@ impl Filesystem for TransparentFs {
             };
             match h {
                 Ok(handle) => {
+                    // Read-ahead: a read-open is strong evidence the directory's
+                    // source siblings are about to be read; warm their content in
+                    // parallel. Only for reads — a write-open seeds a copy-up.
+                    if !writable {
+                        proj.readahead_on_open(ino);
+                    }
                     let fh = next_fh.fetch_add(1, Ordering::Relaxed);
                     handles.lock().unwrap().insert(fh, handle);
                     reply.opened(fh, 0);
