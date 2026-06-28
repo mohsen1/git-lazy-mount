@@ -316,24 +316,45 @@ impl Projection {
         self
     }
 
-    /// Record a worktree mutation in the journal (if attached): the path plus its
-    /// parent directory. Inclusive — an extra
-    /// path only costs git an `lstat`; a missing one would corrupt `status`.
+    /// Record a worktree mutation that **changes its parent directory's listing**
+    /// (create, unlink, rename, mkdir, rmdir, symlink): the path plus its parent.
+    /// The parent is recorded so git's FSMonitor + untracked cache re-examine that
+    /// directory's entries.
     ///
-    /// Propagates the journal write error. Every mutation handler calls this
-    /// **before** applying its mutation (after any validation/early-return), so a
-    /// journal failure fails the FUSE op rather than applying an un-journaled
-    /// (false-negative) mutation. Over-reporting is safe — if the record succeeds
-    /// but the mutation then fails, git just `lstat`s an unchanged path — so
-    /// record-before-mutate is correct.
+    /// For a pure content/mode modify of an existing entry — where the listing is
+    /// unchanged — use [`record_change_file`](Self::record_change_file) instead:
+    /// recording the parent there makes git's FSMonitor invalidate **every** sibling
+    /// under it, and on a lazy mount each invalidated sibling then size-faults its
+    /// blob. Measured: editing one file in a 580-entry directory cost 580 blob
+    /// faults (~187 s) in the next `git status`, vs ~1 fault when only the file is
+    /// recorded.
+    ///
+    /// Propagates the journal write error. Every mutation handler calls this (or
+    /// `record_change_file`) **before** applying its mutation (after any
+    /// validation/early-return), so a journal failure fails the FUSE op rather than
+    /// applying an un-journaled (false-negative) mutation. Over-reporting is safe —
+    /// if the record succeeds but the mutation then fails, git just `lstat`s an
+    /// unchanged path — so record-before-mutate is correct.
     fn record_change(&self, path: &RepoPath) -> Result<()> {
+        self.record_change_file(path)?;
         if let Some(j) = &self.journal {
-            j.record(path.as_bytes())?;
             if let Some(parent) = path.parent() {
                 if !parent.is_root() {
                     j.record(parent.as_bytes())?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Record a content/mode modify of an existing entry — the path **only**, not
+    /// its parent directory. The directory listing is unchanged, so the parent
+    /// never needs invalidating; recording it would turn a one-file edit into a
+    /// whole-directory stat-storm on a lazy mount (see [`record_change`]). Git still
+    /// re-stats the recorded path, so the modification always surfaces.
+    fn record_change_file(&self, path: &RepoPath) -> Result<()> {
+        if let Some(j) = &self.journal {
+            j.record(path.as_bytes())?;
         }
         Ok(())
     }
@@ -1108,7 +1129,7 @@ impl Projection {
     /// baseline fetch.
     pub fn open_write(&self, ino: u64, truncate: bool) -> Result<std::fs::File> {
         let path = self.path_of(ino)?;
-        self.record_change(&path)?; // write intent — inclusive
+        self.record_change_file(&path)?; // modify: dir listing unchanged
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             let f = self.overlay.open_content(&path)?;
             if truncate {
@@ -1152,7 +1173,7 @@ impl Projection {
             }
         };
         // Record before mutating (copy-up / set_len). Over-reporting is safe.
-        self.record_change(&path)?;
+        self.record_change_file(&path)?; // modify: dir listing unchanged
         let f = if let Some((oid, executable)) = baseline {
             let seed = if size == 0 {
                 None
@@ -1432,7 +1453,7 @@ impl Projection {
     /// Set/clear the executable bit (FUSE `setattr` mode), copying up if needed.
     pub fn set_executable(&self, ino: u64, exec: bool) -> Result<()> {
         let path = self.path_of(ino)?;
-        self.record_change(&path)?;
+        self.record_change_file(&path)?; // chmod: dir listing unchanged
         if matches!(self.overlay.lookup(&path), Some(OverlayEntry::File { .. })) {
             return self.overlay.set_executable(&path, exec);
         }
@@ -1777,6 +1798,48 @@ mod tests {
             p.hydrate_warms(),
             (N - 1) as u64,
             "directory armed only once; no second fan-out"
+        );
+    }
+
+    #[test]
+    fn modify_records_file_only_not_parent_dir() {
+        // A content/mode modify of an existing file journals the file but NOT its
+        // parent directory — recording the parent makes git's FSMonitor invalidate
+        // every sibling, a whole-directory stat-storm on a lazy mount (measured: one
+        // edit in a 580-entry dir cost 580 blob faults / ~187 s). A create, which
+        // changes the listing, still records the parent.
+        let (_t, _r, p) = projection_with_journal_of(&[("d/a.txt", b"A\n"), ("d/b.txt", b"B\n")]);
+        let p = Arc::new(p);
+        let j = p.journal.as_ref().unwrap();
+        let has =
+            |paths: &[Vec<u8>], s: &str| paths.iter().any(|x| String::from_utf8_lossy(x) == s);
+
+        // Modify d/a.txt (open for write — copy-up of an existing entry).
+        let prev = j.current_token().encode();
+        let dino = p.lookup(p.root_ino(), b"d").unwrap().unwrap().ino;
+        let aino = p.lookup(dino, b"a.txt").unwrap().unwrap().ino;
+        drop(p.open_write(aino, false).unwrap());
+        let paths = match j.query(&prev) {
+            journal::Query::Changes { paths, .. } => paths,
+            other => panic!("expected Changes, got {other:?}"),
+        };
+        assert!(has(&paths, "d/a.txt"), "the modified file is recorded");
+        assert!(
+            !has(&paths, "d"),
+            "the parent dir must NOT be recorded for a modify (avoids the sibling storm)"
+        );
+
+        // Creating a new file DOES record the parent (the listing changed).
+        let prev2 = j.current_token().encode();
+        p.create(dino, b"c.txt", false).unwrap();
+        let paths2 = match j.query(&prev2) {
+            journal::Query::Changes { paths, .. } => paths,
+            other => panic!("expected Changes, got {other:?}"),
+        };
+        assert!(has(&paths2, "d/c.txt"), "the new file is recorded");
+        assert!(
+            has(&paths2, "d"),
+            "the parent dir IS recorded for a create (listing changed)"
         );
     }
 
