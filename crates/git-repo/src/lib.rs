@@ -130,6 +130,17 @@ impl AdminRepo {
         if is_local_url(url) {
             store.set_config("protocol.file.allow", "always")?;
         }
+        // Disable auto gc / maintenance / commit-graph. They are background
+        // optimizations with no payoff on an ephemeral mount over an already-packed
+        // shared store, and on a `tree:0` promisor they are actively harmful: the
+        // commit-graph write that auto-maintenance runs after a commit walks every
+        // reachable commit's root tree (absent locally under `tree:0`) and triggers
+        // a promisor fetch of ~all-history root trees — ~44k objects, ~80 s, turning
+        // a one-file `git commit` into a minutes-long stall. Set in config (not via
+        // `-c`) so the fetch/maintenance children git forks internally inherit it.
+        store.set_config("maintenance.auto", "false")?;
+        store.set_config("gc.auto", "0")?;
+        store.set_config("fetch.writeCommitGraph", "false")?;
 
         // The anchor's own `.git` gitfile is discarded; the projection serves the
         // synthetic one. Do not depend on a temporary physical checkout.

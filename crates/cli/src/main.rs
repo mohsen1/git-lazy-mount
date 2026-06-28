@@ -274,15 +274,17 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
         return Err("health check failed: not inside work tree".into());
     }
 
-    // Warm git's untracked cache with a real `git status` over the LIVE mount.
-    // The cache cannot be seeded offline (git stamps each cached directory with
-    // its live stat_data and re-validates on read; a synthetic seed records
-    // stats that don't match the FUSE dirs, so git re-walks). The only thing that
-    // writes a trustworthy `UNTR` is a real walk over the mounted directories, so
-    // we trigger one — detached and niced so the first walk doesn't steal
-    // foreground CPU. Once it completes, with `core.untrackedCache=true` every
-    // later `git status` skips the walk. Best-effort: never fails the mount.
-    warm_untracked_cache(mountpoint);
+    // Establish git's untracked cache with a real `git status` over the LIVE mount,
+    // **synchronously before returning**. The cache cannot be seeded offline (git
+    // stamps each cached directory with its live stat_data and re-validates on read;
+    // a synthetic seed records stats that don't match the FUSE dirs, so git
+    // re-walks). The only thing that writes a trustworthy `UNTR` is a real walk over
+    // the mounted directories. Doing it before return — not detached — means the
+    // user's FIRST `git status`/`git commit` consumes a populated cache instead of
+    // paying the full untracked walk itself AND racing this walk for the index lock
+    // and the FUSE fault queue (that race amplified a one-file commit to ~120 s).
+    // Bounded by `ESTABLISH_TIMEOUT`; on overrun it is left to finish detached.
+    establish_untracked_cache(mountpoint);
 
     let branch = git_stdout(mountpoint, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
     println!(
@@ -294,42 +296,53 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
     Ok(())
 }
 
-/// Spawn a detached, low-priority `git status` on the live mount to warm git's
-/// untracked cache (see the call site for why it cannot be seeded offline).
-/// Prefers `nice -n 19`; falls back to normal priority if `nice` is unavailable.
-/// Detached (never waited on) and strictly best-effort — on a spawn error we log
-/// one line and return; the mount must never fail because of the warm.
+/// Wall-clock cap on the synchronous untracked-cache establish. On a normal repo
+/// the walk returns in seconds; past this we stop waiting and let it finish
+/// detached so a pathological repo can't stall the mount return indefinitely.
 #[cfg(feature = "fuse")]
-fn warm_untracked_cache(mountpoint: &Path) {
+const ESTABLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run a real `git status` over the live mount to establish git's untracked cache,
+/// **synchronously** (bounded by [`ESTABLISH_TIMEOUT`]) so the user's first
+/// `git status`/`git commit` consumes a populated `UNTR` instead of paying the
+/// walk and racing it (see the call site). Not niced and not detached: there is no
+/// foreground agent yet to protect, and the binding constraints are the index lock
+/// and the FUSE fault queue, not CPU. Strictly best-effort — a spawn/exit error
+/// only logs one line; the mount must never fail because of it.
+#[cfg(feature = "fuse")]
+fn establish_untracked_cache(mountpoint: &Path) {
     use std::process::Stdio;
     let mp = mountpoint.to_string_lossy().into_owned();
-    let git_args = [
-        "-C",
-        &mp,
-        "-c",
-        "core.untrackedCache=true",
-        "status",
-        "--porcelain",
-    ];
-    let mut nice = Command::new("nice");
-    nice.args(["-n", "19", "git"])
-        .args(git_args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if nice.spawn().is_ok() {
-        return;
-    }
-    let spawned = Command::new("git")
-        .args(git_args)
+    let mut child = match Command::new("git")
+        .args([
+            "-C",
+            &mp,
+            "-c",
+            "core.untrackedCache=true",
+            "status",
+            "--porcelain",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn();
-    if let Err(e) = spawned {
-        eprintln!(
-            "git-lazy-mount: untracked-cache warm not started ({e}); first `git status` untracked walk will be eager"
-        );
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "git-lazy-mount: untracked-cache establish not started ({e}); first `git status` walk will be eager"
+            );
+            return;
+        }
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return, // established before return
+            Ok(None) if start.elapsed() > ESTABLISH_TIMEOUT => return, // left detached
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return,
+        }
     }
 }
 
