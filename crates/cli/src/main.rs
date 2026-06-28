@@ -176,6 +176,11 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
         // zero blobs, not just later ones. Without this, the first status has no
         // extension to trust and stats (faults) every entry before writing it.
         seed_first_status(&gitdir, &repo);
+        if let Err(e) = install_commit_acceleration_hooks(&gitdir) {
+            eprintln!(
+                "git-lazy-mount: commit acceleration hooks skipped ({e}); first commit may be eager"
+            );
+        }
     }
     drop(repo);
 
@@ -212,6 +217,161 @@ fn configure_fsmonitor(gitdir: &Path) -> bool {
     // changed, so a new untracked file still invalidates exactly its directory.
     set("core.untrackedCache", "true");
     true
+}
+
+const GLM_HOOK_MARKER: &str = "# git-lazy-mount managed hook";
+
+const POST_INDEX_CHANGE_HOOK: &str = r#"#!/usr/bin/env bash
+# git-lazy-mount managed hook
+set -euo pipefail
+
+is_git_add=0
+if [ -r "/proc/$PPID/cmdline" ]; then
+  seen_git=0
+  skip_next=0
+  while IFS= read -r -d "" arg; do
+    base=${arg##*/}
+    if [ "$seen_git" = 0 ]; then
+      [ "$base" = "git" ] && seen_git=1
+      continue
+    fi
+    if [ "$skip_next" = 1 ]; then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+        skip_next=1
+        continue
+        ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*)
+        continue
+        ;;
+      --literal-pathspecs|--no-optional-locks|--no-pager|--paginate|--bare)
+        continue
+        ;;
+      --*)
+        continue
+        ;;
+      -*)
+        continue
+        ;;
+    esac
+    if [ "$arg" = "add" ]; then
+      is_git_add=1
+    fi
+    break
+  done < "/proc/$PPID/cmdline"
+else
+  cmd=$(ps -o args= -p "$PPID" 2>/dev/null || true)
+  seen_git=0
+  skip_next=0
+  for arg in $cmd; do
+    base=${arg##*/}
+    if [ "$seen_git" = 0 ]; then
+      [ "$base" = "git" ] && seen_git=1
+      continue
+    fi
+    if [ "$skip_next" = 1 ]; then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+        skip_next=1
+        continue
+        ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--config-env=*)
+        continue
+        ;;
+      --literal-pathspecs|--no-optional-locks|--no-pager|--paginate|--bare)
+        continue
+        ;;
+      --*)
+        continue
+        ;;
+      -*)
+        continue
+        ;;
+    esac
+    if [ "$arg" = "add" ]; then
+      is_git_add=1
+    fi
+    break
+  done
+fi
+
+[ "$is_git_add" = 1 ] || exit 0
+
+gitdir=$(git rev-parse --git-dir)
+guard="$gitdir/glm-skipworktree-hook.guard"
+active="$gitdir/glm-skipworktree-active"
+[ ! -e "$guard" ] || exit 0
+: > "$guard"
+trap 'rm -f "$guard"' EXIT
+
+git ls-files -z | git update-index --skip-worktree -z --stdin
+: > "$active"
+"#;
+
+const COMMIT_MSG_HOOK: &str = r#"#!/usr/bin/env bash
+# git-lazy-mount managed hook
+set -euo pipefail
+
+gitdir=$(git rev-parse --git-dir)
+guard="$gitdir/glm-skipworktree-hook.guard"
+active="$gitdir/glm-skipworktree-active"
+paths="$gitdir/glm-skipworktree-paths.z"
+[ -e "$active" ] || exit 0
+: > "$guard"
+trap 'rm -f "$guard" "$paths"' EXIT
+
+git ls-files -z > "$paths"
+git update-index --no-skip-worktree -z --stdin < "$paths"
+git update-index --fsmonitor-valid -z --stdin < "$paths"
+rm -f "$active"
+"#;
+
+const POST_COMMIT_HOOK: &str = COMMIT_MSG_HOOK;
+
+/// Install managed hooks that make the common `git add ... && git commit` path
+/// cheap on a `tree:0` partial clone. Git's commit implementation bulk-fetches
+/// missing promisor blobs unless index entries are `CE_SKIP_WORKTREE`; the
+/// post-index hook marks entries skipped immediately after `git add`, records an
+/// active sentinel, and the commit-msg hook clears the bits after Git has built
+/// the commit tree, then restores FSMonitor-valid bits so the next status stays
+/// lazy. The post-commit copy is a cleanup fallback for `git commit --no-verify`,
+/// which skips commit-msg.
+fn install_commit_acceleration_hooks(gitdir: &Path) -> R {
+    let hooks = gitdir.join("hooks");
+    std::fs::create_dir_all(&hooks).map_err(|e| format!("create hooks dir: {e}"))?;
+    write_managed_hook(&hooks.join("post-index-change"), POST_INDEX_CHANGE_HOOK)?;
+    write_managed_hook(&hooks.join("commit-msg"), COMMIT_MSG_HOOK)?;
+    write_managed_hook(&hooks.join("post-commit"), POST_COMMIT_HOOK)?;
+    Ok(())
+}
+
+fn write_managed_hook(path: &Path, content: &str) -> R {
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if !existing.contains(GLM_HOOK_MARKER) {
+            return Err(format!(
+                "{} already exists and is not managed",
+                path.display()
+            ));
+        }
+    }
+    std::fs::write(path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map_err(|e| format!("stat {}: {e}", path.display()))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Pre-seed the FSMonitor extension so the first `git status`/`git diff` faults
@@ -435,5 +595,53 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_commit_hooks_install_and_preserve_custom_hooks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gitdir = tmp.path().join("git");
+        install_commit_acceleration_hooks(&gitdir).unwrap();
+
+        let post_index = gitdir.join("hooks/post-index-change");
+        let commit_msg = gitdir.join("hooks/commit-msg");
+        let post_commit = gitdir.join("hooks/post-commit");
+        let post_index_text = std::fs::read_to_string(&post_index).unwrap();
+        let commit_msg_text = std::fs::read_to_string(&commit_msg).unwrap();
+        let post_commit_text = std::fs::read_to_string(&post_commit).unwrap();
+        assert!(post_index_text.contains(GLM_HOOK_MARKER));
+        assert!(commit_msg_text.contains("--fsmonitor-valid"));
+        assert!(post_commit_text.contains("--fsmonitor-valid"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&post_index).unwrap().permissions().mode() & 0o111,
+                0o111
+            );
+            assert_eq!(
+                std::fs::metadata(&commit_msg).unwrap().permissions().mode() & 0o111,
+                0o111
+            );
+            assert_eq!(
+                std::fs::metadata(&post_commit)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0o111
+            );
+        }
+
+        install_commit_acceleration_hooks(&gitdir).unwrap();
+        std::fs::write(&commit_msg, "#!/bin/sh\necho custom\n").unwrap();
+        let err = install_commit_acceleration_hooks(&gitdir).unwrap_err();
+        assert!(err.contains("already exists and is not managed"));
     }
 }

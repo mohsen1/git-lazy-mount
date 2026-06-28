@@ -25,7 +25,7 @@ fi
 # rootfs
 if [ ! -f rootfs.base.ext4 ]; then
   [ -d git-lazy-mount ] || git clone --depth 1 https://github.com/mohsen1/git-lazy-mount
-  sudo docker build -t glm-bench-fc git-lazy-mount/benchmarks >/dev/null 2>&1
+  sudo docker build -t glm-bench-fc -f git-lazy-mount/benchmarks/Dockerfile git-lazy-mount >/dev/null 2>&1
   cid=$(sudo docker create glm-bench-fc)
   truncate -s 40G rootfs.base.ext4; mkfs.ext4 -qF rootfs.base.ext4
   mkdir -p rootmnt; sudo mount -o loop rootfs.base.ext4 rootmnt

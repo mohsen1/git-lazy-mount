@@ -15,7 +15,9 @@ log(){ echo "[$(date +%H:%M:%S)] [$REPO_KEY] $*"; }
 git config --global user.name  "glm-bench"
 git config --global user.email "glm-bench@users.noreply.github.com"
 git config --global --add safe.directory '*'
-git config --global credential.helper "!f(){ echo username=x-access-token; echo password=${GH_TOKEN}; };f"
+if [ -n "${GH_TOKEN:-}" ]; then
+  git config --global credential.helper "!f(){ echo username=x-access-token; echo password=${GH_TOKEN}; };f"
+fi
 
 # sgrep -> query the UPSTREAM index; wrapper calls the real binary by ABSOLUTE path.
 mkdir -p "$HOME/bin"
@@ -39,6 +41,15 @@ ALLOW=(--allowedTools "Read" "Glob" "Edit" "Write" "Bash(git:*)" "Bash(sgrep:*)"
 run_agent(){ # dir branch transcript_prefix
   local dir="$1" branch="$2" pfx="$3"
   printf '%s\n' "$CLAUDE_MD" > "$dir/CLAUDE.md"
+  # Push only when a token (and so a fork) is configured; otherwise commit locally.
+  local commit_step
+  if [ -n "${GH_TOKEN:-}" ]; then
+    commit_step="2. Create a branch and push it:
+   git checkout -b $branch && git add -A && git commit -m \"glm-bench: note where the answer lives\" && git push -u origin $branch"
+  else
+    commit_step="2. Create a branch and commit it:
+   git checkout -b $branch && git add -A && git commit -m \"glm-bench: note where the answer lives\""
+  fi
   local prompt="You are working in a git repository. Answer this question by exploring the code:
 
   \"$QUESTION\"
@@ -47,8 +58,7 @@ To search code, use the \`sgrep <regex>\` command (a fast cloud-index search) â€
 
 Once you have located the answer:
 1. Make ONE small, real code edit at the exact file+location you identified: add a single clarifying comment line (one or two lines, in ONE file) that summarizes the finding. Do not change behavior.
-2. Create a branch and push it:
-   git checkout -b $branch && git add -A && git commit -m \"glm-bench: note where the answer lives\" && git push -u origin $branch
+$commit_step
 Work autonomously and concisely. End by printing one line: ANSWER: <file:line â€” short summary>."
   ( cd "$dir" && timeout 1200 claude --model sonnet "${ALLOW[@]}" \
         --output-format stream-json --verbose -p "$prompt" 2> "$OUT/${pfx}.claude.err" \

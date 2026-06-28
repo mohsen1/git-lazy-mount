@@ -120,10 +120,9 @@ offsets from the start):
 ## Reproduce
 
 ```bash
-cd benchmarks
-docker build -t glm-bench .                 # ubuntu + rust + git-lazy-mount + sgrep + claude (non-root)
-printf 'ANTHROPIC_API_KEY=...\nGH_TOKEN=...\n' > .benchenv && chmod 600 .benchenv
-./run.sh react  facebook/react  <your-fork>/react  facebook/react  main  'where does `useState` resolve its initial state?'
+docker build -t glm-bench -f benchmarks/Dockerfile .  # local checkout + claude (non-root)
+printf 'ANTHROPIC_API_KEY=...\nGH_TOKEN=...\n' > benchmarks/.benchenv && chmod 600 benchmarks/.benchenv
+benchmarks/run.sh react  facebook/react  <your-fork>/react  facebook/react  main  'where does `useState` resolve its initial state?'
 ```
 
 See [`bench_repo.sh`](bench_repo.sh) for the per-repo driver and [`run.sh`](run.sh)

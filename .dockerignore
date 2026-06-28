@@ -1,0 +1,9 @@
+/target
+/.git
+/benchmarks/out
+/benchmarks/.benchenv
+/scratch
+**/DerivedData/
+**/*.rs.bk
+*.pdb
+.DS_Store
