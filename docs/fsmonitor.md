@@ -32,19 +32,23 @@ the log the serve process already fsynced. The log file is the only channel.
 ### Config written at mount
 
 `configure_fsmonitor`
-([`crates/cli/src/main.rs`](../crates/cli/src/main.rs)) sets exactly two keys,
-via plain `git config`:
+([`crates/cli/src/main.rs`](../crates/cli/src/main.rs)) sets the FSMonitor hook
+and enables Git's untracked cache via plain `git config`:
 
 ```
 core.fsmonitor            = <dir-of-exe>/git-lazy-mount-fsmonitor
 core.fsmonitorHookVersion = 2
+core.untrackedCache       = true
 ```
 
-Nothing else. There is no `core.untrackedCache` and no `core.hooksPath` — Git's
-default hook path and untracked cache are left untouched. `core.fsmonitor`
-points at the hook binary that ships next to `git-lazy-mount`; if it is not found
-beside the running executable, FSMonitor is simply not configured (the mount
-still works, just with eager `git status`).
+There is no `core.hooksPath`: Git's default hook path remains in use, and
+git-lazy-mount installs only its managed commit-acceleration hooks there. The
+untracked cache is configured but populated on demand by the first broad
+`git status`/`git add -A`; passing `git-lazy-mount --warm-status ...` runs that
+status synchronously before mount returns. `core.fsmonitor` points at the hook
+binary that ships next to `git-lazy-mount`; if it is not found beside the
+running executable, FSMonitor is simply not configured (the mount still works,
+just with eager `git status`).
 
 ---
 

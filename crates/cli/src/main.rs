@@ -52,6 +52,11 @@ struct Cli {
     /// Permit a full-object clone if the remote rejects the filter.
     #[arg(long)]
     allow_full_object_clone: bool,
+    /// Run a synchronous `git status` before returning to pre-warm Git's
+    /// untracked cache. This makes the first broad `git status`/`git add -A`
+    /// cheaper, but it can add tens of seconds to mount startup on large repos.
+    #[arg(long)]
+    warm_status: bool,
 }
 
 #[derive(Subcommand)]
@@ -184,7 +189,7 @@ fn cmd_mount(cli: &Cli, url: &str, path: &Path) -> R {
     }
     drop(repo);
 
-    mount_and_validate(&gitdir, path, &cache, &overlay)
+    mount_and_validate(&gitdir, path, &cache, &overlay, cli.warm_status)
 }
 
 /// Point `core.fsmonitor` at the `git-lazy-mount-fsmonitor` hook installed
@@ -211,10 +216,10 @@ fn configure_fsmonitor(gitdir: &Path) -> bool {
     set("core.fsmonitor", hook);
     set("core.fsmonitorHookVersion", "2");
     // Enable the untracked cache (the `UNTR` index extension), gated behind the
-    // FSMonitor hook that supplies its invalidation: once the post-mount warm
-    // populates it, a repeat `git status`/`git add -A` skips the untracked-
-    // directory walk for every unchanged directory. The hook reports which paths
-    // changed, so a new untracked file still invalidates exactly its directory.
+    // FSMonitor hook that supplies its invalidation. By default the first broad
+    // `git status`/`git add -A` populates it on demand; `--warm-status` pre-pays
+    // that walk before returning from mount. The hook reports which paths changed,
+    // so a new untracked file still invalidates exactly its directory.
     set("core.untrackedCache", "true");
     true
 }
@@ -389,7 +394,13 @@ fn seed_first_status(gitdir: &Path, repo: &glm_git_repo::AdminRepo) {
 }
 
 #[cfg(feature = "fuse")]
-fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &Path) -> R {
+fn mount_and_validate(
+    gitdir: &Path,
+    mountpoint: &Path,
+    cache: &Path,
+    overlay: &Path,
+    warm_status: bool,
+) -> R {
     // Spawn a detached serve child that holds the kernel mount. When this command
     // returns, the child is reparented to init and keeps serving. We do NOT
     // wait on it.
@@ -434,17 +445,21 @@ fn mount_and_validate(gitdir: &Path, mountpoint: &Path, cache: &Path, overlay: &
         return Err("health check failed: not inside work tree".into());
     }
 
-    // Establish git's untracked cache with a real `git status` over the LIVE mount,
-    // **synchronously before returning**. The cache cannot be seeded offline (git
-    // stamps each cached directory with its live stat_data and re-validates on read;
-    // a synthetic seed records stats that don't match the FUSE dirs, so git
-    // re-walks). The only thing that writes a trustworthy `UNTR` is a real walk over
-    // the mounted directories. Doing it before return — not detached — means the
-    // user's FIRST `git status`/`git commit` consumes a populated cache instead of
-    // paying the full untracked walk itself AND racing this walk for the index lock
-    // and the FUSE fault queue (that race amplified a one-file commit to ~120 s).
+    // Optionally establish git's untracked cache with a real `git status` over the
+    // LIVE mount. The cache cannot be seeded offline (git stamps each cached
+    // directory with its live stat_data and re-validates on read; a synthetic seed
+    // records stats that don't match the FUSE dirs, so git re-walks). The only
+    // thing that writes a trustworthy `UNTR` is a real walk over the mounted
+    // directories.
+    //
+    // This is opt-in because on large repos the walk can dominate startup, while
+    // many agent workflows stage exact paths and never need a pre-warmed untracked
+    // cache. Users who expect their first command to be broad `git status` or
+    // `git add -A` can pass `--warm-status` to pre-pay the walk before return.
     // Bounded by `ESTABLISH_TIMEOUT`; on overrun it is left to finish detached.
-    establish_untracked_cache(mountpoint);
+    if warm_status {
+        establish_untracked_cache(mountpoint);
+    }
 
     let branch = git_stdout(mountpoint, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_default();
     println!(
@@ -507,7 +522,13 @@ fn establish_untracked_cache(mountpoint: &Path) {
 }
 
 #[cfg(not(feature = "fuse"))]
-fn mount_and_validate(_gitdir: &Path, _mountpoint: &Path, _cache: &Path, _overlay: &Path) -> R {
+fn mount_and_validate(
+    _gitdir: &Path,
+    _mountpoint: &Path,
+    _cache: &Path,
+    _overlay: &Path,
+    _warm_status: bool,
+) -> R {
     Err("this build has no FUSE mount support (rebuild with --features fuse on Linux)".into())
 }
 
@@ -601,6 +622,22 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_status_is_opt_in() {
+        let cli = Cli::try_parse_from(["git-lazy-mount", "https://example.com/repo", "/tmp/repo"])
+            .unwrap();
+        assert!(!cli.warm_status);
+
+        let cli = Cli::try_parse_from([
+            "git-lazy-mount",
+            "--warm-status",
+            "https://example.com/repo",
+            "/tmp/repo",
+        ])
+        .unwrap();
+        assert!(cli.warm_status);
+    }
 
     #[test]
     fn managed_commit_hooks_install_and_preserve_custom_hooks() {
