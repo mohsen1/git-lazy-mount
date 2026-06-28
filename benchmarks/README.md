@@ -84,26 +84,29 @@ All six runs completed end to end, including the lazy runs on the 16k-file vscod
 and the 81k-file TypeScript trees — each agent searched, edited, committed, and
 **pushed** a branch through the mount.
 
-### End-to-end time
+### Session total time (setup + a real task) — honest, workload-dependent
 
-Like `git lazy-mount`, a full `git clone` keeps the whole history — but it must
-download it all before the task can start, where the mount is ready in seconds.
-That head start, plus a metadata path that serves git's working-tree walk from
-cache rather than re-reading the tree per directory, lets the mount finish first
-**end to end** (set up, then run the prompt):
+Disk and setup are unambiguous wins, but the **total** wall-clock of a session
+(set up, then run a real `claude` task: find code with sgrep, edit one file,
+commit) is **workload-dependent**. Measured across all 20 repos (Docker, `/dev/fuse`,
+current upstreams), lazy-mount wins total time on **9 of 20**, and the split is not
+random — it tracks how expensive the clone is versus how much the lazy *task* costs:
 
-| repo | full `git clone` + task | `git lazy-mount` + task |
-|---|---|---|
-| react | 58 + 57 = **115 s** | 4 + 76 = **80 s** |
-| vscode | 168 + 189 = **357 s** | 8 + 169 = **177 s** |
-| TypeScript | 170 + 559 = **729 s** | 3 + 645 = **648 s** |
+- **Lazy-mount wins** where the clone is expensive enough that the instant mount
+  offsets the task: e.g. `swift` 472 → **162 s**, `llvm` 390 → **307 s**,
+  `elasticsearch` 162 → **94 s**, plus `pytorch`, `rust`, `cpython`, `go`, `svelte`,
+  `react`.
+- **Lazy-mount loses** on (a) small, fast-to-clone repos where a from-scratch clone
+  finishes in seconds (`vue`, `deno`, `redis`), and (b) a few large *working trees*
+  where, during `git commit`, git faults trees/blobs on demand through FUSE
+  (`typescript`, `node`, `vscode`, `tensorflow`) — the instant mount doesn't offset
+  that.
 
-The task portion alone is still somewhat higher on the mount — file reads cross
-FUSE and Git faults the trees it needs to build and push the commit on demand — but
-the instant mount more than offsets it, on top of the order-of-magnitude smaller
-disk. The per-directory walk itself is cheap (the mount serves it from a tree
-cache), so the cost no longer scales with the file count the way a per-file walk
-would.
+So the honest takeaway: **lazy-mount's reliable wins are disk (18×) and instant
+setup**; it also wins total time when clone cost is high, and the remaining loss is
+the on-demand **commit fault** — git materializing the objects it needs to build the
+commit. Driving that to a clone-like ~0.1 s is the open work that would make the
+total-time win general.
 
 ## Transcripts
 

@@ -40,7 +40,11 @@ mounts in **1–22 s** (measured in Firecracker microVMs):
 ![Disk to work on each repo: full git clone vs git lazy-mount](benchmarks/charts/disk.svg)
 
 Lazy mounts keep **full history**, are ready in seconds, and materialize only the
-files you touch. Full data, the time chart, and agent transcripts:
+files you touch — so lazy-mount is at its best on **large repositories**, where the
+expensive clone dominates. Disk (18× less) and setup time are unambiguous wins on
+every repo; whether it also wins a whole *task's* wall-clock depends on the workload
+— a from-scratch clone of a small repo can finish before lazy-mount's per-task git
+overhead is paid. Full data, the time chart, and the session-time breakdown:
 [`benchmarks/`](benchmarks/).
 
 
