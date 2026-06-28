@@ -23,7 +23,7 @@ import xml.dom.minidom
 DATA = sys.argv[1] if len(sys.argv) > 1 else "chartdata.json"
 OUTDIR = sys.argv[2] if len(sys.argv) > 2 else "."
 
-CLONE_COLOR = "#e4572e"   # full clone / depth-1 clone (the costly baseline)
+CLONE_COLOR = "#e4572e"   # shallow clone baseline
 LAZY_COLOR = "#2a9d8f"    # git lazy-mount (the win)
 AXIS = "#54606b"
 GRID = "#e7ebef"
@@ -196,13 +196,13 @@ def main():
     disk_svg = chart(
         disk_rows, "clone_mb", "lazy_mb",
         title="Disk to a working copy — lower is better",
-        subtitle="Bytes written to get a usable checkout, per repository "
-                 "(20 large open-source repos).",
+        subtitle="Bytes written for a shallow checkout vs a lazy full-history "
+                 "mount, per repository.",
         unit="MB", vbreak=300,
         fine_ticks=[0, 100, 200, 300],
         comp_ticks=[1000, 2000, 3000, 4000],
         vmax=4250,
-        clone_label="git clone (full, with history)",
+        clone_label="git clone --depth 1",
         lazy_label="git lazy-mount")
 
     # ---- TIME chart (sorted by clone time, largest first) ------------

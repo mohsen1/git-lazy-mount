@@ -8,7 +8,7 @@ were measured, with full agent transcripts.
 Two benchmarks, run cold on the current upstream repos:
 
 - **[20 repositories](#across-20-repositories)** — disk and time to get a working
-  copy: a full `git clone` vs `git lazy-mount`, each in its own **Firecracker
+  copy: a shallow `git clone` vs `git lazy-mount`, each in its own **Firecracker
   microVM** (KVM, `/dev/fuse`).
 - **[3-repo deep dive](#results-deep-dive--3-repos)** — the full workflow in a
   `/dev/fuse` container: a real `claude` (Sonnet) prompt finds where some code
@@ -23,45 +23,43 @@ across JS/TS, Go, Rust, C/C++, Python, Dart, Java) — each measured cold in **i
 Firecracker microVM** (KVM, `/dev/fuse`), comparing the disk and time to get a
 working copy.
 
-![Disk: full git clone vs git lazy-mount, per repo](charts/disk.svg)
+![Disk: shallow git clone vs git lazy-mount, per repo](charts/disk.svg)
 
 ![Time to a ready working copy: shallow clone vs lazy-mount, per repo](charts/time.svg)
 
-Checking out all 20 with full history costs **23 GB via `git clone`** vs **1.3 GB
-of lazy mounts — 18× less** — and each mount is ready in **1–22 s**, even the
-179k-file LLVM tree (the working-tree walk is served from the in-process tree cache
-rather than re-read per directory, so it no longer scales with file count).
+Checking out all 20 with `git clone --depth 1` costs **7.3 GB** vs **1.3 GB
+of lazy mounts — 5.5× less**. Ready time totals **245.7 s** for shallow clone vs
+**90.1 s** for lazy-mount, so lazy is **2.7× faster** in this setup benchmark.
+Each lazy mount is ready in **0.8–19.8 s**, even the 179k-file LLVM tree.
 
-| repo | files | full `git clone` | `git lazy-mount` | mount |
+| repo | files | shallow `git clone` | `git lazy-mount` | mount |
 |---|---:|---:|---:|---:|
-| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,153 | 4,160 MB | **283 MB** | 19 s |
-| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 2,891 MB | **22 MB** | 2 s |
-| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 1,803 MB | **49 MB** | 22 s |
-| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,314 | 1,635 MB | **111 MB** | 7 s |
-| [nodejs/node](https://github.com/nodejs/node) | 49,407 | 1,468 MB | **79 MB** | 6 s |
-| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 1,449 MB | **73 MB** | 12 s |
-| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 1,414 MB | **66 MB** | 6 s |
-| [apple/swift](https://github.com/apple/swift) | 31,564 | 1,321 MB | **101 MB** | 21 s |
-| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,489 | 1,308 MB | **70 MB** | 5 s |
-| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,031 | 1,273 MB | **93 MB** | 6 s |
-| [facebook/react](https://github.com/facebook/react) | 7,243 | 977 MB | **18 MB** | 2 s |
-| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,549 | 906 MB | **143 MB** | 12 s |
-| [python/cpython](https://github.com/python/cpython) | 5,829 | 819 MB | **78 MB** | 5 s |
-| [angular/angular](https://github.com/angular/angular) | 10,605 | 629 MB | **19 MB** | 6 s |
-| [flutter/flutter](https://github.com/flutter/flutter) | 16,021 | 438 MB | **55 MB** | 5 s |
-| [golang/go](https://github.com/golang/go) | 15,596 | 433 MB | **35 MB** | 3 s |
-| [denoland/deno](https://github.com/denoland/deno) | 14,300 | 233 MB | **18 MB** | 6 s |
-| [redis/redis](https://github.com/redis/redis) | 1,818 | 209 MB | **8 MB** | 22 s |
-| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 118 MB | **8 MB** | 9 s |
-| [vuejs/core](https://github.com/vuejs/core) | 703 | 42 MB | **4 MB** | 1 s |
+| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,174 | 2,434 MB | **283 MB** | 19.8 s |
+| [nodejs/node](https://github.com/nodejs/node) | 49,409 | 765 MB | **79 MB** | 5.4 s |
+| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,322 | 532 MB | **111 MB** | 5.9 s |
+| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,488 | 518 MB | **70 MB** | 4.7 s |
+| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 409 MB | **22 MB** | 2.2 s |
+| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 390 MB | **49 MB** | 3.0 s |
+| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 300 MB | **73 MB** | 5.3 s |
+| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 278 MB | **66 MB** | 4.9 s |
+| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,650 | 266 MB | **143 MB** | 7.4 s |
+| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,038 | 265 MB | **93 MB** | 5.2 s |
+| [apple/swift](https://github.com/apple/swift) | 31,564 | 243 MB | **101 MB** | 5.8 s |
+| [flutter/flutter](https://github.com/flutter/flutter) | 16,022 | 182 MB | **55 MB** | 3.7 s |
+| [golang/go](https://github.com/golang/go) | 15,596 | 181 MB | **35 MB** | 2.8 s |
+| [python/cpython](https://github.com/python/cpython) | 5,850 | 173 MB | **78 MB** | 4.4 s |
+| [angular/angular](https://github.com/angular/angular) | 10,605 | 166 MB | **19 MB** | 2.2 s |
+| [denoland/deno](https://github.com/denoland/deno) | 14,303 | 123 MB | **18 MB** | 2.1 s |
+| [facebook/react](https://github.com/facebook/react) | 7,243 | 50 MB | **18 MB** | 1.8 s |
+| [redis/redis](https://github.com/redis/redis) | 1,818 | 25 MB | **8 MB** | 1.3 s |
+| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 11 MB | **8 MB** | 1.4 s |
+| [vuejs/core](https://github.com/vuejs/core) | 703 | 8 MB | **4 MB** | 0.8 s |
 
-`git clone` is the **full** clone download (the repo's reported size — the
-apples-to-apples baseline, since lazy-mount keeps full history too); `git
-lazy-mount` is the on-disk workspace right after mounting. The time chart compares
-against `git clone --depth 1` (the *fastest* clone, which drops history); a full
-clone takes far longer. Each repo runs cold in a fresh Firecracker microVM on a KVM
-host (the harness is in [`firecracker/`](firecracker/)); the 3-repo deep dive below
-adds the full `sgrep`-driven agent task.
+`git clone --depth 1` is the fastest ordinary clone baseline and drops history;
+`git lazy-mount` keeps full commit history via a `tree:0` partial clone and
+materializes file contents on demand. Each repo runs cold in a fresh Firecracker
+microVM on a KVM host (the harness is in [`firecracker/`](firecracker/)); the
+3-repo deep dive below adds the full `sgrep`-driven agent task.
 
 ## Results (deep dive — 3 repos)
 
@@ -88,9 +86,10 @@ and the 81k-file TypeScript trees — each agent searched, edited, committed, an
 
 Disk and setup are unambiguous wins, but the **total** wall-clock of a session
 (set up, then run a real `claude` task: find code with sgrep, edit one file,
-commit) is **workload-dependent**. Measured across all 20 repos (Docker, `/dev/fuse`,
-current upstreams), lazy-mount wins total time on **9 of 20**, and the split is not
-random — it tracks how expensive the clone is versus how much the lazy *task* costs:
+commit) is **workload-dependent**. In the older 20-repo Docker agent run
+(`/dev/fuse`, current upstreams at the time), lazy-mount won total time on
+**9 of 20**, and the split was not random — it tracks how expensive the clone is
+versus how much the lazy *task* costs:
 
 - **Lazy-mount wins** where the clone is expensive enough that the instant mount
   offsets the task: e.g. `swift` 472 → **162 s**, `llvm` 390 → **307 s**,
@@ -102,11 +101,10 @@ random — it tracks how expensive the clone is versus how much the lazy *task* 
   (`typescript`, `node`, `vscode`, `tensorflow`) — the instant mount doesn't offset
   that.
 
-So the honest takeaway: **lazy-mount's reliable wins are disk (18×) and instant
-setup**; it also wins total time when clone cost is high, and the remaining loss is
-the on-demand **commit fault** — git materializing the objects it needs to build the
-commit. Driving that to a clone-like ~0.1 s is the open work that would make the
-total-time win general.
+So the honest takeaway: **lazy-mount's reliable wins are disk and setup**; it
+also wins total time when clone cost is high. The earlier commit fault has since
+been addressed; the remaining task-time variance is mostly search/tool strategy
+and workload-specific materialization.
 
 ## Transcripts
 

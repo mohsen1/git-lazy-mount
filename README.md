@@ -33,18 +33,19 @@ More in [`crates/sgrep`](crates/sgrep).
 
 ## Performance in real world
 
-Across **20 repositories** — `facebook/react` to the 179k-file LLVM tree — a full
-`git clone` totals **23 GB** vs **1.3 GB of lazy mounts (18× less)**, and each
-mounts in **1–22 s** (measured in Firecracker microVMs):
+Across **20 repositories** — `facebook/react` to the 179k-file LLVM tree —
+`git clone --depth 1` totals **7.3 GB** vs **1.3 GB of lazy mounts (5.5×
+less)**. Ready time is **245.7 s** for shallow clone vs **90.1 s** for
+lazy-mount (2.7× faster), and each lazy mount is ready in **0.8–19.8 s**
+(measured in Firecracker microVMs):
 
-![Disk to work on each repo: full git clone vs git lazy-mount](benchmarks/charts/disk.svg)
+![Disk to work on each repo: shallow git clone vs git lazy-mount](benchmarks/charts/disk.svg)
 
-Lazy mounts keep **full history**, are ready in seconds, and materialize only the
-files you touch — so lazy-mount is at its best on **large repositories**, where the
-expensive clone dominates. Disk (18× less) and setup time are unambiguous wins on
-every repo; whether it also wins a whole *task's* wall-clock depends on the workload
-— a from-scratch clone of a small repo can finish before lazy-mount's per-task git
-overhead is paid. Full data, the time chart, and the session-time breakdown:
+Lazy mounts keep **full history** even when the clone baseline is shallow, are
+ready in seconds, and materialize only the files you touch. Disk and setup time
+are now unambiguous wins in the Firecracker setup benchmark; whether lazy-mount
+also wins a whole *task's* wall-clock depends on the workload. Full data, the
+time chart, and the session-time breakdown:
 [`benchmarks/`](benchmarks/).
 
 
