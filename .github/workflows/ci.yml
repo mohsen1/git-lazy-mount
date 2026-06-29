@@ -27,9 +27,9 @@ jobs:
       # NOT `--all-features`: the `fuse` feature links libfuse3 and needs
       # /dev/fuse, so it is covered by the `linux-mount` job instead.
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
   # The transparent design's mount, exercised through a REAL /dev/fuse mount on
   # every push (design.md §40.2 requires real-mount CI, not just unit tests).
@@ -52,17 +52,17 @@ jobs:
         run: echo user_allow_other | sudo tee -a /etc/fuse.conf
       - name: clippy (fuse mount + cli)
         run: |
-          cargo clippy -p glm-fuse --all-targets --features fuse -- -D warnings
-          cargo clippy -p glm-cli --all-targets --features fuse -- -D warnings
+          cargo clippy --locked -p glm-fuse --all-targets --features fuse -- -D warnings
+          cargo clippy --locked -p glm-cli --all-targets --features fuse -- -D warnings
       # Real-mount tests run SERIALLY (--test-threads=1): each spawns its own FUSE
       # mount + git subprocesses, and the CLI tests detach / SIGKILL serve daemons.
       # Those contend for /dev/fuse and do not isolate cleanly under the runner's
       # parallel test scheduling (a mount/unmount can wedge), so we serialize them.
       - name: real /dev/fuse mount + transparent git stack + one-command CLI
         run: |
-          cargo test -p glm-worktree -p glm-git-repo
-          cargo test -p glm-fuse --features fuse -- --test-threads=1
-          cargo test -p glm-cli --features fuse -- --test-threads=1
+          cargo test --locked -p glm-worktree -p glm-git-repo
+          cargo test --locked -p glm-fuse --features fuse -- --test-threads=1
+          cargo test --locked -p glm-cli --features fuse -- --test-threads=1
 
   msrv:
     name: msrv build
@@ -71,4 +71,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace
+      - run: cargo build --locked --workspace
