@@ -485,6 +485,44 @@ fn text_rank(text: &str) -> u8 {
     10
 }
 
+/// Resolve which files to treat as locally-changed for the overlay, and how they
+/// were found (for `--stats`).
+///
+/// Order of preference: explicit `--changed`/`--changed-from`; then, when the
+/// local tree *is* the searched repo, the git-lazy-mount change journal (cheap,
+/// zero faults); then `git status` (correct anywhere, but faults a cold mount).
+fn resolve_changed(
+    cli: &Cli,
+    root: Option<&Path>,
+    repo: &str,
+    local_repo: Option<&str>,
+) -> Result<(Vec<String>, &'static str), Box<dyn std::error::Error>> {
+    if cli.no_overlay {
+        return Ok((Vec::new(), "off"));
+    }
+    if !cli.changed.is_empty() || cli.changed_from.is_some() {
+        let mut set = cli.changed.clone();
+        if let Some(f) = &cli.changed_from {
+            for line in std::fs::read_to_string(f)?.lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    set.push(line.to_string());
+                }
+            }
+        }
+        set.sort();
+        set.dedup();
+        return Ok((set, "explicit"));
+    }
+    match (root, local_repo) {
+        (Some(r), Some(lr)) if lr.eq_ignore_ascii_case(repo) => match overlay::glm_changed(r) {
+            Some(p) => Ok((p, "journal")),
+            None => Ok((overlay::locally_changed(r), "git-status")),
+        },
+        _ => Ok((Vec::new(), "off")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,43 +657,5 @@ mod tests {
         ];
         rank_matches(&mut matches);
         assert_eq!(matches[0].path, "ext/fs/ops.rs");
-    }
-}
-
-/// Resolve which files to treat as locally-changed for the overlay, and how they
-/// were found (for `--stats`).
-///
-/// Order of preference: explicit `--changed`/`--changed-from`; then, when the
-/// local tree *is* the searched repo, the git-lazy-mount change journal (cheap,
-/// zero faults); then `git status` (correct anywhere, but faults a cold mount).
-fn resolve_changed(
-    cli: &Cli,
-    root: Option<&Path>,
-    repo: &str,
-    local_repo: Option<&str>,
-) -> Result<(Vec<String>, &'static str), Box<dyn std::error::Error>> {
-    if cli.no_overlay {
-        return Ok((Vec::new(), "off"));
-    }
-    if !cli.changed.is_empty() || cli.changed_from.is_some() {
-        let mut set = cli.changed.clone();
-        if let Some(f) = &cli.changed_from {
-            for line in std::fs::read_to_string(f)?.lines() {
-                let line = line.trim();
-                if !line.is_empty() {
-                    set.push(line.to_string());
-                }
-            }
-        }
-        set.sort();
-        set.dedup();
-        return Ok((set, "explicit"));
-    }
-    match (root, local_repo) {
-        (Some(r), Some(lr)) if lr.eq_ignore_ascii_case(repo) => match overlay::glm_changed(r) {
-            Some(p) => Ok((p, "journal")),
-            None => Ok((overlay::locally_changed(r), "git-status")),
-        },
-        _ => Ok((Vec::new(), "off")),
     }
 }
