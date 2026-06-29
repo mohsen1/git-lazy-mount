@@ -82,7 +82,7 @@ All six runs completed end to end, including the lazy runs on the 16k-file vscod
 and the 81k-file TypeScript trees — each agent searched, edited, committed, and
 **pushed** a branch through the mount.
 
-### Session total time (setup + a real task) — honest, workload-dependent
+### Session total time (setup + a real task) 
 
 Disk and setup are unambiguous wins, but the **total** wall-clock of a session
 (set up, then run a real `claude` task: find code with sgrep, edit one file,
@@ -101,7 +101,7 @@ versus how much the lazy *task* costs:
   (`typescript`, `node`, `vscode`, `tensorflow`) — the instant mount doesn't offset
   that.
 
-So the honest takeaway: **lazy-mount's reliable wins are disk and setup**; it
+So the takeaway: **lazy-mount's reliable wins are disk and setup**; it
 also wins total time when clone cost is high. The earlier commit fault has since
 been addressed; the remaining task-time variance is mostly search/tool strategy
 and workload-specific materialization.
