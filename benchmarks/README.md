@@ -28,32 +28,32 @@ working copy.
 ![Time to a ready working copy: shallow clone vs lazy-mount, per repo](charts/time.svg)
 
 Checking out all 20 with `git clone --depth 1` costs **7.3 GB** vs **1.3 GB
-of lazy mounts — 5.5× less**. Ready time totals **245.7 s** for shallow clone vs
-**90.1 s** for lazy-mount, so lazy is **2.7× faster** in this setup benchmark.
-Each lazy mount is ready in **0.8–19.8 s**, even the 179k-file LLVM tree.
+of lazy mounts — 5.5× less**. Ready time totals **265.4 s** for shallow clone vs
+**92.0 s** for lazy-mount, so lazy is **2.9× faster** in this setup benchmark.
+Each lazy mount is ready in **0.9–16.5 s**, even the 179k-file LLVM tree.
 
 | repo | files | shallow `git clone` | `git lazy-mount` | mount |
 |---|---:|---:|---:|---:|
-| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,174 | 2,434 MB | **283 MB** | 19.8 s |
-| [nodejs/node](https://github.com/nodejs/node) | 49,409 | 765 MB | **79 MB** | 5.4 s |
-| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,322 | 532 MB | **111 MB** | 5.9 s |
-| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,488 | 518 MB | **70 MB** | 4.7 s |
-| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 409 MB | **22 MB** | 2.2 s |
-| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 390 MB | **49 MB** | 3.0 s |
-| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 300 MB | **73 MB** | 5.3 s |
-| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 278 MB | **66 MB** | 4.9 s |
-| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,650 | 266 MB | **143 MB** | 7.4 s |
-| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,038 | 265 MB | **93 MB** | 5.2 s |
+| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,188 | 2,434 MB | **283 MB** | 16.5 s |
+| [nodejs/node](https://github.com/nodejs/node) | 49,409 | 765 MB | **79 MB** | 5.9 s |
+| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,324 | 532 MB | **111 MB** | 6.5 s |
+| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,507 | 519 MB | **70 MB** | 5.3 s |
+| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 409 MB | **22 MB** | 2.3 s |
+| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 390 MB | **49 MB** | 3.1 s |
+| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 300 MB | **73 MB** | 6.2 s |
+| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 278 MB | **66 MB** | 5.2 s |
+| [rust-lang/rust](https://github.com/rust-lang/rust) | 60,654 | 266 MB | **143 MB** | 7.7 s |
+| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,039 | 265 MB | **93 MB** | 5.5 s |
 | [apple/swift](https://github.com/apple/swift) | 31,564 | 243 MB | **101 MB** | 5.8 s |
-| [flutter/flutter](https://github.com/flutter/flutter) | 16,022 | 182 MB | **55 MB** | 3.7 s |
+| [flutter/flutter](https://github.com/flutter/flutter) | 16,022 | 182 MB | **55 MB** | 3.9 s |
 | [golang/go](https://github.com/golang/go) | 15,596 | 181 MB | **35 MB** | 2.8 s |
-| [python/cpython](https://github.com/python/cpython) | 5,850 | 173 MB | **78 MB** | 4.4 s |
+| [python/cpython](https://github.com/python/cpython) | 5,858 | 173 MB | **78 MB** | 5.1 s |
 | [angular/angular](https://github.com/angular/angular) | 10,605 | 166 MB | **19 MB** | 2.2 s |
-| [denoland/deno](https://github.com/denoland/deno) | 14,303 | 123 MB | **18 MB** | 2.1 s |
+| [denoland/deno](https://github.com/denoland/deno) | 14,303 | 123 MB | **18 MB** | 2.3 s |
 | [facebook/react](https://github.com/facebook/react) | 7,243 | 50 MB | **18 MB** | 1.8 s |
-| [redis/redis](https://github.com/redis/redis) | 1,818 | 25 MB | **8 MB** | 1.3 s |
-| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 11 MB | **8 MB** | 1.4 s |
-| [vuejs/core](https://github.com/vuejs/core) | 703 | 8 MB | **4 MB** | 0.8 s |
+| [redis/redis](https://github.com/redis/redis) | 1,818 | 25 MB | **8 MB** | 1.5 s |
+| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 11 MB | **8 MB** | 1.5 s |
+| [vuejs/core](https://github.com/vuejs/core) | 703 | 8 MB | **4 MB** | 0.9 s |
 
 `git clone --depth 1` is the fastest ordinary clone baseline and drops history;
 `git lazy-mount` keeps full commit history via a `tree:0` partial clone and

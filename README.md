@@ -35,8 +35,8 @@ More in [`crates/sgrep`](crates/sgrep).
 
 Across **20 repositories** — `facebook/react` to the 179k-file LLVM tree —
 `git clone --depth 1` totals **7.3 GB** vs **1.3 GB of lazy mounts (5.5×
-less)**. Ready time is **245.7 s** for shallow clone vs **90.1 s** for
-lazy-mount (2.7× faster), and each lazy mount is ready in **0.8–19.8 s**
+less)**. Ready time is **265.4 s** for shallow clone vs **92.0 s** for
+lazy-mount (2.9× faster), and each lazy mount is ready in **0.9–16.5 s**
 (measured in Firecracker microVMs):
 
 ![Disk to work on each repo: shallow git clone vs git lazy-mount](benchmarks/charts/disk.svg)

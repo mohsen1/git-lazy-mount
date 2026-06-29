@@ -24,11 +24,21 @@ sgrep ZodError                       # repo inferred from the `origin` remote
 sgrep --repo colinhacks/zod ZodError
 sgrep -l --file '\.ts$' 'class \w+'  # files-with-matches, file filter
 sgrep -i --literal 'TODO(perf)'      # case-insensitive, literal
+sgrep --count 500 ZodError           # ask for a larger result set
 ```
 
 Auth/endpoint come from the environment (same as the `src` CLI): `SRC_ENDPOINT`
 (default `https://sourcegraph.com`) and `SRC_ACCESS_TOKEN`. The token is optional:
 public repos work without it, but set it to search private repos your account can see.
+
+By default `sgrep` requests up to 100 remote results. That keeps interactive
+agent searches cheap; pass `--count` when you need a broader result set. Plain
+identifier/text patterns are sent as literal searches automatically; patterns
+using regex metacharacters still run as regex. Remote results are cached for 10
+minutes under `$XDG_CACHE_HOME/git-lazy-mount/sgrep` (or
+`~/.cache/git-lazy-mount/sgrep`) and then overlaid with current local edits on
+every invocation. Use `--no-cache` or `SGREP_CACHE_TTL_SECS=0` for a fresh remote
+query.
 
 ## Uncommitted edits, automatic
 
@@ -49,8 +59,9 @@ sgrep --changed src/a.ts 'pattern'        # or --changed-from edited.txt
 
 - **Claude Code** uses an embedded ripgrep for its Grep tool, so disable that
   tool and have the agent search via `sgrep` (Bash or an MCP tool). A `CLAUDE.md`
-  note that says "search with `sgrep` instead of `rg`/`grep`" is enough. `sgrep`
-  handles uncommitted edits on its own.
+  note should say "search with `sgrep --count 50` instead of `rg`/`grep`, and
+  prefer `--file` filters over piping to `head`." `sgrep` handles uncommitted
+  edits on its own.
 - **Codex**: shadow `rg`/`grep` on `PATH` with an `sgrep` wrapper, or instruct
   it to call `sgrep`.
 

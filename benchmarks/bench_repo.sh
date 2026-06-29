@@ -32,8 +32,8 @@ CLAUDE_MD='# Searching this repository
 
 This is a lazily-materialized working tree. Do NOT use grep, ripgrep (rg), `git grep`, or `find` for content search — they read every file and defeat lazy mounting.
 
-Use `sgrep <regex>` for ALL code search: it queries a cloud code index and returns matching files+lines without reading local files, and reflects your uncommitted edits.
-Examples: `sgrep useState`   `sgrep -l --file "\.ts$" "class \w+"`'
+Use `sgrep --count 50 <regex>` for ALL code search: it queries a cloud code index and returns matching files+lines without reading local files, and reflects your uncommitted edits. Prefer `--file` filters when you know the directory or extension. Do not use `| head` as a substitute for `--count`; it still makes the remote search do extra work.
+Examples: `sgrep --count 50 useState`   `sgrep --count 50 -l --file "\.ts$" "class \w+"`'
 
 ALLOW=(--allowedTools "Read" "Glob" "Edit" "Write" "Bash(git:*)" "Bash(sgrep:*)" "Bash(ls:*)" "Bash(cat:*)" "Bash(head:*)" "Bash(sed:*)" "Bash(mkdir:*)"
        --disallowedTools "Grep" "Bash(rg:*)" "Bash(grep:*)" "Bash(find:*)")
@@ -41,6 +41,8 @@ ALLOW=(--allowedTools "Read" "Glob" "Edit" "Write" "Bash(git:*)" "Bash(sgrep:*)"
 run_agent(){ # dir branch transcript_prefix
   local dir="$1" branch="$2" pfx="$3"
   printf '%s\n' "$CLAUDE_MD" > "$dir/CLAUDE.md"
+  rm -rf "$OUT/${pfx}.sgrep-cache"
+  mkdir -p "$OUT/${pfx}.sgrep-cache"
   # Push only when a token (and so a fork) is configured; otherwise commit locally.
   local commit_step
   if [ -n "${GH_TOKEN:-}" ]; then
@@ -54,13 +56,13 @@ run_agent(){ # dir branch transcript_prefix
 
   \"$QUESTION\"
 
-To search code, use the \`sgrep <regex>\` command (a fast cloud-index search) — NOT grep, rg, or find. This is a lazily-materialized tree; see CLAUDE.md.
+To search code, use the \`sgrep --count 50 <regex>\` command (a fast cloud-index search) — NOT grep, rg, or find, and not \`sgrep ... | head\`. This is a lazily-materialized tree; see CLAUDE.md.
 
 Once you have located the answer:
 1. Make ONE small, real code edit at the exact file+location you identified: add a single clarifying comment line (one or two lines, in ONE file) that summarizes the finding. Do not change behavior.
 $commit_step
 Work autonomously and concisely. End by printing one line: ANSWER: <file:line — short summary>."
-  ( cd "$dir" && timeout 1200 claude --model sonnet "${ALLOW[@]}" \
+  ( cd "$dir" && SGREP_CACHE_DIR="$OUT/${pfx}.sgrep-cache" timeout 1200 claude --model sonnet "${ALLOW[@]}" \
         --output-format stream-json --verbose -p "$prompt" 2> "$OUT/${pfx}.claude.err" \
       | python3 -u /bench/ts_prepend.py ) > "$OUT/${pfx}.transcript.tsv"
 }

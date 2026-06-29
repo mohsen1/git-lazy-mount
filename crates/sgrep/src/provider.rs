@@ -30,7 +30,7 @@ pub struct Query {
 }
 
 /// A single match: a repo-relative path, a 1-based line number, and the line.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Match {
     pub path: String,
     pub line: u64,
