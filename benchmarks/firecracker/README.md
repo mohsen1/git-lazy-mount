@@ -19,8 +19,13 @@ guest kernel must provide).
   (`fusermount3` setuid + perms), mounts the results drive, runs the bench, halts.
 - `startup.sh` — self-contained orchestrator (also usable as a GCP `startup-script`):
   bakes the clone+mount bench into the rootfs and runs all `repos.tsv` sequentially.
+- `bench_lazy_fc.sh` — guest-side wrapper for the full agent benchmark.
+- `startup_agent.sh` — host-side orchestrator for the full agent benchmark; it
+  runs each repo sequentially in a fresh microVM and writes `run/<key>/metrics.json`.
 - `repos.tsv` — the 20 `key<TAB>owner/repo<TAB>prompt` rows.
 - `make_charts.py` — renders the disk + time SVG bar charts from the metrics.
+- `make_agent_charts.py` — renders full-agent wall-clock and post-task disk charts
+  from `bench_repo.sh` metrics.
 
 ## Run
 ```bash
@@ -28,5 +33,16 @@ sudo bash bootstrap.sh          # ~25 min: kernel build + rootfs
 sudo bash startup.sh            # runs all 20, ~6 min; metrics in run/<key>/metrics.json
 python3 make_charts.py chartdata.json .   # -> disk.svg, time.svg
 ```
-The 20-repo run measures clone-vs-mount setup (no agent). The 3-repo agent deep dive
-(see the parent benchmarks page) runs the full `sgrep`-driven task.
+The setup run measures clone-vs-mount startup only (no agent).
+
+For the full `sgrep`-driven agent task, provide `ANTHROPIC_API_KEY` in the
+environment and run:
+
+```bash
+sudo -E bash startup_agent.sh
+python3 make_agent_charts.py run ../charts
+```
+
+Do not archive `run_*.log` from older harness versions that used shell tracing;
+the current runner keeps the API key out of logs and removes the guest `job.env`
+before copying result artifacts.

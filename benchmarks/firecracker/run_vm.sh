@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host-side: launch ONE Firecracker microVM for one repo. Args: IDX REPO_KEY CLONE "PROMPT"
-set -xuo pipefail
+set -euo pipefail
 cd /opt/fcbench; IDX="$1"; KEY="$2"; CLONE="$3"; PROMPT="$4"
 VD=run/$KEY; mkdir -p "$VD"
 # per-VM rootfs (reflink copy = instant where supported) + a results drive
@@ -8,6 +8,7 @@ cp --reflink=auto rootfs.base.ext4 "$VD/rootfs.ext4"
 truncate -s 256M "$VD/results.ext4"; mkfs.ext4 -qF "$VD/results.ext4"
 mkdir -p "$VD/rmnt"; mount -o loop "$VD/results.ext4" "$VD/rmnt"
 printf 'REPO_KEY=%q\nCLONE=%q\nPROMPT=%q\nANTHROPIC_API_KEY=%q\n' "$KEY" "$CLONE" "$PROMPT" "${ANTHROPIC_API_KEY}" > "$VD/rmnt/job.env"
+chmod 600 "$VD/rmnt/job.env"
 umount "$VD/rmnt"
 # networking: one /30 per VM, NAT out the host's main iface
 SUB=$((IDX*4)); TAP="fc${IDX}"; GUESTIP="172.16.$((SUB/256)).$((SUB%256+2))"; GW="172.16.$((SUB/256)).$((SUB%256+1))"
@@ -28,7 +29,13 @@ JSON
 install -m0755 guest_init.sh "$VD/guest_init.sh" 2>/dev/null || true  # (also baked into rootfs at /bench)
 timeout --kill-after=60 1500 firecracker --no-api --config-file "$VD/vm.json" >"$VD/fc.log" 2>&1 || true
 # extract results
-mount -o loop "$VD/results.ext4" "$VD/rmnt"; cp "$VD/rmnt/metrics.json" "$VD/metrics.json" 2>/dev/null || echo '{}' > "$VD/metrics.json"
-cp "$VD/rmnt/"*.tsv "$VD/" 2>/dev/null || true; umount "$VD/rmnt"
+mount -o loop "$VD/results.ext4" "$VD/rmnt"
+mkdir -p "$VD/results"
+rm -f "$VD/rmnt/job.env"
+cp -a "$VD/rmnt/." "$VD/results/" 2>/dev/null || true
+cp "$VD/rmnt/metrics.json" "$VD/metrics.json" 2>/dev/null || echo '{}' > "$VD/metrics.json"
+cp "$VD/rmnt/"*.tsv "$VD/" 2>/dev/null || true
+umount "$VD/rmnt"
 ip link del "$TAP" 2>/dev/null || true
+rm -f "$VD/rootfs.ext4" "$VD/results.ext4"
 echo "[$KEY] $(cat $VD/metrics.json)"

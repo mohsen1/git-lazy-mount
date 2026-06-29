@@ -5,14 +5,18 @@ were measured, with full agent transcripts.
 
 ## What is measured
 
-Two benchmarks, run cold on the current upstream repos:
+Three benchmarks, run cold on the current upstream repos:
 
 - **[20 repositories](#across-20-repositories)** — disk and time to get a working
   copy: a shallow `git clone` vs `git lazy-mount`, each in its own **Firecracker
   microVM** (KVM, `/dev/fuse`).
-- **[3-repo deep dive](#results-deep-dive--3-repos)** — the full workflow in a
-  `/dev/fuse` container: a real `claude` (Sonnet) prompt finds where some code
-  lives, edits it, then **commits through the mount**. Code search goes
+- **[20-repo agent task](#session-total-time-setup--a-real-task)** — the full
+  workflow in Firecracker: a real `claude` (Sonnet) prompt finds where some code
+  lives, edits it, then commits through either a full clone or the lazy mount.
+  Code search goes through [`sgrep`](../crates/sgrep) (a cloud index, **zero**
+  local reads), so the agent materializes only the files it actually reads/edits.
+- **[3-repo transcript deep dive](#results-deep-dive--3-repos)** — an older
+  Docker run with full transcripts for React, VS Code, and TypeScript. Search goes
   through [`sgrep`](../crates/sgrep) (a cloud index, **zero** local reads), so the
   agent materializes only the file it edits.
 
@@ -59,7 +63,7 @@ Each lazy mount is ready in **0.8–15.1 s**, even the 179k-file LLVM tree.
 `git lazy-mount` keeps full commit history via a `tree:0` partial clone and
 materializes file contents on demand. Each repo runs cold in a fresh Firecracker
 microVM on a KVM host (the harness is in [`firecracker/`](firecracker/)); the
-3-repo deep dive below adds the full `sgrep`-driven agent task.
+full-agent benchmark below adds the `sgrep`-driven edit/commit task.
 
 ## Results (deep dive — 3 repos)
 
@@ -82,29 +86,31 @@ All six runs completed end to end, including the lazy runs on the 16k-file vscod
 and the 81k-file TypeScript trees — each agent searched, edited, committed, and
 **pushed** a branch through the mount.
 
-### Session total time (setup + a real task) 
+### Session total time (setup + a real task)
 
-Disk and setup are unambiguous wins, but the **total** wall-clock of a session
-(set up, then run a real `claude` task: find code with sgrep, edit one file,
-commit) is **workload-dependent**. In the older 20-repo Docker agent run
-(`/dev/fuse`, current upstreams at the time), lazy-mount won total time on
-**9 of 20**, and the split was not random — it tracks how expensive the clone is
-versus how much the lazy *task* costs:
+The full-agent benchmark runs the same `sgrep`-driven code-search/edit/commit task
+twice per repo in a fresh Firecracker microVM: once after a full-history
+`git clone`, once after `git lazy-mount`.
 
-- **Lazy-mount wins** where the clone is expensive enough that the instant mount
-  offsets the task: e.g. `swift` 472 → **162 s**, `llvm` 390 → **307 s**,
-  `elasticsearch` 162 → **94 s**, plus `pytorch`, `rust`, `cpython`, `go`, `svelte`,
-  `react`.
-- **Lazy-mount loses** on (a) small, fast-to-clone repos where a from-scratch clone
-  finishes in seconds (`vue`, `deno`, `redis`), and (b) a few large *working trees*
-  where, during `git commit`, git faults trees/blobs on demand through FUSE
-  (`typescript`, `node`, `vscode`, `tensorflow`) — the instant mount doesn't offset
-  that.
+![Agent task wall-clock: full clone plus agent vs lazy mount plus agent](charts/agent-time.svg)
 
-So the takeaway: **lazy-mount's reliable wins are disk and setup**; it
-also wins total time when clone cost is high. The earlier commit fault has since
-been addressed; the remaining task-time variance is mostly search/tool strategy
-and workload-specific materialization.
+![Disk after agent task: full clone vs lazy mount](charts/agent-disk.svg)
+
+Across all 20 repos, lazy-mount won **19 of 20** total sessions. Full clone+agent
+time totaled **3394.2 s** vs **1322.7 s** for lazy mount+agent, saving
+**2071.5 s** overall (**2.57× faster**). The setup split is the main driver:
+full clone time totaled **2092.1 s** vs **89.2 s** for lazy mounts. The agent
+phases were comparable in aggregate: **1302.1 s** on full clones vs **1233.5 s**
+on lazy mounts.
+
+The only loss was the smallest repo, `vue`: full clone+agent took **38.6 s** and
+lazy mount+agent took **50.3 s**. Clone setup there was only **4.1 s**, so the
+lazy run's slower agent phase was enough to erase the setup win. The largest wins
+were `typescript` (**472.0 s saved**) and `llvm` (**466.4 s saved**).
+
+Disk after the completed task was **30.2 GB** for full-history clones vs **1.4 GB**
+for lazy workspaces (**21.5× smaller**). This is a full-history clone baseline;
+the setup chart above intentionally uses a shallower, faster clone baseline.
 
 ## Transcripts
 

@@ -30,7 +30,7 @@ if [ ! -f rootfs.base.ext4 ]; then
   truncate -s 40G rootfs.base.ext4; mkfs.ext4 -qF rootfs.base.ext4
   mkdir -p rootmnt; sudo mount -o loop rootfs.base.ext4 rootmnt
   sudo docker export "$cid" | sudo tar -C rootmnt -xf - ; sudo docker rm "$cid" >/dev/null
-  sudo mkdir -p rootmnt/bench; sudo cp bench_lazy_fc.sh guest_init.sh ts_prepend.py rootmnt/bench/; sudo chmod +x rootmnt/bench/*
+  sudo mkdir -p rootmnt/bench; sudo cp bench_lazy_fc.sh bench_repo.sh guest_init.sh ts_prepend.py rootmnt/bench/; sudo chmod +x rootmnt/bench/*
   sudo umount rootmnt
 fi
 echo "BOOTSTRAP_OK fuse=$(grep -c CONFIG_FUSE_FS=y linux-*/.config 2>/dev/null) kernel=$(stat -c%s vmlinux) rootfs=$(stat -c%s rootfs.base.ext4)"

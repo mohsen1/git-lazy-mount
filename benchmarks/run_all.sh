@@ -6,13 +6,15 @@ cd "$(dirname "$0")"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: ./run_all.sh [--push] [--resume] [--only a,b,c] [--run-id ID] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--seed-timeout SECONDS]
+Usage: ./run_all.sh [--push] [--resume] [--only a,b,c] [--run-id ID] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--sgrep-filtered-timeout SECONDS] [--sgrep-filtered-regex-timeout SECONDS] [--seed-timeout SECONDS]
 
 Defaults:
   - local commits only; GH_TOKEN is forwarded only with --push
   - full sgrep timeout is off by default; set --sgrep-timeout to cap every query
   - unfiltered sgrep calls time out after 12s; set 0 to disable
-  - identifier seed searches time out after 30s; set --seed-timeout to change
+  - file-filtered sgrep calls time out after 12s; set 0 to disable
+  - filtered regex sgrep calls time out after 20s; set 0 to disable
+  - identifier seed searches time out after 12s; set --seed-timeout to change
   - repos come from firecracker/repos.tsv
   - outputs go to out/<run-id>/<repo>
 EOF
@@ -28,7 +30,9 @@ out_base=""
 image="glm-bench"
 sgrep_timeout="${SGREP_TIMEOUT_SECS:-0}"
 sgrep_broad_timeout="${SGREP_BROAD_TIMEOUT_SECS:-12}"
-seed_timeout="${BENCH_SEED_TIMEOUT_SECS:-30}"
+sgrep_filtered_timeout="${SGREP_FILTERED_TIMEOUT_SECS:-12}"
+sgrep_filtered_regex_timeout="${SGREP_FILTERED_REGEX_TIMEOUT_SECS:-20}"
+seed_timeout="${BENCH_SEED_TIMEOUT_SECS:-12}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --push)
@@ -69,6 +73,16 @@ while [ "$#" -gt 0 ]; do
       sgrep_timeout="$2"
       shift 2
       ;;
+    --sgrep-filtered-timeout)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      sgrep_filtered_timeout="$2"
+      shift 2
+      ;;
+    --sgrep-filtered-regex-timeout)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      sgrep_filtered_regex_timeout="$2"
+      shift 2
+      ;;
     --seed-timeout)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       seed_timeout="$2"
@@ -98,7 +112,7 @@ include_key() {
   esac
 }
 
-run_args=(--out-dir "$out_base" --image "$image" --sgrep-timeout "$sgrep_timeout" --sgrep-broad-timeout "$sgrep_broad_timeout" --seed-timeout "$seed_timeout")
+run_args=(--out-dir "$out_base" --image "$image" --sgrep-timeout "$sgrep_timeout" --sgrep-broad-timeout "$sgrep_broad_timeout" --sgrep-filtered-timeout "$sgrep_filtered_timeout" --sgrep-filtered-regex-timeout "$sgrep_filtered_regex_timeout" --seed-timeout "$seed_timeout")
 [ "$push" -eq 0 ] || run_args+=(--push)
 
 {

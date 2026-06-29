@@ -57,6 +57,7 @@ class Transcript:
     terminal_reason: str = ""
     permission_denials: list[str] = field(default_factory=list)
     calls: list[ToolCall] = field(default_factory=list)
+    sgrep_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def session_s(self) -> float:
@@ -69,6 +70,30 @@ class Transcript:
     @property
     def non_tool_s(self) -> float:
         return max(0.0, self.session_s - self.tool_s)
+
+    @property
+    def sidecar_sgrep_s(self) -> float:
+        return sum(float(event.get("duration_s") or 0.0) for event in self.sgrep_events)
+
+    @property
+    def seed_sgrep_s(self) -> float:
+        return sum(
+            float(event.get("duration_s") or 0.0)
+            for event in self.sgrep_events
+            if event.get("phase") == "seed"
+        )
+
+    @property
+    def sgrep_timeouts(self) -> int:
+        return sum(1 for event in self.sgrep_events if int(event.get("rc") or 0) in {124, 137})
+
+    @property
+    def sgrep_cache_hits(self) -> int:
+        return sum(1 for event in self.sgrep_events if event.get("cache") == "hit")
+
+    @property
+    def sgrep_cache_misses(self) -> int:
+        return sum(1 for event in self.sgrep_events if event.get("cache") == "miss")
 
 
 def clip(value: Any, limit: int = MAX_CELL) -> str:
@@ -167,7 +192,39 @@ def parse_tsv(path: Path) -> Transcript:
                 denials = event.get("permission_denials") or []
                 transcript.permission_denials = [clip(x, 180) for x in denials]
 
+    parse_sgrep_sidecar(transcript)
     return transcript
+
+
+def parse_sgrep_sidecar(transcript: Transcript) -> None:
+    path = transcript.path.with_name(f"{transcript.mode}.sgrep.tsv")
+    if not path.exists():
+        return
+    with path.open(errors="replace") as f:
+        for raw in f:
+            raw = raw.rstrip("\n")
+            if not raw:
+                continue
+            parts = raw.split("\t", 9)
+            if len(parts) < 10:
+                continue
+            phase, start, duration, rc, limit, count, has_file, cache, hits, command = parts
+            try:
+                event = {
+                    "phase": phase,
+                    "start": float(start),
+                    "duration_s": float(duration),
+                    "rc": int(rc),
+                    "limit_s": float(limit),
+                    "count": int(count),
+                    "has_file": has_file == "1",
+                    "cache": cache,
+                    "hits": int(hits) if hits else None,
+                    "command": command,
+                }
+            except ValueError:
+                continue
+            transcript.sgrep_events.append(event)
 
 
 def call_group(call: ToolCall) -> str:
@@ -214,6 +271,9 @@ def write_transcript_markdown(transcript: Transcript, out: Path) -> None:
         f"tool: {transcript.tool_s:.1f}s, non-tool: {transcript.non_tool_s:.1f}s",
         f"- Turns: {transcript.turns}, events: {transcript.events}, "
         f"cost: ${transcript.cost_usd:.4f}, terminal: `{transcript.terminal_reason}`",
+        f"- Sgrep sidecar: {transcript.sidecar_sgrep_s:.1f}s total, "
+        f"{transcript.seed_sgrep_s:.1f}s seed, {transcript.sgrep_timeouts} timeouts, "
+        f"{transcript.sgrep_cache_hits} cache hits, {transcript.sgrep_cache_misses} cache misses",
         "",
         "## Tool Time",
         "",
@@ -247,6 +307,22 @@ def write_transcript_markdown(transcript: Transcript, out: Path) -> None:
         for call in searches:
             lines.append(f"| {call.start:.1f} | {call.duration:.1f} | `{clip(call.summary)}` |")
 
+    if transcript.sgrep_events:
+        lines += [
+            "",
+            "## Sgrep Sidecar",
+            "",
+            "| phase | duration | rc | limit | count | file | cache | hits | command |",
+            "|---|---:|---:|---:|---:|---|---|---:|---|",
+        ]
+        for event in transcript.sgrep_events[:40]:
+            lines.append(
+                f"| {event['phase']} | {event['duration_s']:.1f} | {event['rc']} | "
+                f"{event['limit_s']:.0f} | {event['count']} | {event['has_file']} | "
+                f"{event['cache']} | {event['hits'] if event['hits'] is not None else ''} | "
+                f"{clip(event['command'])} |"
+            )
+
     if transcript.permission_denials:
         lines += ["", "## Permission Denials", ""]
         for denial in transcript.permission_denials:
@@ -270,6 +346,8 @@ def write_summary(transcripts: list[Transcript], out_dir: Path) -> None:
         writer.writerow([
             "repo", "mode", "session_s", "api_s", "tool_s", "non_tool_s",
             "turns", "events", "cost_usd", "sgrep_calls", "sgrep_s",
+            "sidecar_sgrep_s", "seed_sgrep_s", "sgrep_timeouts",
+            "sgrep_cache_hits", "sgrep_cache_misses",
             "git_s", "read_s", "edit_s", "terminal_reason", "final_answer",
         ])
         for t in rows:
@@ -287,6 +365,11 @@ def write_summary(transcripts: list[Transcript], out_dir: Path) -> None:
                 f"{t.cost_usd:.6f}",
                 counts.get("Bash:sgrep", 0),
                 f"{totals.get('Bash:sgrep', 0.0):.1f}",
+                f"{t.sidecar_sgrep_s:.1f}",
+                f"{t.seed_sgrep_s:.1f}",
+                t.sgrep_timeouts,
+                t.sgrep_cache_hits,
+                t.sgrep_cache_misses,
                 f"{totals.get('Bash:git', 0.0):.1f}",
                 f"{totals.get('Read', 0.0):.1f}",
                 f"{totals.get('Edit', 0.0):.1f}",

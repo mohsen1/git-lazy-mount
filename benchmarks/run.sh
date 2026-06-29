@@ -2,7 +2,7 @@
 # Run one repo's benchmark (both modes) in a privileged FUSE container.
 #
 # Usage:
-#   ./run.sh [--push] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--seed-timeout SECONDS] \
+#   ./run.sh [--push] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--sgrep-filtered-timeout SECONDS] [--sgrep-filtered-regex-timeout SECONDS] [--seed-timeout SECONDS] \
 #     <key> <clone owner/name> <push-fork owner/name> <upstream owner/name> \
 #     <default-branch> "<question>"
 #
@@ -17,7 +17,7 @@ usage() {
 Run one repo's benchmark (both modes) in a privileged FUSE container.
 
 Usage:
-  ./run.sh [--push] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--seed-timeout SECONDS] \
+  ./run.sh [--push] [--out-dir DIR] [--image IMAGE] [--sgrep-timeout SECONDS] [--sgrep-broad-timeout SECONDS] [--sgrep-filtered-timeout SECONDS] [--sgrep-filtered-regex-timeout SECONDS] [--seed-timeout SECONDS] \
     <key> <clone owner/name> <push-fork owner/name> <upstream owner/name> \
     <default-branch> "<question>"
 
@@ -32,7 +32,9 @@ out_base="out"
 image="glm-bench"
 sgrep_timeout="${SGREP_TIMEOUT_SECS:-0}"
 sgrep_broad_timeout="${SGREP_BROAD_TIMEOUT_SECS:-12}"
-seed_timeout="${BENCH_SEED_TIMEOUT_SECS:-30}"
+sgrep_filtered_timeout="${SGREP_FILTERED_TIMEOUT_SECS:-12}"
+sgrep_filtered_regex_timeout="${SGREP_FILTERED_REGEX_TIMEOUT_SECS:-20}"
+seed_timeout="${BENCH_SEED_TIMEOUT_SECS:-12}"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --push)
@@ -57,6 +59,16 @@ while [ "$#" -gt 0 ]; do
     --sgrep-timeout)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       sgrep_timeout="$2"
+      shift 2
+      ;;
+    --sgrep-filtered-timeout)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      sgrep_filtered_timeout="$2"
+      shift 2
+      ;;
+    --sgrep-filtered-regex-timeout)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      sgrep_filtered_regex_timeout="$2"
       shift 2
       ;;
     --seed-timeout)
@@ -128,13 +140,19 @@ if [ "$push" -eq 1 ]; then
   fi
 fi
 
-if [ -n "$sgrep_broad_timeout" ] && [ "$sgrep_broad_timeout" != "0" ]; then
+if [ -n "$sgrep_broad_timeout" ]; then
   env_args+=(-e "SGREP_BROAD_TIMEOUT_SECS=$sgrep_broad_timeout")
+fi
+if [ -n "$sgrep_filtered_timeout" ]; then
+  env_args+=(-e "SGREP_FILTERED_TIMEOUT_SECS=$sgrep_filtered_timeout")
 fi
 if [ -n "$sgrep_timeout" ] && [ "$sgrep_timeout" != "0" ]; then
   env_args+=(-e "SGREP_TIMEOUT_SECS=$sgrep_timeout")
 fi
-if [ -n "$seed_timeout" ] && [ "$seed_timeout" != "0" ]; then
+if [ -n "$sgrep_filtered_regex_timeout" ]; then
+  env_args+=(-e "SGREP_FILTERED_REGEX_TIMEOUT_SECS=$sgrep_filtered_regex_timeout")
+fi
+if [ -n "$seed_timeout" ]; then
   env_args+=(-e "BENCH_SEED_TIMEOUT_SECS=$seed_timeout")
 fi
 
