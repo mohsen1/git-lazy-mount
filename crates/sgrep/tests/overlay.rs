@@ -128,10 +128,22 @@ fn overlay_drops_stale_remote_and_adds_local() {
     assert_eq!(
         out,
         vec![
+            m("unchanged.ts", 3, "NEEDLE in remote"),
             m("changed.ts", 2, "NEEDLE here"),
-            m("unchanged.ts", 3, "NEEDLE in remote")
         ]
     );
+}
+
+#[test]
+fn overlay_dedup_preserves_remote_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = vec![
+        m("b.ts", 1, "NEEDLE"),
+        m("a.ts", 1, "NEEDLE"),
+        m("b.ts", 1, "NEEDLE"),
+    ];
+    let out = apply(remote, dir.path(), &[], &re("NEEDLE"));
+    assert_eq!(out, vec![m("b.ts", 1, "NEEDLE"), m("a.ts", 1, "NEEDLE")]);
 }
 
 #[test]

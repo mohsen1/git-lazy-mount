@@ -32,8 +32,8 @@
 <text x="120" y="156.5" font-size="13.5" font-weight="600" fill="#1d2329" text-anchor="end">llvm</text>
 <rect x="132" y="138" width="636.3" height="13" rx="2.5" fill="#e4572e"/>
 <text x="761.3" y="148.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">2434 MB</text>
-<rect x="132" y="154" width="394.3" height="13" rx="2.5" fill="#2a9d8f"/>
-<text x="519.3" y="164.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">283 MB</text>
+<rect x="132" y="154" width="395.7" height="13" rx="2.5" fill="#2a9d8f"/>
+<text x="520.7" y="164.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">284 MB</text>
 <text x="120" y="196.5" font-size="13.5" font-weight="600" fill="#1d2329" text-anchor="end">node</text>
 <rect x="132" y="178" width="485.9" height="13" rx="2.5" fill="#e4572e"/>
 <text x="610.9" y="188.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">765 MB</text>

@@ -93,6 +93,9 @@ impl SearchProvider for Sourcegraph {
             .set("User-Agent", USER_AGENT)
             .query("q", &query)
             .query("display", &q.max_results.to_string());
+        if let Some(timeout_secs) = q.timeout_secs {
+            req = req.timeout(Duration::from_secs(timeout_secs));
+        }
         if let Some(t) = &self.token {
             req = req.set("Authorization", &format!("token {t}"));
         }
@@ -102,7 +105,17 @@ impl SearchProvider for Sourcegraph {
                 let hint = body.lines().next().unwrap_or("").trim();
                 SearchError::Transport(format!("HTTP {code} from {url}: {hint}"))
             }
-            ureq::Error::Transport(t) => SearchError::Transport(t.to_string()),
+            ureq::Error::Transport(t) => {
+                let msg = t.to_string();
+                if q.timeout_secs.is_some() && msg.contains("timed out") {
+                    SearchError::Transport(format!(
+                        "search timed out after {}s; narrow the pattern or add --file",
+                        q.timeout_secs.unwrap_or_default()
+                    ))
+                } else {
+                    SearchError::Transport(msg)
+                }
+            }
         })?;
         parse_stream(BufReader::new(resp.into_reader()), q.max_results)
     }

@@ -12,7 +12,7 @@ Two benchmarks, run cold on the current upstream repos:
   microVM** (KVM, `/dev/fuse`).
 - **[3-repo deep dive](#results-deep-dive--3-repos)** — the full workflow in a
   `/dev/fuse` container: a real `claude` (Sonnet) prompt finds where some code
-  lives, edits it, then **commits + pushes through the mount**. Code search goes
+  lives, edits it, then **commits through the mount**. Code search goes
   through [`sgrep`](../crates/sgrep) (a cloud index, **zero** local reads), so the
   agent materializes only the file it edits.
 
@@ -28,32 +28,32 @@ working copy.
 ![Time to a ready working copy: shallow clone vs lazy-mount, per repo](charts/time.svg)
 
 Checking out all 20 with `git clone --depth 1` costs **7.3 GB** vs **1.3 GB
-of lazy mounts — 5.5× less**. Ready time totals **265.4 s** for shallow clone vs
-**92.0 s** for lazy-mount, so lazy is **2.9× faster** in this setup benchmark.
-Each lazy mount is ready in **0.9–16.5 s**, even the 179k-file LLVM tree.
+of lazy mounts — 5.5× less**. Ready time totals **268.7 s** for shallow clone vs
+**88.7 s** for lazy-mount, so lazy is **3.0× faster** in this setup benchmark.
+Each lazy mount is ready in **0.8–15.1 s**, even the 179k-file LLVM tree.
 
 | repo | files | shallow `git clone` | `git lazy-mount` | mount |
 |---|---:|---:|---:|---:|
-| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,188 | 2,434 MB | **283 MB** | 16.5 s |
-| [nodejs/node](https://github.com/nodejs/node) | 49,409 | 765 MB | **79 MB** | 5.9 s |
-| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,324 | 532 MB | **111 MB** | 6.5 s |
-| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,507 | 519 MB | **70 MB** | 5.3 s |
-| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 409 MB | **22 MB** | 2.3 s |
-| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 390 MB | **49 MB** | 3.1 s |
-| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 300 MB | **73 MB** | 6.2 s |
-| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,434 | 278 MB | **66 MB** | 5.2 s |
+| [llvm/llvm-project](https://github.com/llvm/llvm-project) | 179,197 | 2,434 MB | **284 MB** | 15.1 s |
+| [nodejs/node](https://github.com/nodejs/node) | 49,410 | 765 MB | **79 MB** | 5.4 s |
+| [elastic/elasticsearch](https://github.com/elastic/elasticsearch) | 44,326 | 532 MB | **111 MB** | 6.4 s |
+| [tensorflow/tensorflow](https://github.com/tensorflow/tensorflow) | 36,509 | 519 MB | **70 MB** | 4.8 s |
+| [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | 81,369 | 409 MB | **22 MB** | 2.2 s |
+| [godotengine/godot](https://github.com/godotengine/godot) | 14,024 | 390 MB | **49 MB** | 2.9 s |
+| [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 30,519 | 300 MB | **73 MB** | 5.6 s |
+| [pytorch/pytorch](https://github.com/pytorch/pytorch) | 21,433 | 278 MB | **66 MB** | 5.7 s |
 | [rust-lang/rust](https://github.com/rust-lang/rust) | 60,654 | 266 MB | **143 MB** | 7.7 s |
-| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,039 | 265 MB | **93 MB** | 5.5 s |
-| [apple/swift](https://github.com/apple/swift) | 31,564 | 243 MB | **101 MB** | 5.8 s |
-| [flutter/flutter](https://github.com/flutter/flutter) | 16,022 | 182 MB | **55 MB** | 3.9 s |
-| [golang/go](https://github.com/golang/go) | 15,596 | 181 MB | **35 MB** | 2.8 s |
-| [python/cpython](https://github.com/python/cpython) | 5,858 | 173 MB | **78 MB** | 5.1 s |
+| [microsoft/vscode](https://github.com/microsoft/vscode) | 16,040 | 265 MB | **93 MB** | 5.5 s |
+| [apple/swift](https://github.com/apple/swift) | 31,564 | 243 MB | **101 MB** | 5.7 s |
+| [flutter/flutter](https://github.com/flutter/flutter) | 16,022 | 182 MB | **55 MB** | 3.8 s |
+| [golang/go](https://github.com/golang/go) | 15,596 | 181 MB | **35 MB** | 3.2 s |
+| [python/cpython](https://github.com/python/cpython) | 5,860 | 173 MB | **78 MB** | 4.8 s |
 | [angular/angular](https://github.com/angular/angular) | 10,605 | 166 MB | **19 MB** | 2.2 s |
-| [denoland/deno](https://github.com/denoland/deno) | 14,303 | 123 MB | **18 MB** | 2.3 s |
+| [denoland/deno](https://github.com/denoland/deno) | 14,309 | 123 MB | **18 MB** | 2.3 s |
 | [facebook/react](https://github.com/facebook/react) | 7,243 | 50 MB | **18 MB** | 1.8 s |
-| [redis/redis](https://github.com/redis/redis) | 1,818 | 25 MB | **8 MB** | 1.5 s |
-| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 11 MB | **8 MB** | 1.5 s |
-| [vuejs/core](https://github.com/vuejs/core) | 703 | 8 MB | **4 MB** | 0.9 s |
+| [redis/redis](https://github.com/redis/redis) | 1,818 | 25 MB | **8 MB** | 1.4 s |
+| [sveltejs/svelte](https://github.com/sveltejs/svelte) | 8,944 | 11 MB | **8 MB** | 1.4 s |
+| [vuejs/core](https://github.com/vuejs/core) | 703 | 8 MB | **4 MB** | 0.8 s |
 
 `git clone --depth 1` is the fastest ordinary clone baseline and drops history;
 `git lazy-mount` keeps full commit history via a `tree:0` partial clone and
@@ -115,14 +115,43 @@ offsets from the start):
 - [`transcripts/vscode-full.md`](transcripts/vscode-full.md) · [`vscode-lazy.md`](transcripts/vscode-lazy.md)
 - [`transcripts/typescript-full.md`](transcripts/typescript-full.md) · [`typescript-lazy.md`](transcripts/typescript-lazy.md)
 
+For current full-run analysis, generate compact timing summaries from raw
+`*.transcript.tsv` files:
+
+```bash
+python3 benchmarks/format_transcripts.py benchmarks/out/<run-id>
+```
+
+This writes `transcripts-summary/SUMMARY.md`, `summary.csv`, and one concise
+Markdown file per transcript without copying large file payloads from tool
+results.
+
 ## Reproduce
 
 ```bash
 docker build -t glm-bench -f benchmarks/Dockerfile .  # local checkout + claude (non-root)
-printf 'ANTHROPIC_API_KEY=...\nGH_TOKEN=...\n' > benchmarks/.benchenv && chmod 600 benchmarks/.benchenv
+printf 'ANTHROPIC_API_KEY=...\n' > benchmarks/.benchenv && chmod 600 benchmarks/.benchenv
 benchmarks/run.sh react  facebook/react  <your-fork>/react  facebook/react  main  'where does `useState` resolve its initial state?'
 ```
 
-See [`bench_repo.sh`](bench_repo.sh) for the per-repo driver and [`run.sh`](run.sh)
-for launching one. The image runs as a non-root user so `claude` can run headlessly
-with a scoped tool allow-list; FUSE works via `--device /dev/fuse --cap-add SYS_ADMIN`.
+`run.sh` commits locally by default, even when `.benchenv` contains `GH_TOKEN`.
+Pass `--push` only when you intentionally want benchmark branches pushed to the
+fork argument.
+
+To run the full 20-repo agent benchmark locally in Docker and keep transcript
+summaries current after each repo:
+
+```bash
+benchmarks/run_all.sh --run-id agent-full
+```
+
+The Docker agent benchmark sets `SGREP_BROAD_TIMEOUT_SECS=12` by default so one
+unfiltered remote search cannot dominate a cheap repo. Pass
+`--sgrep-broad-timeout 0` to disable that cap for comparison runs.
+For experiments that should cap every remote search, pass `--sgrep-timeout N`;
+leave it unset or `0` for the provider default on file-filtered searches.
+
+See [`bench_repo.sh`](bench_repo.sh) for the per-repo driver, [`run.sh`](run.sh)
+for launching one repo, and [`run_all.sh`](run_all.sh) for the 20-repo batch. The
+image runs as a non-root user so `claude` can run headlessly with a scoped tool
+allow-list; FUSE works via `--device /dev/fuse --cap-add SYS_ADMIN`.

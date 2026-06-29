@@ -62,6 +62,14 @@ struct Cli {
     #[arg(long, env = "SGREP_CACHE_TTL_SECS", default_value_t = DEFAULT_CACHE_TTL_SECS)]
     cache_ttl_secs: u64,
 
+    /// Whole remote-search timeout in seconds (`0` uses the provider default).
+    #[arg(long, env = "SGREP_TIMEOUT_SECS", default_value_t = 0)]
+    timeout_secs: u64,
+
+    /// Timeout for remote searches without `--file` (`0` uses the provider default).
+    #[arg(long, env = "SGREP_BROAD_TIMEOUT_SECS", default_value_t = 0)]
+    broad_timeout_secs: u64,
+
     /// Skip the local-edits overlay (search committed content only).
     #[arg(long)]
     no_overlay: bool,
@@ -112,15 +120,30 @@ fn run(cli: &Cli) -> Result<bool, Box<dyn std::error::Error>> {
         .ok_or("could not determine repo; pass --repo OWNER/REPO")?;
 
     let provider = build(&cli.provider)?;
-    let literal = cli.literal || pattern_is_plain_literal(&cli.pattern);
+    let search_pattern = normalized_search_pattern(&cli.pattern);
+    let literal = effective_literal(&cli.pattern, cli.literal);
+    if !literal {
+        reject_too_broad_regex(&cli.pattern, cli.file_filter.as_deref())?;
+        // Validate regex syntax before making a remote request. This avoids
+        // spending network time on invalid code-shaped probes such as `ref(`.
+        let _ = local_regex(&cli.pattern, cli.ignore_case, false)?;
+    }
+    let timeout_secs = if cli.timeout_secs > 0 {
+        Some(cli.timeout_secs)
+    } else if cli.broad_timeout_secs > 0 && cli.file_filter.is_none() {
+        Some(cli.broad_timeout_secs)
+    } else {
+        None
+    };
     let query = Query {
         repo,
         rev: cli.rev.clone(),
-        pattern: cli.pattern.clone(),
+        pattern: search_pattern.clone(),
         file_filter: cli.file_filter.clone(),
         case_insensitive: cli.ignore_case,
         literal,
         max_results: cli.count,
+        timeout_secs,
     };
     let (remote, cache_status) = search_remote(cli, provider.as_ref(), &query)?;
 
@@ -134,8 +157,9 @@ fn run(cli: &Cli) -> Result<bool, Box<dyn std::error::Error>> {
         .collect::<std::collections::HashSet<_>>()
         .len();
 
-    let re = local_regex(&cli.pattern, cli.ignore_case, cli.literal)?;
-    let results = overlay::apply(remote, &base, &changed, &re);
+    let re = local_regex(&search_pattern, cli.ignore_case, literal)?;
+    let mut results = overlay::apply(remote, &base, &changed, &re);
+    rank_matches(&mut results);
 
     let stdout = std::io::stdout();
     output::print_matches(&results, cli.files_only, stdout.lock())?;
@@ -296,6 +320,171 @@ fn pattern_is_plain_literal(pattern: &str) -> bool {
         })
 }
 
+fn effective_literal(pattern: &str, explicit_literal: bool) -> bool {
+    explicit_literal || pattern_is_plain_literal(pattern) || pattern_is_code_literal(pattern)
+}
+
+fn pattern_is_code_literal(pattern: &str) -> bool {
+    if pattern.is_empty() || regex_intent(pattern) {
+        return false;
+    }
+    let call_base = pattern
+        .strip_suffix("()")
+        .or_else(|| pattern.strip_suffix('('));
+    if let Some(base) = call_base {
+        return is_ident_path(base);
+    }
+    pattern.contains('.') && is_ident_path(pattern)
+}
+
+fn regex_intent(pattern: &str) -> bool {
+    pattern.bytes().any(|b| {
+        matches!(
+            b,
+            b'\\' | b'^' | b'$' | b'|' | b'?' | b'*' | b'+' | b'[' | b']' | b'{' | b'}'
+        )
+    })
+}
+
+fn is_ident_path(s: &str) -> bool {
+    !s.is_empty()
+        && s.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+        })
+}
+
+fn normalized_search_pattern(pattern: &str) -> String {
+    pattern
+        .strip_suffix("()")
+        .filter(|base| is_ident_path(base))
+        .map(|base| format!("{base}("))
+        .unwrap_or_else(|| pattern.to_string())
+}
+
+fn reject_too_broad_regex(
+    pattern: &str,
+    file_filter: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if file_filter.is_some() {
+        return Ok(());
+    }
+    let compact = pattern.trim();
+    let trivially_broad = matches!(
+        compact,
+        "." | ".*" | ".+" | "^.*$" | r"\w+" | r"\S+" | r"[A-Za-z_]+" | r"[a-zA-Z_]+"
+    );
+    if trivially_broad {
+        return Err(
+            "broad regex has no required literal; add --file or use a narrower pattern".into(),
+        );
+    }
+    Ok(())
+}
+
+fn rank_matches(matches: &mut [Match]) {
+    matches.sort_by_key(match_rank);
+}
+
+fn match_rank(m: &Match) -> (u8, u8) {
+    (path_rank(&m.path), text_rank(&m.text))
+}
+
+fn path_rank(path: &str) -> u8 {
+    let lower = path.to_ascii_lowercase();
+    let parts = lower
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    let name = parts.last().copied().unwrap_or("");
+
+    if name.ends_with(".d.ts")
+        || name.ends_with(".snap")
+        || name.ends_with(".snapshot")
+        || parts.iter().any(|part| {
+            matches!(
+                *part,
+                "generated" | "vendor" | "third_party" | "node_modules" | "dist" | "build"
+            )
+        })
+    {
+        return 60;
+    }
+    if name.ends_with("_test.rs")
+        || name.ends_with("_test.go")
+        || name.ends_with(".test.ts")
+        || name.ends_with(".test.tsx")
+        || name.ends_with(".test.js")
+        || name.ends_with(".test.jsx")
+        || name.ends_with(".spec.ts")
+        || name.ends_with(".spec.tsx")
+        || name.ends_with(".spec.js")
+        || name.ends_with(".spec.jsx")
+        || parts.iter().any(|part| {
+            matches!(
+                *part,
+                "test"
+                    | "tests"
+                    | "testing"
+                    | "fixtures"
+                    | "fixture"
+                    | "mock"
+                    | "mocks"
+                    | "__tests__"
+                    | "bench"
+                    | "benches"
+                    | "benchmark"
+                    | "benchmarks"
+                    | "snapshot"
+                    | "snapshots"
+            )
+        })
+    {
+        return 40;
+    }
+    if parts.iter().any(|part| {
+        matches!(
+            *part,
+            "doc"
+                | "docs"
+                | "example"
+                | "examples"
+                | "samples"
+                | "sample"
+                | "changelog"
+                | "changelogs"
+                | "packages-private"
+        )
+    }) {
+        return 50;
+    }
+    10
+}
+
+fn text_rank(text: &str) -> u8 {
+    let t = text.trim_start();
+    if t.contains("Some(\"")
+        || t.contains("register")
+        || t.contains("registration")
+        || t.starts_with("export function ")
+        || t.starts_with("export async function ")
+        || t.starts_with("pub fn ")
+        || t.starts_with("pub async fn ")
+        || t.starts_with("fn ")
+        || t.starts_with("class ")
+        || t.starts_with("const ")
+        || t.starts_with("pub const ")
+    {
+        return 0;
+    }
+    if t.contains("extension!(") || t.contains("ops = [") {
+        return 1;
+    }
+    10
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +498,7 @@ mod tests {
             case_insensitive: false,
             literal: false,
             max_results,
+            timeout_secs: None,
         }
     }
 
@@ -354,11 +544,81 @@ mod tests {
 
     #[test]
     fn plain_identifier_patterns_can_use_literal_search() {
-        assert!(pattern_is_plain_literal("setCommand"));
-        assert!(pattern_is_plain_literal("NOTIFICATION_READY"));
-        assert!(!pattern_is_plain_literal(r"createTypeChecker\b"));
-        assert!(!pattern_is_plain_literal("foo|bar"));
-        assert!(!pattern_is_plain_literal(r"\.rs$"));
+        assert!(effective_literal("setCommand", false));
+        assert!(effective_literal("NOTIFICATION_READY", false));
+        assert!(effective_literal("Deno.readFile", false));
+        assert!(effective_literal("ref(", false));
+        assert!(effective_literal("ref()", false));
+        assert_eq!(normalized_search_pattern("ref()"), "ref(");
+        assert!(!effective_literal(r"createTypeChecker\b", false));
+        assert!(!effective_literal("foo|bar", false));
+        assert!(!effective_literal(r"\.rs$", false));
+        assert!(!effective_literal("readFile.*op", false));
+    }
+
+    #[test]
+    fn broad_regex_rejected_without_file_filter() {
+        assert!(reject_too_broad_regex(".*", None).is_err());
+        assert!(reject_too_broad_regex(".*", Some(r"\.rs$")).is_ok());
+        assert!(reject_too_broad_regex(r"class \w+", None).is_ok());
+    }
+
+    #[test]
+    fn match_ranking_prefers_production_paths() {
+        let mut matches = vec![
+            m("cli/tools/test/fmt.rs"),
+            m("docs/read_file.md"),
+            m("ext/fs/lib.rs"),
+            m("src/foo_test.rs"),
+        ];
+        rank_matches(&mut matches);
+        assert_eq!(
+            matches.iter().map(|m| m.path.as_str()).collect::<Vec<_>>(),
+            vec![
+                "ext/fs/lib.rs",
+                "cli/tools/test/fmt.rs",
+                "src/foo_test.rs",
+                "docs/read_file.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn match_ranking_prefers_definitions_and_registrations() {
+        let mut matches = vec![
+            Match {
+                path: "packages/reactivity/README.md".into(),
+                line: 1,
+                text: "ref() examples".into(),
+            },
+            Match {
+                path: "packages/reactivity/src/ref.ts".into(),
+                line: 64,
+                text: "export function ref<T>(value: T): Ref<UnwrapRef<T>>;".into(),
+            },
+            Match {
+                path: "packages-private/dts-test/ref.test-d.ts".into(),
+                line: 12,
+                text: "ref<string>()".into(),
+            },
+        ];
+        rank_matches(&mut matches);
+        assert_eq!(matches[0].path, "packages/reactivity/src/ref.ts");
+
+        let mut matches = vec![
+            Match {
+                path: "tests/unit/files_test.ts".into(),
+                line: 580,
+                text: "assertEquals((await Deno.readFile(filename)).byteLength, 20);".into(),
+            },
+            Match {
+                path: "ext/fs/ops.rs".into(),
+                line: 1587,
+                text: r#"        Some("Deno.readFile()"),"#.into(),
+            },
+        ];
+        rank_matches(&mut matches);
+        assert_eq!(matches[0].path, "ext/fs/ops.rs");
     }
 }
 

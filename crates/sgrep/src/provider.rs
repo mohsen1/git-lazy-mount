@@ -27,6 +27,8 @@ pub struct Query {
     pub literal: bool,
     /// Cap on the number of results requested.
     pub max_results: usize,
+    /// Optional whole-request timeout in seconds. `None` means provider default.
+    pub timeout_secs: Option<u64>,
 }
 
 /// A single match: a repo-relative path, a 1-based line number, and the line.

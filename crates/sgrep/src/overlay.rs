@@ -109,7 +109,8 @@ pub fn locally_changed(root: &Path) -> Vec<String> {
 }
 
 /// Drop remote hits for `changed` paths, grep those paths locally, and merge.
-/// Returns sorted, de-duplicated matches reflecting the working tree.
+/// Preserves provider result order for unchanged files; callers may apply a
+/// stable usefulness ranking after this.
 pub fn apply(remote: Vec<Match>, base: &Path, changed: &[String], re: &Regex) -> Vec<Match> {
     let changed_set: HashSet<&str> = changed.iter().map(String::as_str).collect();
     let mut out: Vec<Match> = remote
@@ -117,8 +118,8 @@ pub fn apply(remote: Vec<Match>, base: &Path, changed: &[String], re: &Regex) ->
         .filter(|m| !changed_set.contains(m.path.as_str()))
         .collect();
     out.extend(grep_local(base, changed, re));
-    out.sort();
-    out.dedup();
+    let mut seen = HashSet::new();
+    out.retain(|m| seen.insert((m.path.clone(), m.line, m.text.clone())));
     out
 }
 

@@ -25,6 +25,8 @@ sgrep --repo colinhacks/zod ZodError
 sgrep -l --file '\.ts$' 'class \w+'  # files-with-matches, file filter
 sgrep -i --literal 'TODO(perf)'      # case-insensitive, literal
 sgrep --count 500 ZodError           # ask for a larger result set
+sgrep --timeout-secs 10 foo          # fail fast on an overly broad query
+SGREP_BROAD_TIMEOUT_SECS=10 sgrep foo # cap only searches without --file
 ```
 
 Auth/endpoint come from the environment (same as the `src` CLI): `SRC_ENDPOINT`
@@ -39,6 +41,13 @@ minutes under `$XDG_CACHE_HOME/git-lazy-mount/sgrep` (or
 `~/.cache/git-lazy-mount/sgrep`) and then overlaid with current local edits on
 every invocation. Use `--no-cache` or `SGREP_CACHE_TTL_SECS=0` for a fresh remote
 query.
+
+Use `--timeout-secs` or `SGREP_TIMEOUT_SECS` for agent workflows where one query
+should not consume the whole session. Prefer `SGREP_BROAD_TIMEOUT_SECS` for
+coding agents: it applies only when the search has no `--file` filter, so a broad
+or misspelled first query fails fast while known-file searches keep the provider
+default. A timeout exits as a search error with a hint to narrow the pattern or
+add `--file`; successful results are unchanged.
 
 ## Uncommitted edits, automatic
 
@@ -60,8 +69,10 @@ sgrep --changed src/a.ts 'pattern'        # or --changed-from edited.txt
 - **Claude Code** uses an embedded ripgrep for its Grep tool, so disable that
   tool and have the agent search via `sgrep` (Bash or an MCP tool). A `CLAUDE.md`
   note should say "search with `sgrep --count 50` instead of `rg`/`grep`, and
-  prefer `--file` filters over piping to `head`." `sgrep` handles uncommitted
-  edits on its own.
+  use `--file` filters whenever the likely language or directory is known;
+  never pipe to `head`." Set `SGREP_BROAD_TIMEOUT_SECS` for benchmark/agent runs
+  so a broad miss returns quickly and the agent can refine the query. `sgrep`
+  handles uncommitted edits on its own.
 - **Codex**: shadow `rg`/`grep` on `PATH` with an `sgrep` wrapper, or instruct
   it to call `sgrep`.
 

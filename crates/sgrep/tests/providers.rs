@@ -15,6 +15,7 @@ fn q(pattern: &str) -> Query {
         case_insensitive: false,
         literal: false,
         max_results: 50,
+        timeout_secs: None,
     }
 }
 

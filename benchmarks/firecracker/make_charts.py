@@ -22,6 +22,7 @@ import xml.dom.minidom
 
 DATA = sys.argv[1] if len(sys.argv) > 1 else "chartdata.json"
 OUTDIR = sys.argv[2] if len(sys.argv) > 2 else "."
+os.makedirs(OUTDIR, exist_ok=True)
 
 CLONE_COLOR = "#e4572e"   # shallow clone baseline
 LAZY_COLOR = "#2a9d8f"    # git lazy-mount (the win)
