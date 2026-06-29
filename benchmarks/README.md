@@ -97,18 +97,18 @@ twice per repo in a fresh Firecracker microVM: once after a full-history
 ![Disk after agent task: full clone vs lazy mount](charts/agent-disk.svg)
 
 Across all 20 repos, lazy-mount won **20 of 20** total sessions. Full clone+agent
-time totaled **2861.1 s** vs **977.5 s** for lazy mount+agent, saving
-**1883.6 s** overall (**2.93× faster**). The setup split is the main driver:
-full clone time totaled **1861.6 s** vs **82.8 s** for lazy mounts. The agent
-phases were comparable in aggregate: **999.5 s** on full clones vs **894.7 s**
+time totaled **2649.6 s** vs **835.9 s** for lazy mount+agent, saving
+**1813.7 s** overall (**3.17× faster**). The setup split is the main driver:
+full clone time totaled **1867.4 s** vs **113.6 s** for lazy mounts. The agent
+phases were comparable in aggregate: **782.2 s** on full clones vs **722.3 s**
 on lazy mounts.
 
-The narrowest win was `svelte`: full clone+agent took **18.7 s** and lazy
-mount+agent took **16.5 s**. The largest wins were `llvm` (**357.7 s saved**)
-and `typescript` (**198.5 s saved**).
+The narrowest win was `svelte`: full clone+agent took **20.0 s** and lazy
+mount+agent took **15.7 s**. The largest wins were `llvm` (**407.2 s saved**)
+and `typescript` (**171.2 s saved**).
 
-Disk after the completed task was **30.2 GB** for full-history clones vs **1.4 GB**
-for lazy workspaces (**21.5× smaller**). This is a full-history clone baseline;
+Disk after the completed task was **29.3 GB** for full-history clones vs **1.4 GB**
+for lazy workspaces (**21.6× smaller**). This is a full-history clone baseline;
 the setup chart above intentionally uses a shallower, faster clone baseline.
 
 ## Transcripts

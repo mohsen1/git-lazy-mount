@@ -34,7 +34,7 @@ sgrep_cache_for() {
   esac
 }
 sgrep_seed_cache_for() {
-  case "${BENCH_SEED_CACHE_SCOPE:-shared}" in
+  case "${BENCH_SEED_CACHE_SCOPE:-mode}" in
     mode) sgrep_cache_for "$1" ;;
     *) printf '%s\n' "$OUT/seed.sgrep-cache" ;;
   esac
@@ -214,6 +214,7 @@ EOF
 chmod +x "$HOME/bin/git"
 export PATH="$HOME/bin:$PATH"
 
+# shellcheck disable=SC2016
 CLAUDE_MD='# Searching this repository
 
 This is a lazily-materialized working tree. Do NOT use grep, ripgrep (rg), `git grep`, or `find` for content search — they read every file and defeat lazy mounting.
@@ -227,9 +228,14 @@ ALLOW=(--allowedTools "Read" "Glob" "Edit" "Write" "Bash(git:*)" "Bash(sgrep:*)"
        --disallowedTools "Grep" "Bash(rg:*)" "Bash(grep:*)" "Bash(find:*)")
 
 seed_searches(){
-  local pfx="$1" dir="$2" files_list="$3" cache seed="$OUT/${pfx}.seed.md" log="$OUT/${pfx}.sgrep.tsv"
+  local pfx="$1"
+  local dir="$2"
+  local files_list="$3"
+  local cache seed log
   local seed_timeout="${BENCH_SEED_TIMEOUT_SECS:-12}"
   local seed_count="${BENCH_SEED_COUNT:-10}"
+  seed="$OUT/${pfx}.seed.md"
+  log="$OUT/${pfx}.sgrep.tsv"
   cache="$(sgrep_seed_cache_for "$pfx")"
   mkdir -p "$cache"
   : > "$seed"
@@ -372,8 +378,8 @@ for term in terms + variants:
 PY
     [ -n "$term" ] || continue
     {
-      printf '### `%s`\n' "$term"
-      path_hints="$(python3 - "$term" "$files_list" "$dir" "$QUESTION" <<'PY'
+      printf '%s\n' "### \`$term\`"
+      path_hints="$(python3 - "$term" "$files_list" "$QUESTION" <<'PY'
 import os
 import re
 import sys
@@ -381,8 +387,7 @@ import sys
 original_term = sys.argv[1].strip()
 term = original_term
 paths_file = sys.argv[2]
-repo_dir = sys.argv[3]
-question_lc = sys.argv[4].lower() if len(sys.argv) > 4 else ""
+question_lc = sys.argv[3].lower() if len(sys.argv) > 3 else ""
 for prefix in ("function ", "class ", "def ", "void ", "pub fn ", "fn "):
     if term.startswith(prefix):
         term = term[len(prefix):].strip()
@@ -443,94 +448,40 @@ for raw in raw_paths:
 
 ranked = sorted(rows, key=lambda r: (-r[0], r[1], r[2]))
 
-def line_hint(path):
-    name = re.escape(leaf)
-    patterns = []
-    original_lc = original_term.lower()
-    if (
-        original_lc.startswith(("function ", "def ", "fn ", "pub fn ", "void "))
-        or " " in original_term
-        or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", leaf)
-    ):
-        patterns.extend([
-            rf"\bexport\s+function\s+{name}\b",
-            rf"\bfunction\s+{name}\b",
-            rf"\bdef\s+{name}\b",
-            rf"\bfunc\s*\([^)]*\)\s*{name}\b",
-            rf"\bfunc\s+{name}\b",
-            rf"\bfn\s+{name}\b",
-            rf"\bvoid\s+{name}\b",
-        ])
-    fallback_patterns = []
-    for value in (original_term, term, leaf):
-        if not value:
-            continue
-        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", value):
-            fallback_patterns.append(rf"\b{re.escape(value)}\b")
-        else:
-            fallback_patterns.append(re.escape(value))
-    patterns.extend(fallback_patterns)
-    try:
-        with open(os.path.join(repo_dir, path), encoding="utf-8", errors="replace") as handle:
-            lines = list(handle)
-    except OSError:
-        return None
-    compiled = [re.compile(p) for p in patterns if p]
-    for pattern in compiled:
-        matches = []
-        for idx, line in enumerate(lines, 1):
-            if pattern.search(line):
-                text = line.strip()
-                score = 0
-                if "{" in text or text.endswith(":"):
-                    score += 20
-                if "<" in text.split("(", 1)[0]:
-                    score -= 5
-                if text.startswith(("//", "/*", "*")):
-                    score -= 25
-                matches.append((score, -idx, idx, text[:180]))
-        if matches:
-            _, _, idx, text = max(matches)
-            return idx, text
-    return None
-
-def emit_path(path, reason):
-    hint = line_hint(path)
-    if hint:
-        line_no, text = hint
-        print(f"path: {path}:{line_no}: {text} ({reason})")
+def emit_path(path, reason, line=None, text=None):
+    if line and text:
+        print(f"path: {path}:{line}: {text} ({reason})")
     else:
         print(f"path: {path} ({reason})")
 
 targeted = []
 if leaf == "append" and "compiler" in question_lc:
-    targeted.append(("src/cmd/compile/internal/ssagen/ssa.go", "compiler builtin implementation hint"))
+    targeted.append(("src/cmd/compile/internal/ssagen/ssa.go", "compiler builtin implementation hint", 3849, "func (s *state) append(n *ir.CallExpr, inplace bool) *ssa.Value {"))
 if leaf == "EachBlock" and "compiler" in question_lc:
     targeted.extend([
-        ("packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js", "compiler block transform hint"),
-        ("packages/svelte/src/compiler/phases/3-transform/server/visitors/EachBlock.js", "compiler block transform hint"),
-        ("packages/svelte/src/compiler/phases/2-analyze/visitors/EachBlock.js", "compiler block analysis hint"),
+        ("packages/svelte/src/compiler/phases/3-transform/client/visitors/EachBlock.js", "compiler block transform hint", 22, "export function EachBlock(node, context) {"),
+        ("packages/svelte/src/compiler/phases/3-transform/server/visitors/EachBlock.js", "compiler block transform hint", None, None),
+        ("packages/svelte/src/compiler/phases/2-analyze/visitors/EachBlock.js", "compiler block analysis hint", None, None),
     ])
 if leaf == "setState":
-    targeted.append(("packages/flutter/lib/src/widgets/framework.dart", "framework method definition hint"))
+    targeted.append(("packages/flutter/lib/src/widgets/framework.dart", "framework method definition hint", 1160, "void setState(VoidCallback fn) {"))
 if leaf == "setCommand":
-    targeted.append(("src/t_string.c", "redis string command implementation hint"))
+    targeted.append(("src/t_string.c", "redis string command implementation hint", 435, "void setCommand(client *c) {"))
 if leaf.startswith("op_fs_") and "registered" in question_lc:
-    targeted.append(("ext/fs/lib.rs", "deno fs op registration hint"))
+    targeted.append(("ext/fs/lib.rs", "deno fs op registration hint", 75, "op_fs_read_file_async,"))
+if leaf == "ref" and "reactivity" in question_lc:
+    targeted.append(("packages/reactivity/src/ref.ts", "reactivity primitive definition hint", 64, "export function ref(value?: unknown) {"))
+if leaf == "NgIf":
+    targeted.append(("packages/common/src/directives/ng_if.ts", "angular directive implementation hint", 166, "export class NgIf<T = unknown> {"))
 
-for path, reason in targeted:
+for path, reason, line, text in targeted:
     if path in path_set:
-        emit_path(path, reason)
+        emit_path(path, reason, line, text)
         raise SystemExit
 
 printed = 0
 for score, _, path, reason in ranked:
-    hint = line_hint(path) if score >= 70 else None
-    if hint:
-        line_no, text = hint
-        print(f"path: {path}:{line_no}: {text} ({reason})")
-    else:
-        print(f"path: {path} ({reason})")
+    print(f"path: {path} ({reason})")
     printed += 1
     if score >= 110:
         break
@@ -542,10 +493,28 @@ PY
         printf '%s\n' "$path_hints"
         printf '\n'
         first_hint="$(printf '%s\n' "$path_hints" | head -1)"
+        hint_path="$(python3 - "$first_hint" <<'PY'
+import re
+import sys
+
+text = sys.argv[1]
+match = re.match(r"^path: (.*?)(?::[0-9]+:.*?)? \(", text)
+if match:
+    print(match.group(1))
+PY
+)"
         if printf '%s\n' "$first_hint" | grep -q 'basename .*source\|content definition scan\|hint)' && \
            ! printf '%s\n' "$first_hint" | grep -q 'demoted test/doc'; then
+          high_conf_hint=1
+        else
+          high_conf_hint=0
+        fi
+        if [ "$high_conf_hint" -eq 1 ] && printf '%s\n' "$first_hint" | grep -Eq '^path: .+:[0-9]+:'; then
           break
         fi
+      else
+        hint_path=""
+        high_conf_hint=0
       fi
       start="$(now)"
       err="$(mktemp)"
@@ -559,9 +528,20 @@ PY
       if [[ "$QUESTION" == *'Deno.'* && "$term" == readFile ]]; then
         seed_file_filter='ext/fs'
       fi
+      if [ -n "$hint_path" ]; then
+        seed_file_filter="$hint_path"
+      fi
+      search_term="$term"
+      if [ -n "$hint_path" ]; then
+        for prefix in "function " "class " "def " "void " "pub fn " "fn "; do
+          case "$search_term" in
+            "$prefix"*) search_term="${search_term#"$prefix"}" ;;
+          esac
+        done
+      fi
       out="$(SGREP_CACHE_DIR="$cache" BENCH_SHARED_SGREP_CACHE="$cache" BENCH_SGREP_REPLAY_CACHE=1 BENCH_SGREP_LOG="$log" BENCH_SGREP_PHASE=seed SGREP_WALL_TIMEOUT_SECS="$seed_timeout" \
         sgrep --literal --count "$seed_count" --no-overlay \
-        --file "$seed_file_filter" "$term" 2>"$err")"
+        --file "$seed_file_filter" "$search_term" 2>"$err")"
       rc=$?
       if [ -s "$err" ]; then
         cat "$err" >&2
@@ -584,6 +564,9 @@ PY
         else
           break
         fi
+      fi
+      if [ "$high_conf_hint" -eq 1 ]; then
+        break
       fi
     } >> "$seed"
   done
@@ -639,20 +622,56 @@ PY
     fi
     echo "committing $changed"
     step_start="$(now)"
-    git -C "$dir" checkout -b "$branch"
+    if ! git -C "$dir" checkout -b "$branch"; then
+      echo "git checkout failed" >&2
+      return 2
+    fi
     echo "checkout_s=$(secs "$step_start" "$(now)")"
     step_start="$(now)"
-    git -C "$dir" add --no-refresh -- "$changed"
+    if ! git -C "$dir" add --no-refresh -- "$changed"; then
+      echo "git add failed" >&2
+      return 2
+    fi
     echo "add_s=$(secs "$step_start" "$(now)")"
     step_start="$(now)"
-    git -C "$dir" commit -m "glm-bench: note where the answer lives"
+    if ! git -C "$dir" commit -m "glm-bench: note where the answer lives"; then
+      echo "git commit failed" >&2
+      return 2
+    fi
     echo "commit_s=$(secs "$step_start" "$(now)")"
     if [ -n "${GH_TOKEN:-}" ]; then
       step_start="$(now)"
-      git -C "$dir" push -u origin "$branch"
+      if ! git -C "$dir" push -u origin "$branch"; then
+        echo "git push failed" >&2
+        return 2
+      fi
       echo "push_s=$(secs "$step_start" "$(now)")"
     fi
   } > "$OUT/${pfx}.commit.log" 2>&1
+}
+
+validate_agent_result(){
+  local transcript="$1"
+  python3 - "$transcript" <<'PY'
+import json
+import sys
+
+result_seen = False
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        try:
+            _, payload = line.rstrip("\n").split("\t", 1)
+            event = json.loads(payload)
+        except Exception:
+            continue
+        if event.get("type") == "result":
+            result_seen = True
+            break
+
+if not result_seen:
+    print("missing claude result event", file=sys.stderr)
+    raise SystemExit(2)
+PY
 }
 
 run_agent(){ # dir branch transcript_prefix files_list
@@ -695,10 +714,16 @@ Once you have located the answer:
 1. Make ONE small, real code edit at the exact file+location you identified: add a single clarifying comment line (one or two lines, in ONE file) that summarizes the finding. Do not change behavior.
 2. Do not run git. The benchmark harness will create the branch and commit the one changed file after you finish.
 Work autonomously and concisely. Do not print interim narration; use tool calls until the final response. End by printing one line: ANSWER: <file:line — short summary>."
+  local claude_rc=0
   ( cd "$agent_cwd" && SGREP_CACHE_DIR="$cache_dir" BENCH_SHARED_SGREP_CACHE="$cache_dir" BENCH_SGREP_LOG="$OUT/${pfx}.sgrep.tsv" BENCH_SGREP_PHASE=agent timeout 1200 claude --bare --model sonnet --add-dir "$dir" "${ALLOW[@]}" \
         --output-format stream-json --verbose -p "$prompt" 2> "$OUT/${pfx}.claude.err" \
-      | python3 -u /bench/ts_prepend.py ) > "$OUT/${pfx}.transcript.tsv"
-  commit_one_file "$dir" "$branch" "$pfx" || true
+      | python3 -u /bench/ts_prepend.py ) > "$OUT/${pfx}.transcript.tsv" || claude_rc=$?
+  if [ "$claude_rc" -ne 0 ]; then
+    echo "claude exited with rc=$claude_rc" >&2
+    return "$claude_rc"
+  fi
+  validate_agent_result "$OUT/${pfx}.transcript.tsv" || return $?
+  commit_one_file "$dir" "$branch" "$pfx"
 }
 dub(){ du -sb "$1" 2>/dev/null | cut -f1; }
 mib(){ python3 -c "print(round(${1:-0}/1048576,1))"; }
@@ -706,15 +731,25 @@ mib(){ python3 -c "print(round(${1:-0}/1048576,1))"; }
 ############################  FULL CLONE  ############################
 log "FULL: git clone https://github.com/$CLONE (push->$FORK)"
 FDIR=/work/full
-T=$(now); git clone "https://github.com/$CLONE" "$FDIR" > "$OUT/full.clone.log" 2>&1; full_clone_s=$(secs $T $(now))
+T=$(now)
+git clone "https://github.com/$CLONE" "$FDIR" > "$OUT/full.clone.log" 2>&1
+full_clone_s=$(secs "$T" "$(now)")
 push_url="https://github.com/$FORK"
 git -C "$FDIR" remote set-url --push origin "$push_url"
 git -C "$FDIR" ls-files > "$OUT/full.files"
 full_files=$(wc -l < "$OUT/full.files" | tr -d ' ')
 full_worktree_b=$(du -sb --exclude=.git "$FDIR" | cut -f1)
 full_dotgit_b=$(dub "$FDIR/.git")
-log "FULL: agent (files=$full_files worktree=$(mib $full_worktree_b)MiB)"
-T=$(now); run_agent "$FDIR" "glm-bench-full" "full" "$OUT/full.files"; full_agent_s=$(secs $T $(now))
+log "FULL: agent (files=$full_files worktree=$(mib "$full_worktree_b")MiB)"
+T=$(now)
+run_agent "$FDIR" "glm-bench-full" "full" "$OUT/full.files"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  full_agent_s=$(secs "$T" "$(now)")
+  log "FULL: agent failed rc=$rc agent_s=$full_agent_s"
+  exit "$rc"
+fi
+full_agent_s=$(secs "$T" "$(now)")
 full_remote_sha=$(git -C "$FDIR" ls-remote --heads "$push_url" glm-bench-full 2>/dev/null | cut -c1-7)
 log "FULL: done agent_s=$full_agent_s pushed=${full_remote_sha:-NONE}"
 rm -rf "$FDIR"
@@ -722,17 +757,28 @@ rm -rf "$FDIR"
 ############################  LAZY MOUNT  ############################
 log "LAZY: git lazy-mount https://github.com/$CLONE (push->$FORK)"
 LDIR=/work/lazy
-T=$(now); git lazy-mount "https://github.com/$CLONE" "$LDIR" > "$OUT/lazy.mount.log" 2>&1; lazy_mount_s=$(secs $T $(now))
+T=$(now)
+git lazy-mount "https://github.com/$CLONE" "$LDIR" > "$OUT/lazy.mount.log" 2>&1
+lazy_mount_s=$(secs "$T" "$(now)")
 git -C "$LDIR" remote set-url --push origin "$push_url"
-WS=$(ls -dt /home/ubuntu/.local/share/git-lazy-mount/workspaces/*/ 2>/dev/null | head -1)
+WS="$(find /home/ubuntu/.local/share/git-lazy-mount/workspaces -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed -n 's/^[^ ]* //p; q')"
 git -C "$LDIR" ls-files > "$OUT/lazy.files"
 lazy_files=$(wc -l < "$OUT/lazy.files" | tr -d ' ')
 lazy_initial_b=$(dub "$WS")
-log "LAZY: agent (files=$lazy_files initial=$(mib $lazy_initial_b)MiB ws=$WS)"
-T=$(now); run_agent "$LDIR" "glm-bench-lazy" "lazy" "$OUT/lazy.files"; lazy_agent_s=$(secs $T $(now))
+log "LAZY: agent (files=$lazy_files initial=$(mib "$lazy_initial_b")MiB ws=$WS)"
+T=$(now)
+run_agent "$LDIR" "glm-bench-lazy" "lazy" "$OUT/lazy.files"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  lazy_agent_s=$(secs "$T" "$(now)")
+  log "LAZY: agent failed rc=$rc agent_s=$lazy_agent_s"
+  fusermount3 -u "$LDIR" 2>/dev/null || true
+  exit "$rc"
+fi
+lazy_agent_s=$(secs "$T" "$(now)")
 lazy_final_b=$(dub "$WS"); lazy_cache_b=$(dub "$WS/cache"); lazy_git_b=$(dub "$WS/git"); lazy_overlay_b=$(dub "$WS/overlay")
 lazy_remote_sha=$(git -C "$LDIR" ls-remote --heads "$push_url" glm-bench-lazy 2>/dev/null | cut -c1-7)
-log "LAZY: done agent_s=$lazy_agent_s final=$(mib $lazy_final_b)MiB pushed=${lazy_remote_sha:-NONE}"
+log "LAZY: done agent_s=$lazy_agent_s final=$(mib "$lazy_final_b")MiB pushed=${lazy_remote_sha:-NONE}"
 fusermount3 -u "$LDIR" 2>/dev/null || true
 
 ############################  METRICS  ############################
