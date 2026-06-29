@@ -96,17 +96,16 @@ twice per repo in a fresh Firecracker microVM: once after a full-history
 
 ![Disk after agent task: full clone vs lazy mount](charts/agent-disk.svg)
 
-Across all 20 repos, lazy-mount won **19 of 20** total sessions. Full clone+agent
-time totaled **3394.2 s** vs **1322.7 s** for lazy mount+agent, saving
-**2071.5 s** overall (**2.57× faster**). The setup split is the main driver:
-full clone time totaled **2092.1 s** vs **89.2 s** for lazy mounts. The agent
-phases were comparable in aggregate: **1302.1 s** on full clones vs **1233.5 s**
+Across all 20 repos, lazy-mount won **20 of 20** total sessions. Full clone+agent
+time totaled **2861.1 s** vs **977.5 s** for lazy mount+agent, saving
+**1883.6 s** overall (**2.93× faster**). The setup split is the main driver:
+full clone time totaled **1861.6 s** vs **82.8 s** for lazy mounts. The agent
+phases were comparable in aggregate: **999.5 s** on full clones vs **894.7 s**
 on lazy mounts.
 
-The only loss was the smallest repo, `vue`: full clone+agent took **38.6 s** and
-lazy mount+agent took **50.3 s**. Clone setup there was only **4.1 s**, so the
-lazy run's slower agent phase was enough to erase the setup win. The largest wins
-were `typescript` (**472.0 s saved**) and `llvm` (**466.4 s saved**).
+The narrowest win was `svelte`: full clone+agent took **18.7 s** and lazy
+mount+agent took **16.5 s**. The largest wins were `llvm` (**357.7 s saved**)
+and `typescript` (**198.5 s saved**).
 
 Disk after the completed task was **30.2 GB** for full-history clones vs **1.4 GB**
 for lazy workspaces (**21.5× smaller**). This is a full-history clone baseline;
@@ -125,7 +124,8 @@ For current full-run analysis, generate compact timing summaries from raw
 `*.transcript.tsv` files:
 
 ```bash
-python3 benchmarks/format_transcripts.py benchmarks/out/<run-id>
+python3 benchmarks/format_transcripts.py benchmarks/out/<docker-run-id>
+python3 benchmarks/format_transcripts.py benchmarks/out/<firecracker-run-id>/run
 ```
 
 This writes `transcripts-summary/SUMMARY.md`, `summary.csv`, and one concise
